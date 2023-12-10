@@ -1,0 +1,53 @@
+2022/12/27-11:45:23.705 499c Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-system\exios-api\utils\tmp\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2022/12/27-11:45:23.706 499c Recovering log #260
+2022/12/27-11:45:23.863 499c Reusing old log C:\Users\Emad\Desktop\Exios\exios-system\exios-api\utils\tmp\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000260.log 
+2022/12/27-11:45:37.454 5104 Level-0 table #273: started
+2022/12/27-11:45:37.489 5104 Level-0 table #273: 1133450 bytes OK
+2022/12/27-11:45:37.490 5104 Delete type=0 #260
+2022/12/27-11:45:37.527 3e38 Compacting 1@1 + 9@2 files
+2022/12/27-11:45:37.579 3e38 Generated table #274@1: 29520 keys, 2196558 bytes
+2022/12/27-11:45:37.614 3e38 Generated table #275@1: 1813 keys, 2137967 bytes
+2022/12/27-11:45:37.628 3e38 Generated table #276@1: 1627 keys, 2134607 bytes
+2022/12/27-11:45:37.666 3e38 Generated table #277@1: 2576 keys, 2145764 bytes
+2022/12/27-11:45:37.706 3e38 Generated table #278@1: 4422 keys, 2147095 bytes
+2022/12/27-11:45:37.793 3e38 Generated table #279@1: 34304 keys, 2252611 bytes
+2022/12/27-11:45:37.878 3e38 Generated table #280@1: 44268 keys, 2254326 bytes
+2022/12/27-11:45:37.961 3e38 Generated table #281@1: 68118 keys, 2208567 bytes
+2022/12/27-11:45:37.999 3e38 Generated table #282@1: 36900 keys, 859003 bytes
+2022/12/27-11:45:37.999 3e38 Compacted 1@1 + 9@2 files => 18336498 bytes
+2022/12/27-11:45:37.999 3e38 compacted to: files[ 0 0 9 0 0 0 0 ]
+2022/12/27-11:45:37.999 3e38 Delete type=2 #262
+2022/12/27-11:45:37.999 3e38 Delete type=2 #263
+2022/12/27-11:45:37.999 3e38 Delete type=2 #264
+2022/12/27-11:45:37.999 3e38 Delete type=2 #265
+2022/12/27-11:45:37.999 3e38 Delete type=2 #266
+2022/12/27-11:45:37.999 3e38 Delete type=2 #267
+2022/12/27-11:45:37.999 3e38 Delete type=2 #268
+2022/12/27-11:45:37.999 3e38 Delete type=2 #269
+2022/12/27-11:45:37.999 3e38 Delete type=2 #270
+2022/12/27-11:45:37.999 3e38 Delete type=2 #273
+2022/12/27-11:45:57.557 524c Level-0 table #284: started
+2022/12/27-11:45:57.592 524c Level-0 table #284: 1085543 bytes OK
+2022/12/27-11:45:57.593 524c Delete type=0 #272
+2022/12/27-11:45:58.600 51e0 Compacting 1@1 + 9@2 files
+2022/12/27-11:45:58.695 51e0 Generated table #285@1: 29681 keys, 2189677 bytes
+2022/12/27-11:45:58.715 51e0 Generated table #286@1: 1817 keys, 2147403 bytes
+2022/12/27-11:45:58.730 51e0 Generated table #287@1: 1627 keys, 2134607 bytes
+2022/12/27-11:45:58.765 51e0 Generated table #288@1: 2576 keys, 2145764 bytes
+2022/12/27-11:45:58.790 51e0 Generated table #289@1: 4422 keys, 2147095 bytes
+2022/12/27-11:45:58.876 51e0 Generated table #290@1: 34304 keys, 2252611 bytes
+2022/12/27-11:45:58.932 51e0 Generated table #291@1: 44420 keys, 2254632 bytes
+2022/12/27-11:45:58.995 51e0 Generated table #292@1: 62769 keys, 2200245 bytes
+2022/12/27-11:45:59.045 51e0 Generated table #293@1: 58973 keys, 1339096 bytes
+2022/12/27-11:45:59.045 51e0 Compacted 1@1 + 9@2 files => 18811130 bytes
+2022/12/27-11:45:59.046 51e0 compacted to: files[ 0 0 9 0 0 0 0 ]
+2022/12/27-11:45:59.046 51e0 Delete type=2 #274
+2022/12/27-11:45:59.046 51e0 Delete type=2 #275
+2022/12/27-11:45:59.046 51e0 Delete type=2 #276
+2022/12/27-11:45:59.046 51e0 Delete type=2 #277
+2022/12/27-11:45:59.046 51e0 Delete type=2 #278
+2022/12/27-11:45:59.046 51e0 Delete type=2 #279
+2022/12/27-11:45:59.046 51e0 Delete type=2 #280
+2022/12/27-11:45:59.046 51e0 Delete type=2 #281
+2022/12/27-11:45:59.046 51e0 Delete type=2 #282
+2022/12/27-11:45:59.046 51e0 Delete type=2 #284

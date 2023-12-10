@@ -1,0 +1,4 @@
+2022/12/27-11:43:44.002 4c40 Creating DB C:\Users\Emad\Desktop\Exios\exios-system\exios-api\utils\tmp\Default\File System\000\t\Paths since it was missing.
+2022/12/27-11:43:44.006 4c40 Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-system\exios-api\utils\tmp\Default\File System\000\t\Paths/MANIFEST-000001
+2022/12/27-11:43:44.007 4c40 Recovering log #3
+2022/12/27-11:43:44.007 4c40 Reusing old log C:\Users\Emad\Desktop\Exios\exios-system\exios-api\utils\tmp\Default\File System\000\t\Paths/000003.log 
