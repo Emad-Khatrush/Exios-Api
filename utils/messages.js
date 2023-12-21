@@ -1,3 +1,5 @@
+const axios = require('axios');
+
 const validatePhoneNumber = (phone) => {
   let generatePhone = phone.trim();
   if (generatePhone === '5535728209@c.us') {
@@ -30,4 +32,16 @@ const checkIfPhoneValid = (phone) => {
   return false;
 }
 
-module.exports = { validatePhoneNumber, checkIfPhoneValid };
+// Function to convert image to Base64
+const imageToBase64 = async (url) => {
+  try {
+    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    const base64Data = Buffer.from(response.data, 'binary').toString('base64');
+    return base64Data;
+  } catch (error) {
+    console.error('Error fetching image:', error);
+    throw error;
+  }
+}
+
+module.exports = { validatePhoneNumber, checkIfPhoneValid, imageToBase64 };
