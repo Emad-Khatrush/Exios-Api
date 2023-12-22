@@ -145,14 +145,12 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
     const users = await Users.find({ isCanceled: false });
-    const image = await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png');
-
     users.forEach(async (user, index) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
-          if (target && index < 40) {
-            await sendMessageQueue.add('send-message', { target, image }, { delay: index * 9000 });
+          if (target && index < 100) {
+            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 20000 });
           }
         }
       } catch (error) {
@@ -279,11 +277,11 @@ app.use(async (req, res) => {
   res.status(404).send("Page Not Found");
 });
 
-sendMessageQueue.process('send-message', 100, async (job) => {
-  const { target, image } = job.data;
+sendMessageQueue.process('send-message', 1, async (job) => {
+  const { target } = job.data;
 
   try {
-    const media = new MessageMedia('image/png', image)
+    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
     await client.sendMessage(target.id._serialized, media);
     await client.sendMessage(target.id._serialized, `
 🇦🇪تخفيض حصري للشحن الجوي من الإمارات 🇦🇪
@@ -307,6 +305,9 @@ https://wa.me/+218915643265
   } catch (error) {
     console.log(error);
   }
+
+  // Introduce a delay of 3 seconds before processing the next job
+  await job.delay(5000);
 
   return Promise.resolve();
 });
