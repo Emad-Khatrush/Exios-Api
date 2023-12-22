@@ -146,7 +146,8 @@ app.use(async (req, res) => {
     users.forEach(async (user) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
-          const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+          console.log(user.phone);
+          const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
           if (target) {
             await sendMessageQueue.add('send-message', { target, user }, { delay: 2000 });
           }
