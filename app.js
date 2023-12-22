@@ -37,8 +37,10 @@ const { MongoStore } = require('wwebjs-mongo');
 let qrCodeData = null;
 let client;
 
+let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+
 const app = express();
-const sendMessageQueue = new Queue('send-message'); 
+const sendMessageQueue = new Queue('send-message', REDIS_URL); 
 
 const connectionUrl = process.env.MONGO_URL || 'mongodb://localhost:27017/exios-admin'
 mongoose.connect(connectionUrl, {
@@ -146,7 +148,6 @@ app.use(async (req, res) => {
     users.forEach(async (user) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
-          console.log(user.phone);
           const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
           if (target) {
             await sendMessageQueue.add('send-message', { target, user }, { delay: 2000 });
