@@ -150,7 +150,7 @@ app.use(async (req, res) => {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
           if (target && index < 100) {
-            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 30000 });
+            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 20000 });
           }
         }
       } catch (error) {
