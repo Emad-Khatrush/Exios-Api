@@ -150,7 +150,7 @@ app.use(async (req, res) => {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
           if (target && index < 100) {
-            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 9000 });
+            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 15000 });
           }
         }
       } catch (error) {
@@ -277,7 +277,7 @@ app.use(async (req, res) => {
   res.status(404).send("Page Not Found");
 });
 
-sendMessageQueue.process('send-message', 10, async (job) => {
+sendMessageQueue.process('send-message', 1, async (job) => {
   const { target } = job.data;
 
   try {
