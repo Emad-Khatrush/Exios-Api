@@ -9,6 +9,7 @@ const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
 const { generatePDF } = require("./utils/sender");
 const { validatePhoneNumber, imageToBase64 } = require('./utils/messages');
+const Queue = require('bull');
 
 // DB Collections
 const Users = require('./models/user');
@@ -37,6 +38,7 @@ let qrCodeData = null;
 let client;
 
 const app = express();
+const sendMessageQueue = new Queue('send-message');
 
 const connectionUrl = process.env.MONGO_URL || 'mongodb://localhost:27017/exios-admin'
 mongoose.connect(connectionUrl, {
@@ -140,44 +142,106 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
-    const users = await Users.find({});
+    const users = await Users.find({ isCanceled: false });
     users.forEach(async (user) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
-            const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
-            if (target) {
-              const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
-              await client.sendMessage(target.id._serialized, media);
-              await client.sendMessage(target.id._serialized, `
-  🇦🇪تخفيض حصري للشحن الجوي من الإمارات 🇦🇪
-  يسر شركة إكسيوس للشراء والشحن أن تعلن أن سعر الشحن الجوي الجديد هو 4.5 دولار فقط للكيلو! 😱✨
-  ندرك أهمية توفير خدمات ذو جودة بأسعار معقولة، ونحن نعمل جاهدين لتحقيق ذلك. نحن نسعى دائمًا لتلبية احتياجات عملائنا الكرام وجعل عملية الشحن مريحة وميسرة.
-  فى اكسيوس  نوفر لك الحلول المثالية بأسعار معقولة وخدمة عملاء ممتازة.
-  لا تضيع الفرصة! احصل على خدمة الشحن بسعر مذهل قدره 4.5 دولار فقط للكيلو. اتصل بنا الآن أو قم بزيارة موقعنا الإلكتروني لمعرفة المزيد حول خيارات الشحن المتاحة.
-  لفتح كود شحن عبر موقع الشركة الاكتروني:💻
-  https://www.exioslibya.com/signup
-  للاستفسار على الارقام التالية:
-  مندوب فرع بنغازي :
-  0919734019 هاتف وواتس اب
-  https://wa.me/+218919734019 
-  0919078031 هاتف وواتس اب
-  https://wa.me/+218919078031
-  مندوب طرابلس:
-  0915643265 هاتف وواتس اب
-  https://wa.me/+218915643265
-              `);
-              console.log("Message Sent !");
-              // return res.status(200).json({ success: true, message: 'Message sent successfully' });
-            } else {
-              // return res.status(400).json({ success: false, message: 'Contact not found' });
-            }
+          const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+          if (target) {
+            await sendMessageQueue.add('send-message', { target, user }, { delay: 2000 });
           }
-        } catch (error) {
-          console.error(error);
-          return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
         }
-    })
+      } catch (error) {
+        console.error(error);
+      }
+    });
   }
+
+//   if (req.query.send === 'sendAll') {
+//     const users = await Users.find({});
+//     const delayInterval = 2000; // Set the delay interval in milliseconds
+//     let count = 1;
+
+//     for (const user of users) {
+//       try {
+//         if (user.phone && `${user.phone}`.length >= 5) {
+//           const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+//           if (target) {
+//             const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
+//             await client.sendMessage(target.id._serialized, media);
+//             await client.sendMessage(target.id._serialized, `
+// 🇦🇪تخفيض حصري للشحن الجوي من الإمارات 🇦🇪
+// يسر شركة إكسيوس للشراء والشحن أن تعلن أن سعر الشحن الجوي الجديد هو 4.5 دولار فقط للكيلو! 😱✨
+// ندرك أهمية توفير خدمات ذو جودة بأسعار معقولة، ونحن نعمل جاهدين لتحقيق ذلك. نحن نسعى دائمًا لتلبية احتياجات عملائنا الكرام وجعل عملية الشحن مريحة وميسرة.
+// فى اكسيوس  نوفر لك الحلول المثالية بأسعار معقولة وخدمة عملاء ممتازة.
+// لا تضيع الفرصة! احصل على خدمة الشحن بسعر مذهل قدره 4.5 دولار فقط للكيلو. اتصل بنا الآن أو قم بزيارة موقعنا الإلكتروني لمعرفة المزيد حول خيارات الشحن المتاحة.
+// لفتح كود شحن عبر موقع الشركة الاكتروني:💻
+// https://www.exioslibya.com/signup
+// للاستفسار على الارقام التالية:
+// مندوب فرع بنغازي :
+// 0919734019 هاتف وواتس اب
+// https://wa.me/+218919734019 
+// 0919078031 هاتف وواتس اب
+// https://wa.me/+218919078031
+// مندوب طرابلس:
+// 0915643265 هاتف وواتس اب
+// https://wa.me/+218915643265
+//             `);
+//             console.log("Message Sent !" + count);
+//             count++;
+//             // Add a delay before processing the next user
+//             await new Promise(resolve => setTimeout(resolve, delayInterval));
+//           } else {
+//             // Handle the case when contact is not found
+//           }
+//         }
+//       } catch (error) {
+//         console.error(error);
+//         // Handle errors appropriately
+//       }
+//     }
+//   }
+
+
+  // if (req.query.send === 'sendAll') {
+  //   const users = await Users.find({});
+  //   users.forEach(async (user) => {
+  //     try {
+  //       if (user.phone && `${user.phone}`.length >= 5) {
+  //           const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+  //           if (target) {
+  //             const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
+  //             await client.sendMessage(target.id._serialized, media);
+  //             await client.sendMessage(target.id._serialized, `
+  // 🇦🇪تخفيض حصري للشحن الجوي من الإمارات 🇦🇪
+  // يسر شركة إكسيوس للشراء والشحن أن تعلن أن سعر الشحن الجوي الجديد هو 4.5 دولار فقط للكيلو! 😱✨
+  // ندرك أهمية توفير خدمات ذو جودة بأسعار معقولة، ونحن نعمل جاهدين لتحقيق ذلك. نحن نسعى دائمًا لتلبية احتياجات عملائنا الكرام وجعل عملية الشحن مريحة وميسرة.
+  // فى اكسيوس  نوفر لك الحلول المثالية بأسعار معقولة وخدمة عملاء ممتازة.
+  // لا تضيع الفرصة! احصل على خدمة الشحن بسعر مذهل قدره 4.5 دولار فقط للكيلو. اتصل بنا الآن أو قم بزيارة موقعنا الإلكتروني لمعرفة المزيد حول خيارات الشحن المتاحة.
+  // لفتح كود شحن عبر موقع الشركة الاكتروني:💻
+  // https://www.exioslibya.com/signup
+  // للاستفسار على الارقام التالية:
+  // مندوب فرع بنغازي :
+  // 0919734019 هاتف وواتس اب
+  // https://wa.me/+218919734019 
+  // 0919078031 هاتف وواتس اب
+  // https://wa.me/+218919078031
+  // مندوب طرابلس:
+  // 0915643265 هاتف وواتس اب
+  // https://wa.me/+218915643265
+  //             `);
+  //             console.log("Message Sent !");
+  //             // return res.status(200).json({ success: true, message: 'Message sent successfully' });
+  //           } else {
+  //             // return res.status(400).json({ success: false, message: 'Contact not found' });
+  //           }
+  //         }
+  //       } catch (error) {
+  //         console.error(error);
+  //         return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
+  //       }
+  //   })
+  // }
 
   // const newClients = await User.aggregate([
   //   {
@@ -209,6 +273,38 @@ app.use(async (req, res) => {
   // });
   // res.send(newClients);
   res.status(404).send("Page Not Found");
+});
+
+sendMessageQueue.process('send-message', 10, async (job) => {
+  const { target } = job.data;
+
+  try {
+    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
+    await client.sendMessage(target.id._serialized, media);
+    await client.sendMessage(target.id._serialized, `
+🇦🇪تخفيض حصري للشحن الجوي من الإمارات 🇦🇪
+يسر شركة إكسيوس للشراء والشحن أن تعلن أن سعر الشحن الجوي الجديد هو 4.5 دولار فقط للكيلو! 😱✨
+ندرك أهمية توفير خدمات ذو جودة بأسعار معقولة، ونحن نعمل جاهدين لتحقيق ذلك. نحن نسعى دائمًا لتلبية احتياجات عملائنا الكرام وجعل عملية الشحن مريحة وميسرة.
+فى اكسيوس  نوفر لك الحلول المثالية بأسعار معقولة وخدمة عملاء ممتازة.
+لا تضيع الفرصة! احصل على خدمة الشحن بسعر مذهل قدره 4.5 دولار فقط للكيلو. اتصل بنا الآن أو قم بزيارة موقعنا الإلكتروني لمعرفة المزيد حول خيارات الشحن المتاحة.
+لفتح كود شحن عبر موقع الشركة الاكتروني:💻
+https://www.exioslibya.com/signup
+للاستفسار على الارقام التالية:
+مندوب فرع بنغازي :
+0919734019 هاتف وواتس اب
+https://wa.me/+218919734019 
+0919078031 هاتف وواتس اب
+https://wa.me/+218919078031
+مندوب طرابلس:
+0915643265 هاتف وواتس اب
+https://wa.me/+218915643265
+    `);
+    console.log("Message Sent !");
+  } catch (error) {
+    console.log(error);
+  }
+
+  return Promise.resolve();
 });
 
 // Error Handler
