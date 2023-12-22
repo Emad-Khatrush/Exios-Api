@@ -38,7 +38,7 @@ let qrCodeData = null;
 let client;
 
 const app = express();
-const sendMessageQueue = new Queue('send-message');
+const sendMessageQueue = new Queue('send-message'); 
 
 const connectionUrl = process.env.MONGO_URL || 'mongodb://localhost:27017/exios-admin'
 mongoose.connect(connectionUrl, {
