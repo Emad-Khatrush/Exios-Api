@@ -150,7 +150,7 @@ app.use(async (req, res) => {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
           if (target && index < 100) {
-            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 15000 });
+            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 30000 });
           }
         }
       } catch (error) {
@@ -305,6 +305,9 @@ https://wa.me/+218915643265
   } catch (error) {
     console.log(error);
   }
+
+  // Introduce a delay of 3 seconds before processing the next job
+  await job.delay(5000);
 
   return Promise.resolve();
 });
