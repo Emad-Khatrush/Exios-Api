@@ -145,12 +145,12 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
     const users = await Users.find({ isCanceled: false });
-    users.forEach(async (user) => {
+    users.forEach(async (user, index) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`55555555@c.us`));
           if (target) {
-            await sendMessageQueue.add('send-message', { target, user }, { delay: 2000 });
+            await sendMessageQueue.add('send-message', { target, user }, { delay: index * 3500 });
           }
         }
       } catch (error) {
