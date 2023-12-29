@@ -18,5 +18,4 @@ router.route('/inventory/orders')
 router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
 
-
 module.exports = router;

@@ -5,17 +5,15 @@ const inventorySchema = new Schema({
   createdBy: { type: Schema.Types.ObjectId, ref: 'User'},
   orders: [
     {
-      order: { type: Schema.Types.ObjectId, ref: 'Order' },
-      status: [
-        {
-          mark: {
-            type: String,
-            enum: ['found', 'missing'],
-            default: 'found'
-          },
-          missingDescription: String
-        }
-      ],
+      order: {},
+      status: {
+        mark: {
+          type: String,
+          enum: ['found', 'missing'],
+          default: 'found'
+        },
+        missingDescription: String
+      }
     }
   ],
   attachments: [{

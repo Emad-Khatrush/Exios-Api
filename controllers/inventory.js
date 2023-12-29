@@ -57,12 +57,6 @@ module.exports.getSingleInventory = async (req, res, next) => {
     // let inventory = await Inventory.aggregate([
     //   { $match: { _id: ObjectId(req.params.id) } }, // Match the desired inventory document
     //   {
-    //     $unwind: '$orders',
-    //   },
-    //   {
-    //     $unwind: '$orders.order',
-    //   },
-    //   {
     //     $unwind: {
     //       path: '$orders.order.paymentList',
     //       preserveNullAndEmptyArrays: true,
@@ -70,8 +64,7 @@ module.exports.getSingleInventory = async (req, res, next) => {
     //   },
     // ]);
 
-    console.log(inventory);
-    inventory = await Inventory.populate(inventory, [{ path: "createdBy" }, { path: "orders.order" }]);
+    // inventory = await Inventory.populate(inventory, [{ path: "createdBy" }, { path: "orders.order" }]);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     
     res.status(200).json(inventory);
@@ -82,15 +75,47 @@ module.exports.getSingleInventory = async (req, res, next) => {
 
 module.exports.getInventoryOrders = async (req, res, next) => {
   try {
-    const { searchValue } = req.query;
+    const { searchValue, inventoryId } = req.query;
     if (!searchValue) return res.status(200).json([]);
+
+    const inventory = await Inventory.findOne({ _id: inventoryId });
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    const ids = inventory.orders.map(data => data.order.paymentList?._id);
 
     const orders = await Orders.aggregate([
       {
-        $unwind: '$paymentList'
+        $unwind: {
+          path: '$paymentList', 
+          preserveNullAndEmptyArrays: true
+        }
       },
+      // {
+      //   $match: {
+      //     'paymentList': {
+      //       $not: {
+      //         $elemMatch: {
+      //           "_id": { $in: ids }
+      //         }
+      //       }
+      //     }
+      //   }
+      // },
       {
-        $match: { $or: [ { orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } } ] }
+        $match: {
+          $and: [
+            {
+              'paymentList._id': { $nin: ids }
+            },
+            {
+              $or: [
+                { orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
+                { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+                { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
+                { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }
+              ]
+            }
+          ]
+        }
       },
       {
         $sort: {
