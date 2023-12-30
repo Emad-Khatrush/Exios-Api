@@ -40,7 +40,13 @@ let client;
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
 const app = express();
-const sendMessageQueue = new Queue('send-message', REDIS_URL); 
+const sendMessageQueue = new Queue('send-message', REDIS_URL, {
+  limiter: {
+    max: 1, // Number of concurrent jobs processed by queue
+    duration: 1000, // Time in ms to check for jobs to process
+  },
+  attempts: 3, // Number of times to retry a job after it fails
+}); 
 
 const connectionUrl = process.env.MONGO_URL || 'mongodb://localhost:27017/exios-admin'
 mongoose.connect(connectionUrl, {
@@ -150,8 +156,7 @@ app.use(async (req, res) => {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`5552545155@c.us`));
           if (target && index <= 200) {
-            console.log("test");
-            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 12000 });
+            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 6000 });
           }
         }
       } catch (error) {
@@ -192,8 +197,10 @@ app.use(async (req, res) => {
   res.status(404).send("Page Not Found");
 });
 
+// sendMessageQueue.process('send-message', 5, 'utils/processor.js');
+
 sendMessageQueue.process('send-message', 1, async (job) => {
-  const { target, index } = job.data;
+  const { target, index, user } = job.data;
 
   try {
     const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
@@ -218,9 +225,9 @@ https://wa.me/+218915643265
     `);
     console.log("Message Sent " + index + ' !');
   } catch (error) {
-    console.log(error);
+    console.log(`Error processing job, attempt ${index}: ${error?.message}`);
     // Retry the job after a delay of 10 seconds
-    await job.retry(10000);
+    await sendMessageQueue.add('send-message', { target, user, index }, { delay: index * 6000 });
     return Promise.resolve();
   }
 
