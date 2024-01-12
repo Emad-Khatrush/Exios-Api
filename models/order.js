@@ -33,6 +33,7 @@ const orderSchema = new Schema({
     type: Number,
     default: 0
   },
+  paymentExistNote: String,
   placedAt: {
     type: String,
     required: true,

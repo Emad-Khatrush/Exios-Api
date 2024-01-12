@@ -151,19 +151,21 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
     const users = await Users.find({ isCanceled: false });
-    users.forEach(async (user, index) => {
+
+    for (let index = 0; index < users.length; index++) {
+      const user = users[index];
+
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`5552545155@c.us`));
           if (target && index <= 200) {
-            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 6000 });
+            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 3000 });
           }
         }
       } catch (error) {
         console.error(error);
       }
-    });
-  }
+    }
 
   // const newClients = await User.aggregate([
   //   {
@@ -195,9 +197,15 @@ app.use(async (req, res) => {
   // });
   // res.send(newClients);
   res.status(404).send("Page Not Found");
-});
+}});
 
-// sendMessageQueue.process('send-message', 5, 'utils/processor.js');
+sendMessageQueue.process('resume-jobs', 1, async (job) => {
+  // Resume the queue
+  await sendMessageQueue.resume();
+  console.log('Queue resumed.');
+})
+
+let jobCounter = 0;
 
 sendMessageQueue.process('send-message', 1, async (job) => {
   const { target, index, user } = job.data;
@@ -224,10 +232,21 @@ https://wa.me/+218919078031
 https://wa.me/+218915643265
     `);
     console.log("Message Sent " + index + ' !');
+
+    // Increment the job counter
+    jobCounter++;
+
+    // Check if 50 jobs have been processed
+    if (jobCounter % 2 === 0) {
+      console.log(`Pausing for 1 minute after processing ${jobCounter} jobs`);
+      // Pause the queue for 1 minute
+      await sendMessageQueue.pause(9000);
+      await sendMessageQueue.add('resume-jobs', {}, { delay: 10000 });
+    }
   } catch (error) {
     console.log(`Error processing job, attempt ${index}: ${error?.message}`);
     // Retry the job after a delay of 10 seconds
-    await sendMessageQueue.add('send-message', { target, user, index }, { delay: index * 6000 });
+    await sendMessageQueue.add('send-message', { target, user, index }, { delay: index * 30000 });
     return Promise.resolve();
   }
 
