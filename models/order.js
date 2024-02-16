@@ -141,6 +141,14 @@ const orderSchema = new Schema({
     total: Number,
     default: 0
   },
+  status: {
+    mark: {
+      type: String,
+      enum: ['found', 'missing', 'unknown'],
+      default: 'found'
+    },
+    missingDescription: String
+  },
   paymentList: [{
     link: {
       type: String,

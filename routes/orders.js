@@ -22,6 +22,9 @@ router.route('/orders')
       .get(protect, allowAdminsAndEmployee, orders.getOrders)
       .post(protect, allowAdminsAndEmployee, upload.array('files'), orders.createOrder);
 
+router.route('/orders/status')
+      .put(protect, allowAdminsAndEmployee, orders.updateStatusOfOrder)
+
 router.route('/packages/orders')
       .get(protect, isAdmin, orders.getPackagesOfOrders)
 

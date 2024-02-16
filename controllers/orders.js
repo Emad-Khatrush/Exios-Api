@@ -11,6 +11,7 @@ const mongoose = require('mongoose');
 const mongodb = require('mongodb');
 const Users = require('../models/user');
 const OrderRating = require('../models/orderRating');
+const Inventory = require('../models/inventory');
 
 const { ObjectId } = mongodb;
 
@@ -730,7 +731,6 @@ module.exports.deleteLinkFiles= async (req, res, next) => {
         }
       }
     }, { safe: true, upsert: true, new: true });
-    console.log(order.paymentList[1]);
 
     // const response = await cloudinary.uploader.destroy(req.body.image.filename);
     // if (response.result !== 'ok') {
@@ -818,6 +818,40 @@ module.exports.createOrderActivity = async (req, res, next) => {
       }
     })
     res.status(200).json(order);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.updateStatusOfOrder = async (req, res, next) => {
+  try {
+    const { statusType, data, value, inventoryId } = req.body;
+    if (!statusType) next(new ErrorHandler(404, errorMessages.ORDER_STATUS_NOT_FOUND));
+
+    const orders = data.map(o => o.order);
+    const response = await Orders.updateMany(
+      {
+        'paymentList._id': { $in: orders.map(order => order?.paymentList?._id) }
+      },
+      {
+      $set: {
+        [`paymentList.$.status.${statusType}`]: value,
+      }
+    }, { new: true });
+
+    await Inventory.updateMany(
+      {
+        _id: ObjectId(inventoryId),
+        'orders.order.paymentList._id': { $in: orders.map(order => order?.paymentList?._id) }
+      },
+      {
+      $set: {
+        [`paymentList.$.status.${statusType}`]: value,
+      }
+    }, { new: true });
+
+    res.status(200).json(response);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));

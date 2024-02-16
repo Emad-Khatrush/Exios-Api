@@ -13,8 +13,9 @@ router.route('/inventory')
 
 router.route('/inventory/orders')
     .get(protect, allowAdminsAndEmployee, inventory.getInventoryOrders)
-    .put(protect, allowAdminsAndEmployee, inventory.addOrdersToTheInventory);
-
+    .put(protect, allowAdminsAndEmployee, inventory.addOrdersToTheInventory)
+    .delete(protect, allowAdminsAndEmployee, inventory.removeOrdersFromInventory);
+    
 router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
 

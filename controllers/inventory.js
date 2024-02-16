@@ -8,7 +8,7 @@ const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.find({}).populate(['createdBy', 'orders.order']);
+    const inventory = await Inventory.find({}).populate(['createdBy', 'orders']);
     res.status(200).json(inventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -18,7 +18,7 @@ module.exports.getInventory = async (req, res, next) => {
 module.exports.createInventory = async (req, res, next) => {
   try {
     const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType } = req.body;
-
+    await Inventory.deleteMany({})
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -53,7 +53,10 @@ module.exports.createInventory = async (req, res, next) => {
 
 module.exports.getSingleInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.findOne({ _id: req.params.id }).populate(['createdBy', 'orders.order']);
+    const inventory = await Inventory.findOne({ _id: req.params.id }).populate([{
+      path: 'orders',
+      select: 'status', // Specify the fields you want to include
+    }]);
     // let inventory = await Inventory.aggregate([
     //   { $match: { _id: ObjectId(req.params.id) } }, // Match the desired inventory document
     //   {
@@ -80,7 +83,7 @@ module.exports.getInventoryOrders = async (req, res, next) => {
 
     const inventory = await Inventory.findOne({ _id: inventoryId });
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    const ids = inventory.orders.map(data => data.order.paymentList?._id);
+    const ids = inventory.orders.map(order => order.paymentList?._id);
 
     const orders = await Orders.aggregate([
       {
@@ -89,17 +92,6 @@ module.exports.getInventoryOrders = async (req, res, next) => {
           preserveNullAndEmptyArrays: true
         }
       },
-      // {
-      //   $match: {
-      //     'paymentList': {
-      //       $not: {
-      //         $elemMatch: {
-      //           "_id": { $in: ids }
-      //         }
-      //       }
-      //     }
-      //   }
-      // },
       {
         $match: {
           $and: [
@@ -133,10 +125,8 @@ module.exports.getInventoryOrders = async (req, res, next) => {
 
 module.exports.addOrdersToTheInventory = async (req, res, next) => {
   try {
-    const { body } = req;
-    const orders = body.map(order => ({
-      order
-    }))
+    const { body, query } = req;
+    const orders = body
 
     const inventory = await Inventory.findOneAndUpdate(
       { _id: req.query.id },
@@ -145,7 +135,28 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
       },
       { safe: true, upsert: true, new: true }
     )
-    .populate(['createdBy', 'orders.order'])
+    .populate(['createdBy', 'orders'])
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    
+    res.status(200).json(inventory);
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.removeOrdersFromInventory = async (req, res, next) => {
+  try {
+    const { body } = req;
+    const orders = body;
+
+    const inventory = await Inventory.findOneAndUpdate(
+      { _id: req.query.id },
+      {
+        $pullAll: { "orders": orders },
+      },
+      { safe: true, upsert: true, new: true }
+    )
+    .populate(['createdBy', 'orders'])
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     
     res.status(200).json(inventory);
