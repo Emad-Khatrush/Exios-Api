@@ -148,57 +148,6 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
   }
 });
 
-app.use(async (req, res) => {
-  if (req.query.send === 'sendAll') {
-    const users = await Users.find({ isCanceled: false });
-
-    for (let index = 0; index < users.length; index++) {
-      const user = users[index];
-
-      try {
-        if (user.phone && `${user.phone}`.length >= 5) {
-          const target = await client.getContactById(validatePhoneNumber(`5552545155@c.us`));
-          if (target && index <= 200) {
-            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 3000 });
-          }
-        }
-      } catch (error) {
-        console.error(error);
-      }
-    }
-
-  // const newClients = await User.aggregate([
-  //   {
-  //     $match: {
-  //       'roles.isClient': true
-  //     }
-  //   },
-  //   {
-  //     $lookup: {
-  //       from: 'orders',
-  //       localField: '_id',
-  //       foreignField: 'user',
-  //       as: 'orders'
-  //     }
-  //   },
-  //   {
-  //     $match: {
-  //       orders: { $size: 0 }
-  //     }
-  //   },
-  //   {
-  //     $sort: {
-  //       createdAt: -1
-  //     }
-  //   }
-  // ])
-  // generatePDF(newClients).catch((error) => {
-  //   console.error(error);
-  // });
-  // res.send(newClients);
-  res.status(404).send("Page Not Found");
-}});
-
 sendMessageQueue.process('resume-jobs', 1, async (job) => {
   // Resume the queue
   await sendMessageQueue.resume();
@@ -211,14 +160,13 @@ sendMessageQueue.process('send-message', 1, async (job) => {
   const { target, index, user } = job.data;
 
   try {
-    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/1000029dsfdfs475_0x0_2000x2000.png'))
+    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/421385174_1008467587598637_7211595498734116857_n.jpg'))
     await client.sendMessage(target.id._serialized, media);
     await client.sendMessage(target.id._serialized, `
-🇦🇪تخفيض حصري للشحن الجوي من الإمارات 🇦🇪
-يسر شركة إكسيوس للشراء والشحن أن تعلن أن سعر الشحن الجوي الجديد هو 4.5 دولار فقط للكيلو! 😱✨
-ندرك أهمية توفير خدمات ذو جودة بأسعار معقولة، ونحن نعمل جاهدين لتحقيق ذلك. نحن نسعى دائمًا لتلبية احتياجات عملائنا الكرام وجعل عملية الشحن مريحة وميسرة.
-فى اكسيوس  نوفر لك الحلول المثالية بأسعار معقولة وخدمة عملاء ممتازة.
-لا تضيع الفرصة! احصل على خدمة الشحن بسعر مذهل قدره 4.5 دولار فقط للكيلو. اتصل بنا الآن أو قم بزيارة موقعنا الإلكتروني لمعرفة المزيد حول خيارات الشحن المتاحة.
+بشري سارة لكل عملائنا الأعزاء عودة الشحن من الصين 🇨🇳
+شركة اكسيوس للشراء والشحن تعود لكم بخدمات الشحن الجوي والبحري والحاويات من الصين الى ليبيا كما تقدم لكم خدمات الشراء بعمولة 3% من قيمة الفاتورة
+ايضا يتوفر لدينا ارسال مندوب الى مصنع في الصين للتنسيق او تفتيش عن البضائع وكله بمصاريف بسيطه
+للراغبين بالشحن عن طريقنا زيارة الموقع وفتح كود وذهاب لقسم 'ابدأ الشحن' من خلاله تبع الخطوات وارسل بضائعك الى مخزننا
 لفتح كود شحن عبر موقع الشركة الاكتروني:💻
 https://www.exioslibya.com/signup
 للاستفسار على الارقام التالية:
@@ -256,6 +204,58 @@ https://wa.me/+218915643265
   return Promise.resolve();
 });
 
+app.use(async (req, res) => {
+  if (req.query.send === 'sendAll') {
+    const users = await Users.find({ isCanceled: false });
+
+    for (let index = 0; index < users.length; index++) {
+      const user = users[index];
+
+      try {
+        if (user.phone && `${user.phone}`.length >= 5) {
+          const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+          if (target) {
+            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
+          }
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+  // const newClients = await User.aggregate([
+  //   {
+  //     $match: {
+  //       'roles.isClient': true
+  //     }
+  //   },
+  //   {
+  //     $lookup: {
+  //       from: 'orders',
+  //       localField: '_id',
+  //       foreignField: 'user',
+  //       as: 'orders'
+  //     }
+  //   },
+  //   {
+  //     $match: {
+  //       orders: { $size: 0 }
+  //     }
+  //   },
+  //   {
+  //     $sort: {
+  //       createdAt: -1
+  //     }
+  //   }
+  // ])
+  // generatePDF(newClients).catch((error) => {
+  //   console.error(error);
+  // });
+  // res.send(newClients);
+  }
+  res.status(404).send("Page Not Found");
+});
+
 // Error Handler
 app.use(errorHandler);
 
@@ -263,4 +263,3 @@ const server = app.listen(process.env.PORT || 8000, () => {
   console.log(`Server working on http://localhost:${process.env.PORT || 8000}/`);
 })
 server.timeout = 300000;
-
