@@ -1,3 +1,2 @@
-2024/02/20-17:59:31.893 7f28 Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Session Storage/MANIFEST-000001
-2024/02/20-17:59:31.893 7f28 Recovering log #7
-2024/02/20-17:59:31.893 7f28 Reusing old log C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Session Storage/000007.log 
+2024/02/21-15:02:46.570 4eac Creating DB C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Session Storage since it was missing.
+2024/02/21-15:02:46.574 4eac Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Session Storage/MANIFEST-000001

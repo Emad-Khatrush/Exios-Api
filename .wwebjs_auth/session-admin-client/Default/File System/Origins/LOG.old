@@ -1,3 +1,2 @@
-2024/02/20-17:59:32.069 7f28 Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\File System\Origins/MANIFEST-000001
-2024/02/20-17:59:32.070 7f28 Recovering log #3
-2024/02/20-17:59:32.070 7f28 Reusing old log C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\File System\Origins/000003.log 
+2024/02/21-15:02:47.670 8e80 Creating DB C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\File System\Origins since it was missing.
+2024/02/21-15:02:47.674 8e80 Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\File System\Origins/MANIFEST-000001
