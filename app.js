@@ -151,7 +151,7 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
-    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).limit(500);
+    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
     console.log("users.length", users.length);
     users.forEach(async (user, index) => {
       try {
@@ -232,16 +232,6 @@ https://wa.me/+218915643265
     `);
     console.log("Message Sent " + index + ' !');
 
-    // Increment the job counter
-    jobCounter++;
-
-    // Check if 50 jobs have been processed
-    if (jobCounter % 2 === 0) {
-      console.log(`Pausing for 1 minute after processing ${jobCounter} jobs`);
-      // Pause the queue for 1 minute
-      await sendMessageQueue.pause(9000);
-      await sendMessageQueue.add('resume-jobs', {}, { delay: 10000 });
-    }
   } catch (error) {
     console.log(`Error processing job, attempt ${index}: ${error?.message}`);
     // Retry the job after a delay of 10 seconds
