@@ -206,7 +206,7 @@ https://wa.me/+218915643265
 
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
-    const users = await Users.find({ isCanceled: false });
+    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).limit(500);
 
     for (let index = 0; index < users.length; index++) {
       const user = users[index];
