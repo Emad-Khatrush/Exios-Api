@@ -33,6 +33,7 @@ const inventory = require('./routes/inventory');
 // Whatsup packages
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
+const user = require('./models/user');
 
 let qrCodeData = null;
 let client;
@@ -148,6 +149,56 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
   }
 });
 
+app.use(async (req, res) => {
+  if (req.query.send === 'sendAll') {
+    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).limit(500);
+    console.log("users.length", users.length);
+    users.forEach(async (user) => {
+      try {
+        if (user.phone && `${user.phone}`.length >= 5) {
+          const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+          if (target) {
+            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
+          }
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    })
+
+  // const newClients = await User.aggregate([
+  //   {
+  //     $match: {
+  //       'roles.isClient': true
+  //     }
+  //   },
+  //   {
+  //     $lookup: {
+  //       from: 'orders',
+  //       localField: '_id',
+  //       foreignField: 'user',
+  //       as: 'orders'
+  //     }
+  //   },
+  //   {
+  //     $match: {
+  //       orders: { $size: 0 }
+  //     }
+  //   },
+  //   {
+  //     $sort: {
+  //       createdAt: -1
+  //     }
+  //   }
+  // ])
+  // generatePDF(newClients).catch((error) => {
+  //   console.error(error);
+  // });
+  // res.send(newClients);
+  }
+  res.status(404).send("Page Not Found");
+});
+
 sendMessageQueue.process('resume-jobs', 1, async (job) => {
   // Resume the queue
   await sendMessageQueue.resume();
@@ -202,58 +253,6 @@ https://wa.me/+218915643265
   await job.delay(5000);
 
   return Promise.resolve();
-});
-
-app.use(async (req, res) => {
-  if (req.query.send === 'sendAll') {
-    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).limit(500);
-
-    for (let index = 0; index < users.length; index++) {
-      const user = users[index];
-
-      try {
-        if (user.phone && `${user.phone}`.length >= 5) {
-          const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
-          if (target) {
-            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
-          }
-        }
-      } catch (error) {
-        console.error(error);
-      }
-    }
-
-  // const newClients = await User.aggregate([
-  //   {
-  //     $match: {
-  //       'roles.isClient': true
-  //     }
-  //   },
-  //   {
-  //     $lookup: {
-  //       from: 'orders',
-  //       localField: '_id',
-  //       foreignField: 'user',
-  //       as: 'orders'
-  //     }
-  //   },
-  //   {
-  //     $match: {
-  //       orders: { $size: 0 }
-  //     }
-  //   },
-  //   {
-  //     $sort: {
-  //       createdAt: -1
-  //     }
-  //   }
-  // ])
-  // generatePDF(newClients).catch((error) => {
-  //   console.error(error);
-  // });
-  // res.send(newClients);
-  }
-  res.status(404).send("Page Not Found");
 });
 
 // Error Handler
