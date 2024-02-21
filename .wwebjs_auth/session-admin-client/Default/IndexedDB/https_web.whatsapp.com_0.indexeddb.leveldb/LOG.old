@@ -1,0 +1,45 @@
+2024/02/20-17:59:32.118 8298 Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2024/02/20-17:59:32.122 8298 Recovering log #15913
+2024/02/20-17:59:32.124 8298 Reusing old log C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/015913.log 
+2024/02/20-17:59:44.022 8298 Compacting 1@2 + 10@3 files
+2024/02/20-17:59:44.072 8298 Generated table #15930@2: 27333 keys, 2217889 bytes
+2024/02/20-17:59:44.094 8298 Generated table #15931@2: 4331 keys, 2122550 bytes
+2024/02/20-17:59:44.112 8298 Generated table #15932@2: 3060 keys, 2117296 bytes
+2024/02/20-17:59:44.130 8298 Generated table #15933@2: 2255 keys, 2121867 bytes
+2024/02/20-17:59:44.164 8298 Generated table #15934@2: 33057 keys, 2159036 bytes
+2024/02/20-17:59:44.230 8298 Generated table #15935@2: 94680 keys, 2245159 bytes
+2024/02/20-17:59:44.315 8298 Generated table #15936@2: 93476 keys, 2243912 bytes
+2024/02/20-17:59:44.421 8298 Generated table #15937@2: 93149 keys, 2242571 bytes
+2024/02/20-17:59:44.509 8298 Generated table #15938@2: 93080 keys, 2243252 bytes
+2024/02/20-17:59:44.582 8298 Generated table #15939@2: 92965 keys, 2242700 bytes
+2024/02/20-17:59:44.583 8298 Generated table #15940@2: 40 keys, 1307 bytes
+2024/02/20-17:59:44.583 8298 Compacted 1@2 + 10@3 files => 21957539 bytes
+2024/02/20-17:59:44.583 8298 compacted to: files[ 0 0 1 38 0 0 0 ]
+2024/02/20-17:59:55.553 6d4c Compacting 1@2 + 7@3 files
+2024/02/20-17:59:55.627 6d4c Generated table #15941@2: 93164 keys, 2242695 bytes
+2024/02/20-17:59:55.692 6d4c Generated table #15942@2: 93135 keys, 2243540 bytes
+2024/02/20-17:59:55.762 6d4c Generated table #15943@2: 93019 keys, 2242597 bytes
+2024/02/20-17:59:55.844 6d4c Generated table #15944@2: 93232 keys, 2243297 bytes
+2024/02/20-17:59:55.922 6d4c Generated table #15945@2: 93120 keys, 2242381 bytes
+2024/02/20-17:59:55.943 6d4c Generated table #15946@2: 28454 keys, 690392 bytes
+2024/02/20-17:59:55.943 6d4c Compacted 1@2 + 7@3 files => 11904902 bytes
+2024/02/20-17:59:55.944 6d4c compacted to: files[ 0 0 0 37 0 0 0 ]
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15893
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15894
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15895
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15896
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15897
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15898
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15899
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15900
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15901
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15902
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15903
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15907
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15908
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15909
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15910
+2024/02/20-17:59:55.944 6d4c Delete type=2 #15911
+2024/02/20-17:59:55.945 6d4c Delete type=2 #15912
+2024/02/20-17:59:55.945 6d4c Delete type=2 #15916
+2024/02/20-17:59:55.945 6d4c Delete type=2 #15917

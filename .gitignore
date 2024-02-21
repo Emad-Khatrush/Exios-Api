@@ -6,8 +6,6 @@
 .pnp.js
 .env.production
 .env
-.wwebjs_auth
-.wwebjs_cache
 
 # testing
 /coverage
