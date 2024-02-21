@@ -153,7 +153,7 @@ app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
     const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).limit(500);
     console.log("users.length", users.length);
-    users.forEach(async (user) => {
+    users.forEach(async (user, index) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
