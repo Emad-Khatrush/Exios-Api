@@ -151,7 +151,7 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
-    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
+    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).skip(505);
     console.log("users.length", users.length);
     users.forEach(async (user, index) => {
       try {
