@@ -151,9 +151,33 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
-    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 }).skip(505);
-    console.log("users.length", users.length);
-    users.forEach(async (user, index) => {
+    const newClients = await Users.aggregate([
+      {
+        $match: {
+          'roles.isClient': true
+        }
+      },
+      {
+        $lookup: {
+          from: 'orders',
+          localField: '_id',
+          foreignField: 'user',
+          as: 'orders'
+        }
+      },
+      {
+        $match: {
+          orders: { $size: 0 }
+        }
+      },
+      {
+        $sort: {
+          createdAt: -1
+        }
+      }
+    ])
+    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
+    newClients.forEach(async (user, index) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
@@ -165,37 +189,12 @@ app.use(async (req, res) => {
         console.error(error);
       }
     })
-
-  // const newClients = await User.aggregate([
-  //   {
-  //     $match: {
-  //       'roles.isClient': true
-  //     }
-  //   },
-  //   {
-  //     $lookup: {
-  //       from: 'orders',
-  //       localField: '_id',
-  //       foreignField: 'user',
-  //       as: 'orders'
-  //     }
-  //   },
-  //   {
-  //     $match: {
-  //       orders: { $size: 0 }
-  //     }
-  //   },
-  //   {
-  //     $sort: {
-  //       createdAt: -1
-  //     }
-  //   }
-  // ])
   // generatePDF(newClients).catch((error) => {
   //   console.error(error);
   // });
   // res.send(newClients);
   }
+
   res.status(404).send("Page Not Found");
 });
 
@@ -211,24 +210,32 @@ sendMessageQueue.process('send-message', 1, async (job) => {
   const { target, index, user } = job.data;
 
   try {
-    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/421385174_1008467587598637_7211595498734116857_n.jpg'))
+    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/418898584_696722785907535_1872887016293814474_n.jpg'))
     await client.sendMessage(target.id._serialized, media);
     await client.sendMessage(target.id._serialized, `
-بشري سارة لكل عملائنا الأعزاء عودة الشحن من الصين 🇨🇳
-شركة اكسيوس للشراء والشحن تعود لكم بخدمات الشحن الجوي والبحري والحاويات من الصين الى ليبيا كما تقدم لكم خدمات الشراء بعمولة 3% من قيمة الفاتورة
-ايضا يتوفر لدينا ارسال مندوب الى مصنع في الصين للتنسيق او تفتيش عن البضائع وكله بمصاريف بسيطه
-للراغبين بالشحن عن طريقنا زيارة الموقع وفتح كود وذهاب لقسم 'ابدأ الشحن' من خلاله تبع الخطوات وارسل بضائعك الى مخزننا
-لفتح كود شحن عبر موقع الشركة الاكتروني:💻
-https://www.exioslibya.com/signup
+تقدم شركة اكسيوس للشراء والشحن من الصين الى ليبيا
+عرض حصري للزبائن الذين لم يتعاملو معنا من قبل وهو:
+1- كوبون 200 دولار على فاتورة شراء بعمولة 1% فقط
+2- تخفيض حصري لاول شحنة لك شحن بحري او جوي
+3- استشارات مجانية لتقديم لك الحلول في الصين
+4- تخفيض حصري لحاويات 20/40 قدم من الصين
+والمزيد من العروض مع اكسيوس
+لكي تستطيع الاستفادة من العرض وحجزه يجب الرد على هذه الرسالة وتأكيد على حجز هذا العرض قبل تاريخ 03-03-2024 لكي تضمن استمرارية العرض معك
+
 للاستفسار على الارقام التالية:
-مندوب فرع بنغازي :
-0919734019 هاتف وواتس اب
-https://wa.me/+218919734019 
-0919078031 هاتف وواتس اب
-https://wa.me/+218919078031
-مندوب طرابلس:
-0915643265 هاتف وواتس اب
-https://wa.me/+218915643265
+مكتب طرابلس 0915643265 هاتف وواتس اب
+موقع فرع طرابلس عبر خرائط قوقل:
+https://maps.app.goo.gl/bNLewHNv1edSZnmE9
+
+مكتب بنغازي 0919734019 هاتف وواتس اب
+موقع فرع بنغازي عبر خرائط قوقل:
+https://maps.app.goo.gl/h6bafxYrm5edNXL97
+
+مواعيد الدوام: من ساعة 11 صباحا الى 5 مساءا
+
+https://www.exioslibya.com/login
+شركة اكسيوس للشراء والشحن
+تحياتي لكم
     `);
     console.log("Message Sent " + index + ' !');
 
