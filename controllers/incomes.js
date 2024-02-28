@@ -93,7 +93,6 @@ module.exports.getIncome= async (req, res, next) => {
 }
 
 module.exports.updateIncome = async (req, res, next) => {
-  console.log(req.body);
   const { cost, currency, description, office } = req.body.income;
   try {
     const oldIncome = await Incomes.findOne({ _id: req.params.id });

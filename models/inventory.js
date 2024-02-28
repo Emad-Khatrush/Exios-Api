@@ -3,22 +3,7 @@ const Schema = mongoose.Schema;
 
 const inventorySchema = new Schema({
   createdBy: { type: Schema.Types.ObjectId, ref: 'User'},
-  orders: [
-    {
-      type: Schema.Types.ObjectId, 
-      ref: 'Order',
-
-      // Extra Fields
-      status: {
-        mark: {
-          type: String,
-          enum: ['found', 'missing', 'unknown'],
-          default: 'found'
-        },
-        missingDescription: String
-      }
-    }
-  ],
+  orders: [],
   attachments: [{
     filename: String,
     path: String,
@@ -57,7 +42,7 @@ const inventorySchema = new Schema({
   inventoryType: {
     type: String,
     required: true,
-    enum: ['inventoryGoods', 'shippingVoyage'],
+    enum: ['inventoryGoods', 'shippingVoyage', 'warehouseInventory'],
     default: 'inventoryGoods'
   }
 },

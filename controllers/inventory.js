@@ -4,11 +4,14 @@ const ErrorHandler = require('../utils/errorHandler');
 const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { errorMessages } = require("../constants/errorTypes");
 const mongodb = require('mongodb');
+const Activities = require("../models/activities");
 const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.find({}).populate(['createdBy', 'orders']);
+    const inventory = await Inventory.find({ inventoryType: 'inventoryGoods' }).sort({ createdAt: -1 }).populate(['createdBy', 'orders']);
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
     res.status(200).json(inventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -18,7 +21,6 @@ module.exports.getInventory = async (req, res, next) => {
 module.exports.createInventory = async (req, res, next) => {
   try {
     const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType } = req.body;
-    await Inventory.deleteMany({})
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -53,23 +55,32 @@ module.exports.createInventory = async (req, res, next) => {
 
 module.exports.getSingleInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.findOne({ _id: req.params.id }).populate([{
-      path: 'orders',
-      select: 'status', // Specify the fields you want to include
-    }]);
-    // let inventory = await Inventory.aggregate([
-    //   { $match: { _id: ObjectId(req.params.id) } }, // Match the desired inventory document
-    //   {
-    //     $unwind: {
-    //       path: '$orders.order.paymentList',
-    //       preserveNullAndEmptyArrays: true,
-    //     },
-    //   },
-    // ]);
-
-    // inventory = await Inventory.populate(inventory, [{ path: "createdBy" }, { path: "orders.order" }]);
+    const inventory = await Inventory.findOne({ _id: req.params.id }).populate(['orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    
+    const ids = inventory.orders.map(order => ObjectId(order.paymentList?._id));
+
+    let orders = await Orders.aggregate([
+      {
+        $unwind: {
+          path: '$paymentList', 
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $match: {
+          'paymentList._id': { $in: ids }
+        }
+      },
+      {
+        $sort: {
+          orderId: -1
+        }
+      }
+    ]);
+    orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
+
+    inventory.orders = orders;
+
     res.status(200).json(inventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -103,7 +114,9 @@ module.exports.getInventoryOrders = async (req, res, next) => {
                 { orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
                 { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
                 { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
-                { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }
+                { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
+                { 'paymentList.deliveredPackages.receiptNo': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+                { 'paymentList.deliveredPackages.locationPlace': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
               ]
             }
           ]
@@ -131,7 +144,11 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
     const inventory = await Inventory.findOneAndUpdate(
       { _id: req.query.id },
       {
-        $push: { "orders": orders },
+        $push: { 
+          "orders": { 
+              $each: orders.map(orderArray => orderArray)
+          }
+        },
       },
       { safe: true, upsert: true, new: true }
     )
@@ -152,13 +169,92 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
     const inventory = await Inventory.findOneAndUpdate(
       { _id: req.query.id },
       {
-        $pullAll: { "orders": orders },
+        $pull: { 
+          orders: { "paymentList._id": { $in: orders.map(order => order.paymentList._id) } } 
+        },
       },
       { safe: true, upsert: true, new: true }
     )
     .populate(['createdBy', 'orders'])
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     
+    res.status(200).json(inventory);
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.uploadFiles= async (req, res, next) => {
+  const { id } = req.body;
+
+  const images = [];
+  const changedFields = [];
+
+  if (req.files) {
+    for (let i = 0; i < req.files.length; i++) {
+      const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-inventory");
+      images.push({
+        path: uploadedImg.publicUrl,
+        filename: uploadedImg.filename,
+        folder: uploadedImg.folder,
+        bytes: uploadedImg.bytes,
+        fileType: req.files[i].mimetype
+      });
+      changedFields.push({
+        label: 'image',
+        value: 'image',
+        changedFrom: '',
+        changedTo: uploadedImg.publicUrl
+      })
+    }
+  }
+  
+  const inventory = await Inventory.findByIdAndUpdate(id, {
+    $push: { "attachments": images },
+  }, { safe: true, upsert: true });
+  
+  await Activities.create({
+    user: req.user,
+    details: {
+      path: '/inventory',
+      status: 'added',
+      type: 'inventory',
+      actionName: 'image',
+      actionId: inventory._id
+    },
+    changedFields
+  })
+  res.status(200).json(inventory)
+}
+
+module.exports.getWarehouseInventory = async (req, res, next) => {
+  try {
+    const { office } = req.params;
+    const inventory = await Inventory.find({ inventoryType: 'warehouseInventory', inventoryPlace: office }).sort({ createdAt: -1 }).populate(['createdBy', 'orders']);
+    if (inventory.length === 0) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    const ids = (inventory[0].orders || []).map(order => ObjectId(order.paymentList?._id));
+
+    let orders = await Orders.aggregate([
+      {
+        $unwind: {
+          path: '$paymentList', 
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $match: {
+          'paymentList._id': { $in: ids }
+        }
+      },
+      {
+        $sort: {
+          orderId: -1
+        }
+      }
+    ]);
+    orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
+    inventory[0].orders = orders;
     res.status(200).json(inventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));

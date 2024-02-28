@@ -553,7 +553,21 @@ module.exports.updateOrder = async (req, res, next) => {
         new: true
       });
     }
-    
+
+    // Remove received goods from the warehouse
+    if (req.body?.paymentList?.length > 0) {
+      const receivedOrders = req.body.paymentList.filter(orderPackage => orderPackage.status.received);
+      await Inventory.updateMany(
+        { inventoryType: 'warehouseInventory' },
+        {
+          $pull: { 
+            orders: { "paymentList._id": { $in: receivedOrders.map(orderPackage => orderPackage._id) } } 
+          },
+        },
+        { safe: true, upsert: true, new: true }
+      )
+    }
+
     // add activity to the order
     const changedFields = [];
     if (Object.keys(req.body).length > 3) {
@@ -573,6 +587,38 @@ module.exports.updateOrder = async (req, res, next) => {
       },
       changedFields
     });
+    res.status(200).json(newOrder);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.updateSinglePackage = async (req, res, next) => {
+  const id = req.params.id;
+  if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
+  try {
+    let user;
+    if (!!req.body.customerId) {
+      user = await Users.findOne({ customerId: req.body.customerId });
+      if (!user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
+    }
+
+    let oldOrder = await Orders.findOne({ _id: String(id) });
+    const index = oldOrder.paymentList.findIndex(orderPackage => ObjectId(req.body.paymentList._id).equals(ObjectId(orderPackage._id)));
+    if (index !== -1) {
+      oldOrder.paymentList[index] = req.body.paymentList;
+    }
+    const update = {
+      ...req.body,
+      paymentList: oldOrder.paymentList
+    }
+
+    if (user) update.user = user;
+    const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
+    if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
     res.status(200).json(newOrder);
   } catch (error) {
     console.log(error);
@@ -829,25 +875,36 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
     const { statusType, data, value, inventoryId } = req.body;
     if (!statusType) next(new ErrorHandler(404, errorMessages.ORDER_STATUS_NOT_FOUND));
 
-    const orders = data.map(o => o.order);
+    const orders = data;
     const response = await Orders.updateMany(
       {
-        'paymentList._id': { $in: orders.map(order => order?.paymentList?._id) }
+        orderId: { $in: orders.map(order => order?.orderId) },
+        'paymentList.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.paymentList?.deliveredPackages?.trackingNumber) }
       },
       {
-      $set: {
-        [`paymentList.$.status.${statusType}`]: value,
+        $set: {
+          'paymentList.$[elem].status.arrived': true,
+          [`paymentList.$[elem].status.${statusType}`]: value
+        }
+      },
+      {
+        arrayFilters: [
+          { 'elem.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.paymentList?.deliveredPackages?.trackingNumber) } },
+        ],
+        multi: true,
+        new: true
       }
-    }, { new: true });
-
+    );
+    
     await Inventory.updateMany(
       {
         _id: ObjectId(inventoryId),
-        'orders.order.paymentList._id': { $in: orders.map(order => order?.paymentList?._id) }
+        'orders.paymentList._id': { $in: orders.map(order => order?.paymentList?._id) }
       },
       {
       $set: {
-        [`paymentList.$.status.${statusType}`]: value,
+        [`orders.$.paymentList.status.arrived`]: true,
+        [`orders.$.paymentList.status.${statusType}`]: value,
       }
     }, { new: true });
 

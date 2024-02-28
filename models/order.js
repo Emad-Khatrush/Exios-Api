@@ -141,14 +141,6 @@ const orderSchema = new Schema({
     total: Number,
     default: 0
   },
-  status: {
-    mark: {
-      type: String,
-      enum: ['found', 'missing', 'unknown'],
-      default: 'found'
-    },
-    missingDescription: String
-  },
   paymentList: [{
     link: {
       type: String,
@@ -172,6 +164,12 @@ const orderSchema = new Schema({
         default: false
       }
     },
+    mark: {
+      type: String,
+      enum: ['found', 'missing', 'unknown'],
+      default: 'found'
+    },
+    missingDescription: String,
     settings: {
       visableForClient: {
         type: Boolean,
@@ -193,6 +191,7 @@ const orderSchema = new Schema({
         type: Date,
         default: Date.now
       },
+      locationPlace: String,
       trackingNumber: {
         type: String,
         default: ''

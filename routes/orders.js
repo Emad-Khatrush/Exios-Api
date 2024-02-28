@@ -51,6 +51,9 @@ router.route('/order/:id')
       .get(protect, allowAdminsAndEmployee, orders.getOrder)
       .put(protect, allowAdminsAndEmployee, orders.updateOrder);
 
+router.route('/order/:id/package')
+      .put(protect, allowAdminsAndEmployee, orders.updateSinglePackage);
+      
 router.route('/order/:id/view')
       .get(orders.getPublicOrder)
 
