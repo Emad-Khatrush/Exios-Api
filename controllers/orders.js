@@ -895,6 +895,29 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
         new: true
       }
     );
+
+    await Orders.updateMany(
+      {
+        orderId: { $in: orders.map(order => order?.orderId) },
+      },
+      [
+        {
+          $set: {
+            orderStatus: {
+              $cond: {
+                if: { $eq: ['$isPayment', true] },
+                then: 4,
+                else: 3
+              }
+            }
+          }
+        }
+      ],
+      {
+        multi: true,
+        new: true
+      }
+    );
     
     await Inventory.updateMany(
       {
