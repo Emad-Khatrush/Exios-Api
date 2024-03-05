@@ -151,33 +151,33 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 
 app.use(async (req, res) => {
   if (req.query.send === 'sendAll') {
-    const newClients = await Users.aggregate([
-      {
-        $match: {
-          'roles.isClient': true
-        }
-      },
-      {
-        $lookup: {
-          from: 'orders',
-          localField: '_id',
-          foreignField: 'user',
-          as: 'orders'
-        }
-      },
-      {
-        $match: {
-          orders: { $size: 0 }
-        }
-      },
-      {
-        $sort: {
-          createdAt: -1
-        }
-      }
-    ])
+    // const newClients = await Users.aggregate([
+    //   {
+    //     $match: {
+    //       'roles.isClient': true
+    //     }
+    //   },
+    //   {
+    //     $lookup: {
+    //       from: 'orders',
+    //       localField: '_id',
+    //       foreignField: 'user',
+    //       as: 'orders'
+    //     }
+    //   },
+    //   {
+    //     $match: {
+    //       orders: { $size: 0 }
+    //     }
+    //   },
+    //   {
+    //     $sort: {
+    //       createdAt: -1
+    //     }
+    //   }
+    // ])
     const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
-    newClients.forEach(async (user, index) => {
+    users.forEach(async (user, index) => {
       try {
         if (user.phone && `${user.phone}`.length >= 5) {
           const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
@@ -210,17 +210,18 @@ sendMessageQueue.process('send-message', 1, async (job) => {
   const { target, index, user } = job.data;
 
   try {
-    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/418898584_696722785907535_1872887016293814474_n.jpg'))
+    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/429677647_726284589618021_7635df487361145097080_n.jpg'))
     await client.sendMessage(target.id._serialized, media);
     await client.sendMessage(target.id._serialized, `
-تقدم شركة اكسيوس للشراء والشحن من الصين الى ليبيا
-عرض حصري للزبائن الذين لم يتعاملو معنا من قبل وهو:
-1- كوبون 200 دولار على فاتورة شراء بعمولة 1% فقط
-2- تخفيض حصري لاول شحنة لك شحن بحري او جوي
-3- استشارات مجانية لتقديم لك الحلول في الصين
-4- تخفيض حصري لحاويات 20/40 قدم من الصين
-والمزيد من العروض مع اكسيوس
-لكي تستطيع الاستفادة من العرض وحجزه يجب الرد على هذه الرسالة وتأكيد على حجز هذا العرض قبل تاريخ 03-03-2024 لكي تضمن استمرارية العرض معك
+الى كل زبائننا الكرام،
+تعلن شركة اكسيوس انها بتاريخ 07-03-2024 بموافق الخميس القادم عن تغيير عنوان مخزننا في الصين الى عنوان جديد في مدينة فوشان.
+حيث تأكد لكم شركة اكسيوس انها ستقدم لكم افضل الخدمات من ناحية:
+1- تصوير صناديق البضائع التي وصلت وتحميلها على منظومتنا.
+2- خدمة تفتيش داخل الصندوق والتقاط صور من بضائع من الداخل.
+3- معرفة وزن او حجم الشحنه فور وصولها الى المخزن.
+4- متابعة الشحنة الى ان تصل الى ليبيا وتكون جاهزه للاستلام.
+والعديد من الخدمات الاخرى التي ستساعد زبائننا على الحصول على جوده لتطوير عمله ونكون معه شركاء في نجاحه.
+سيتم مشاركة العنوان على الموقع الاكتروني ونشره في تاريخ المذكور اعلاه
 
 للاستفسار على الارقام التالية:
 مكتب طرابلس 0915643265 هاتف وواتس اب
