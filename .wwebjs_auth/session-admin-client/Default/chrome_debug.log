@@ -1,7 +1,12 @@
-[0306/191046.532:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Feature xr-spatial-tracking's parameters are ignored.", source:  (0)
-[0306/191046.532:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'ambient-light-sensor'.", source:  (0)
-[0306/191046.532:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'.", source:  (0)
-[0306/191046.532:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'gamepad'.", source:  (0)
-[0306/191046.533:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'local-fonts'.", source:  (0)
-[0306/191046.533:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'window-management'.", source:  (0)
-[0306/191046.533:INFO:CONSOLE(0)] "Error with Permissions-Policy-Report-Only header: Feature picture-in-picture's parameters are ignored.", source:  (0)
+[0306/191550.950:ERROR:block_files.cc(440)] Failed to open C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Cache\Cache_Data\data_3
+[0306/191550.951:ERROR:cache_util_win.cc(20)] Unable to move the cache: Access is denied. (0x5)
+[0306/191550.952:ERROR:cache_util.cc(146)] Unable to move cache folder C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Cache\Cache_Data to C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\session-admin-client\Default\Cache\old_Cache_Data_000
+[0306/191550.952:ERROR:disk_cache.cc(192)] Unable to create cache
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Feature xr-spatial-tracking's parameters are ignored.", source:  (0)
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'ambient-light-sensor'.", source:  (0)
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'.", source:  (0)
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'gamepad'.", source:  (0)
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'local-fonts'.", source:  (0)
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy header: Unrecognized feature: 'window-management'.", source:  (0)
+[0306/191551.155:INFO:CONSOLE(0)] "Error with Permissions-Policy-Report-Only header: Feature picture-in-picture's parameters are ignored.", source:  (0)
+[0306/191604.005:INFO:CONSOLE(2)] "Uncaught (in promise) [object Object]", source: https://web.whatsapp.com/vendor1~app.6bd0798bf8d46303b447.js (2)
