@@ -8,6 +8,7 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
 const { generatePDF } = require("./utils/sender");
+const numbers = require("./utils/data");
 const { validatePhoneNumber, imageToBase64 } = require('./utils/messages');
 const Queue = require('bull');
 
@@ -150,6 +151,7 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 });
 
 app.use(async (req, res) => {
+  console.log(numbers.length);
   if (req.query.send === 'sendAll') {
     // const newClients = await Users.aggregate([
     //   {
@@ -176,19 +178,32 @@ app.use(async (req, res) => {
     //     }
     //   }
     // ])
-    const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
-    users.forEach(async (user, index) => {
-      try {
-        if (user.phone && `${user.phone}`.length >= 5) {
-          const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
-          if (target) {
-            await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
-          }
+    // const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
+    // users.forEach(async (user, index) => {
+    //   try {
+    //     if (user.phone && `${user.phone}`.length >= 5) {
+    //       const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+    //       if (target) {
+    //         await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
+    //       }
+    //     }
+    //   } catch (error) {
+    //     console.error(error);
+    //   }
+    // })
+
+  numbers.forEach(async (phone, index) => {
+    try {
+      if (phone && `${phone}`.length >= 5) {
+        const target = await client.getContactById(validatePhoneNumber(`${phone}@c.us`));
+        if (target) {
+          await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
         }
-      } catch (error) {
-        console.error(error);
       }
-    })
+    } catch (error) {
+      console.error(error);
+    }
+  })
   // generatePDF(newClients).catch((error) => {
   //   console.error(error);
   // });
@@ -220,7 +235,8 @@ sendMessageQueue.process('send-message', 1, async (job) => {
 2- تصوير البضائع التي وصلت وتحميل صورها على منظومتنا.
 3- خدمة تفتيش البضائع والتقاط صور البضائع في الداخل.
 4- معرفة وزن او حجم الشحنه فور وصولها الى المخزن.
-5- متابعة الشحنة الى ان تصل الى ليبيا وتكون جاهزه للاستلام.
+5- خدمات شراء البضائع من المواقع، حوالات بنكية SWIFT
+6- متابعة الشحنة الى ان تصل الى ليبيا وتكون جاهزه للاستلام.
 
 عنوان مخزن الجديد
 Exios Foshan Warehouse
@@ -232,7 +248,9 @@ Exios Foshan Warehouse
 الشحن البحري: 170 دولار للمتر المكعب الواحد
     
 حيث تم تحديث العنوان الجديد على موقعنا الاكتروني، فعلى الراغبين بالشحن عن طريقنا زيارة الموقع وفتح كود وذهاب لقسم 'ابدأ الشحن' من خلاله تبع الخطوات وارسل بضائعك الى مخزننا.
-    
+💻*ليس لديك حساب؟ ادخل على رابط التالي وسجل حساب لبدأ الشحن الان*
+https://www.exioslibya.com/signup
+
 للاستفسار على الارقام التالية:
 مكتب طرابلس 0915643265 هاتف وواتس اب
 موقع فرع طرابلس عبر خرائط قوقل:
