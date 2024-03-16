@@ -35,6 +35,7 @@ const inventory = require('./routes/inventory');
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
 const user = require('./models/user');
+const { isAdmin, protect } = require('./middleware/check-auth');
 
 let qrCodeData = null;
 let client;
@@ -150,66 +151,66 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
   }
 });
 
-app.use(async (req, res) => {
-  console.log(numbers.length);
-  if (req.query.send === 'sendAll') {
-    // const newClients = await Users.aggregate([
-    //   {
-    //     $match: {
-    //       'roles.isClient': true
-    //     }
-    //   },
-    //   {
-    //     $lookup: {
-    //       from: 'orders',
-    //       localField: '_id',
-    //       foreignField: 'user',
-    //       as: 'orders'
-    //     }
-    //   },
-    //   {
-    //     $match: {
-    //       orders: { $size: 0 }
-    //     }
-    //   },
-    //   {
-    //     $sort: {
-    //       createdAt: -1
-    //     }
-    //   }
-    // ])
-    // const users = await Users.find({ isCanceled: false }).sort({ createdAt: -1 });
-    // users.forEach(async (user, index) => {
-    //   try {
-    //     if (user.phone && `${user.phone}`.length >= 5) {
-    //       const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
-    //       if (target) {
-    //         await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
-    //       }
-    //     }
-    //   } catch (error) {
-    //     console.error(error);
-    //   }
-    // })
+app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
+  const { imgUrl, content, target, testMode } = req.body
+  try {
 
-  numbers.forEach(async (phone, index) => {
-    try {
-      if (phone && `${phone}`.length >= 5) {
-        const target = await client.getContactById(validatePhoneNumber(`${phone}@c.us`));
+    if (testMode) {
+      const target = await client.getContactById(validatePhoneNumber(`00905535728209@c.us`));
+      if (target) {
+        await sendMessageQueue.add('send-message', { target, index: 1, imgUrl, content }, { delay: 1 });
+        return res.status(200).json({ success: true, message: 'Message sent successfully' });
+      }
+    }
+
+    let users;
+    if (target === 'onlyNewClients') {
+      users = await Users.aggregate([
+        {
+          $match: {
+            'roles.isClient': true
+          }
+        },
+        {
+          $lookup: {
+            from: 'orders',
+            localField: '_id',
+            foreignField: 'user',
+            as: 'orders'
+          }
+        },
+        {
+          $match: {
+            orders: { $size: 0 }
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
+          }
+        }
+      ])
+    } else {
+      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).sort({ createdAt: -1 });
+    }
+    let index = 0;
+    for (const user of users) {
+      if (user.phone && `${user.phone}`.length >= 5) {
+        const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
-          await sendMessageQueue.add('send-message', { target, user, index: index + 1 }, { delay: index * 10000 });
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content }, { delay: index * 10000 });
+          index++;
         }
       }
-    } catch (error) {
-      console.error(error);
     }
-  })
-  // generatePDF(newClients).catch((error) => {
-  //   console.error(error);
-  // });
-  // res.send(newClients);
+    return res.status(200).json({ success: true, message: 'Messages sent successfully' });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
   }
+});
 
+app.use(async (req, res) => {
   res.status(404).send("Page Not Found");
 });
 
@@ -222,56 +223,20 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
 let jobCounter = 0;
 
 sendMessageQueue.process('send-message', 1, async (job) => {
-  const { target, index, user } = job.data;
+  const { target, index, imgUrl, content } = job.data;
 
   try {
-    const media = new MessageMedia('image/png', await imageToBase64('https://storage.googleapis.com/exios-bucket/final-1.jpg'))
-    await client.sendMessage(target.id._serialized, media);
-    await client.sendMessage(target.id._serialized, `
-سعياً منا لتقديم الأفضل دائما والتقدم و تسهيل كافة إجراءات الشحن واختصار للكثير من الوقت .
-نعلن لكافة عملائنا الأعزاء عن افتتاح مخزننا الجديد فى مدينة فوشان بالصين 🇨🇳
-سيقدم المخزن الجديد خدمات ومنها: 
-1- الشحن الجوي والشحن البحري المشترك وحاويات.
-2- تصوير البضائع التي وصلت وتحميل صورها على منظومتنا.
-3- خدمة تفتيش البضائع والتقاط صور البضائع في الداخل.
-4- معرفة وزن او حجم الشحنه فور وصولها الى المخزن.
-5- خدمات شراء البضائع من المواقع، حوالات بنكية SWIFT
-6- متابعة الشحنة الى ان تصل الى ليبيا وتكون جاهزه للاستلام.
-
-عنوان مخزن الجديد
-Exios Foshan Warehouse
-广东省佛山市南海区里水镇科顺路6号 威微物流（Exios仓)  周映 18711284724
-*لا تنس وضع طريقة الشحن وكودك في العنوان*
-
-اسعار الشحن الان
-الشحن الجوي: 10 دولار للكيلو
-الشحن البحري: 170 دولار للمتر المكعب الواحد
-    
-حيث تم تحديث العنوان الجديد على موقعنا الاكتروني، فعلى الراغبين بالشحن عن طريقنا زيارة الموقع وفتح كود وذهاب لقسم 'ابدأ الشحن' من خلاله تبع الخطوات وارسل بضائعك الى مخزننا.
-💻*ليس لديك حساب؟ ادخل على رابط التالي وسجل حساب لبدأ الشحن الان*
-https://www.exioslibya.com/signup
-
-للاستفسار على الارقام التالية:
-مكتب طرابلس 0915643265 هاتف وواتس اب
-موقع فرع طرابلس عبر خرائط قوقل:
-https://maps.app.goo.gl/bNLewHNv1edSZnmE9
-
-مكتب بنغازي 0919734019 هاتف وواتس اب
-موقع فرع بنغازي عبر خرائط قوقل:
-https://maps.app.goo.gl/h6bafxYrm5edNXL97
-
-مواعيد الدوام: من ساعة 11 صباحا الى 5 مساءا
-
-https://www.exioslibya.com/login
-شركة اكسيوس للشراء والشحن
-تحياتي لكم
-    `);
+    if (imgUrl) {
+      const media = new MessageMedia('image/png', await imageToBase64(imgUrl))
+      await client.sendMessage(target.id._serialized, media);
+    }
+    await client.sendMessage(target.id._serialized, content);
     console.log("Message Sent " + index + ' !');
 
   } catch (error) {
     console.log(`Error processing job, attempt ${index}: ${error?.message}`);
     // Retry the job after a delay of 10 seconds
-    await sendMessageQueue.add('send-message', { target, user, index }, { delay: index * 30000 });
+    await sendMessageQueue.add('send-message', { target, index, imgUrl, content }, { delay: index * 30000 });
     return Promise.resolve();
   }
 

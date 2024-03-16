@@ -201,6 +201,10 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
       { $unwind: '$paymentList' },
       { $match: { $or: [ { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } } ] } }
     ]
+  } else if (searchType === 'phoneNumber') {
+    query = [
+      { $match: { $or: [ { 'customerInfo.phone': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } } ] } }
+    ]
   } else if (searchType === 'receiptAndContainer') {
     query = [
       { $unwind: '$paymentList' },
