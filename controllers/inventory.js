@@ -140,9 +140,7 @@ module.exports.getInventoryOrders = async (req, res, next) => {
 
 module.exports.addOrdersToTheInventory = async (req, res, next) => {
   try {
-    const { body, query } = req;
-    const paymentListIds = body.map(id => ObjectId(id));
-
+    const paymentListIds = req.body.map(order => ObjectId(order?.paymentList?._id));
     const orders = await Orders.aggregate([
       {
         $unwind: '$paymentList'
@@ -166,6 +164,7 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
       { safe: true, upsert: true, new: true }
     )
     .populate(['createdBy', 'orders'])
+
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     const ids = inventory.orders.map(order => ObjectId(order.paymentList?._id));
     
