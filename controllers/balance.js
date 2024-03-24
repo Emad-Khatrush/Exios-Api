@@ -163,6 +163,9 @@ module.exports.createPaymentHistory = async (req, res, next) => {
     if (existingBalance.amount === 0) {
       return next(new ErrorHandler(400, errorMessages.BALANCE_ALREADY_PAID));
     }
+    if (Number(rate) === 0 && currency === 'LYD' && existingBalance.currency === 'USD') {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_RATE_ZERO));
+    }
 
     const files = [];
     if (req.files) {
@@ -252,6 +255,129 @@ module.exports.updateCompanyBalance = async (req, res, next) => {
     if (!balance) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
     
     res.status(200).json(balance);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+module.exports.searchForDebt = async (req, res, next) => {
+  try {
+    const { searchValue } = req.query;
+    let query = [
+      {
+        $addFields: {
+          'owner.fullName': { $concat: ['$owner.firstName', ' ', '$owner.lastName'] }
+        }
+      },
+      {
+        $match: {
+          balanceType: 'debt',
+          $or: [
+            { 'order.orderId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
+            { 'owner.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
+            { 'owner.phone': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } },
+            { 'owner.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }
+          ]
+        }
+      }
+    ];
+
+    // populate user data
+    query.unshift(
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'owner',
+        foreignField: '_id',
+        as: 'owner'
+      }
+    },
+    {
+      $lookup: {
+        from: 'orders',
+        localField: 'order',
+        foreignField: '_id',
+        as: 'order'
+      }
+    },
+    {
+      $unwind: '$owner'
+    },
+    {
+      $unwind: {
+        path: '$order',
+        preserveNullAndEmptyArrays: true // Preserve documents if order is empty or missing
+      }
+    })
+
+    query.push(
+      {
+        $group: {
+          _id: '$owner',
+          debts: { $push: '$$ROOT' } // Push each document into the debts array
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          results: {
+            $push: {
+              $cond: {
+                if: { $gt: [{ $size: '$debts' }, 1] },
+                then: '$debts',
+                else: { $arrayElemAt: ['$debts', 0] } // If only one debt, return it as an object
+              }
+            }
+          }
+        }
+      },
+      {
+        $sort: {
+          createdAt: -1
+        }
+      },
+      {
+        $project: {
+          _id: 0
+        }
+      }
+    )
+    let debts = (await Balance.aggregate(query))[0]?.results;
+    debts = await Balance.populate(debts, [{ path: "owner" }, { path: "order" }, { path: "createdBy" }]);
+
+    res.status(200).json(debts);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+module.exports.checkDebtsByUser = async (req, res, next) => {
+  try {
+    const { customerId } = req.params;
+    const debts = await Balance.aggregate([
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'owner',
+          foreignField: '_id',
+          as: 'owner'
+        }
+      },
+      {
+        $unwind: '$owner'
+      },
+      {
+        $match: {
+          status: 'open',
+          'owner.customerId': customerId
+        }
+      }
+    ])
+    if (!debts) return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_FOUND));
+    
+    res.status(200).json(debts);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));

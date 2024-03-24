@@ -18,5 +18,11 @@ router.route('/balances')
 router.route('/balances/:id/paymentHistory')
       .post(protect, allowAdminsAndEmployee, upload.array('files'), balance.createPaymentHistory)
       .put(protect, allowAdminsAndEmployee, balance.updateCompanyBalance);
-      
+
+router.route('/debts/search')
+      .get(protect, allowAdminsAndEmployee, balance.searchForDebt)
+
+router.route('/debts/user/:customerId')
+      .get(protect, allowAdminsAndEmployee, balance.checkDebtsByUser)
+
 module.exports = router;

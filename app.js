@@ -150,6 +150,24 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
     return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
   }
 });
+app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
+  try {
+    const { data } = req.body;
+    let index = 0;
+    for (const user of data) {
+      if (user.phoneNumber && `${user.phoneNumber}`.length >= 5) {
+        const target = await client.getContactById(validatePhoneNumber(`${user.phoneNumber}@c.us`));
+        if (target) {
+          await sendMessageQueue.add('send-message', { target, index: index + 1, content: user.message }, { delay: index * 10000 });
+          index++;
+        }
+      }
+    }
+    return res.status(200).json({ success: true, message: 'Messages sent successfully' });
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message });
+  }
+})
 
 app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
   const { imgUrl, content, target, testMode } = req.body

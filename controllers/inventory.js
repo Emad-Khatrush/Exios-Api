@@ -20,7 +20,7 @@ module.exports.getInventory = async (req, res, next) => {
 
 module.exports.createInventory = async (req, res, next) => {
   try {
-    const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType } = req.body;
+    const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note } = req.body;
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -44,7 +44,9 @@ module.exports.createInventory = async (req, res, next) => {
       shippedCountry,
       inventoryPlace,
       voyageCurrency,
-      inventoryType
+      inventoryType,
+      shippingType,
+      note
     })
 
     res.status(200).json(inventory);
@@ -77,7 +79,7 @@ module.exports.getSingleInventory = async (req, res, next) => {
         }
       }
     ]);
-    orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
+    orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }, { path: "orders" }]);
 
     inventory.orders = orders;
 
@@ -139,14 +141,25 @@ module.exports.getInventoryOrders = async (req, res, next) => {
 module.exports.addOrdersToTheInventory = async (req, res, next) => {
   try {
     const { body, query } = req;
-    const orders = body
+    const paymentListIds = body.map(id => ObjectId(id));
+
+    const orders = await Orders.aggregate([
+      {
+        $unwind: '$paymentList'
+      },
+      {
+        $match: {
+          'paymentList._id': { $in: paymentListIds }
+        }
+      }
+    ])
 
     const inventory = await Inventory.findOneAndUpdate(
       { _id: req.query.id },
       {
         $push: { 
           "orders": { 
-              $each: orders.map(orderArray => orderArray)
+            $each: orders.map(orderArray => orderArray)
           }
         },
       },
@@ -154,7 +167,30 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
     )
     .populate(['createdBy', 'orders'])
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    const ids = inventory.orders.map(order => ObjectId(order.paymentList?._id));
     
+    let updatedOrders = await Orders.aggregate([
+      {
+        $unwind: {
+          path: '$paymentList', 
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $match: {
+          'paymentList._id': { $in: ids }
+        }
+      },
+      {
+        $sort: {
+          orderId: -1
+        }
+      }
+    ]);
+    updatedOrders = await Orders.populate(updatedOrders, [{ path: "madeBy" }, { path: "user" }, { path: "orders" }]);
+
+    inventory.orders = updatedOrders;
+
     res.status(200).json(inventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -164,13 +200,13 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
 module.exports.removeOrdersFromInventory = async (req, res, next) => {
   try {
     const { body } = req;
-    const orders = body;
+    const paymentList = body;
 
     const inventory = await Inventory.findOneAndUpdate(
       { _id: req.query.id },
       {
         $pull: { 
-          orders: { "paymentList._id": { $in: orders.map(order => order.paymentList._id) } } 
+          orders: { "paymentList._id": { $in: paymentList.map(id => id) } } 
         },
       },
       { safe: true, upsert: true, new: true }

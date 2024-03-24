@@ -632,13 +632,23 @@ module.exports.updateSinglePackage = async (req, res, next) => {
 
 module.exports.getPackagesOfOrders = async (req, res, next) => {
   try {
+    let sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 3);
+
     let packages = await Orders.aggregate([
       {
-        $match: { isCanceled: false }
+        $unwind: '$paymentList'
       },
       {
-        $unwind: '$paymentList'
-      }
+        $match: {
+          isCanceled: false, 
+          unsureOrder: false,
+          'paymentList.deliveredPackages.arrivedAt': { $gte: sixMonthsAgo }
+        }
+      },
+      {
+        $sort: { 'paymentList.deliveredPackages.arrivedAt': -1 }
+      },
     ]);
     packages = await Orders.populate(packages, { path: "madeBy" });
 
@@ -883,7 +893,7 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
     const response = await Orders.updateMany(
       {
         orderId: { $in: orders.map(order => order?.orderId) },
-        'paymentList.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.paymentList?.deliveredPackages?.trackingNumber) }
+        'paymentList.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.trackingNumber) }
       },
       {
         $set: {
@@ -893,7 +903,7 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
       },
       {
         arrayFilters: [
-          { 'elem.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.paymentList?.deliveredPackages?.trackingNumber) } },
+          { 'elem.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.trackingNumber) } },
         ],
         multi: true,
         new: true
@@ -926,7 +936,7 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
     await Inventory.updateMany(
       {
         _id: ObjectId(inventoryId),
-        'orders.paymentList._id': { $in: orders.map(order => order?.paymentList?._id) }
+        'orders.paymentList._id': { $in: orders.map(order => order?.paymentListId) }
       },
       {
       $set: {

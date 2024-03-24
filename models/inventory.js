@@ -44,7 +44,13 @@ const inventorySchema = new Schema({
     required: true,
     enum: ['inventoryGoods', 'shippingVoyage', 'warehouseInventory'],
     default: 'inventoryGoods'
-  }
+  },
+  shippingType: {
+    type: String,
+    required: true,
+    enum: ['air', 'sea', 'domestic'],
+  },
+  note: String
 },
 {
   timestamps: true
