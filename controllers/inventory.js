@@ -205,7 +205,7 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
       { _id: req.query.id },
       {
         $pull: { 
-          orders: { "paymentList._id": { $in: paymentList.map(id => id) } } 
+          orders: { "paymentList._id": { $in: paymentList.map(id => ObjectId(id)) } } 
         },
       },
       { safe: true, upsert: true, new: true }
