@@ -245,8 +245,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 
 app.use(async (req, res) => {
   try {
-    await sendMessageQueue.clean(0);
-    console.log(res.query.deletequeue);
+
     if (res.query.deletequeue === 'all') {
       return res.status(404).send("Deleted all the queue jobs");
     }
