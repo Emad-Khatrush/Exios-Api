@@ -40,6 +40,13 @@ exports.addChangedField = (fieldName, newData, oldData, labels) => {
                 changedFrom: String(oldData?.length) || 'empty',
                 changedTo: String(newData?.length) || 'empty',
             }
+        case 'items':
+            return {
+                label: labels[fieldName],
+                value: fieldName,
+                changedFrom: String(oldData?.length) || 'empty',
+                changedTo: String(newData?.length) || 'empty',
+            }
     
         default:
             return {

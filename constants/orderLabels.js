@@ -11,5 +11,6 @@ exports.orderLabels = {
   receivedShipmentLYD: 'Received Shipment LYD',
   receivedShipmentUSD: 'Received Shipment USD',
   totalInvoice: 'Total Invoice',
-  orderNote: 'Note'
+  orderNote: 'Note',
+  items: 'Order items'
 }

@@ -207,24 +207,35 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
           }
         },
         {
+          $project: {
+            phone: 1
+          }
+        },
+        {
           $sort: {
             createdAt: -1
           }
         }
       ])
     } else {
-      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).sort({ createdAt: -1 });
+      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 });
     }
-    let index = 0;
-    for (const user of users) {
-      if (user.phone && `${user.phone}`.length >= 5) {
-        const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
-        if (target) {
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content }, { delay: index * 10000 });
-          index++;
-        }
-      }
+    console.log(users);
+    const splitCount = 2;
+    const usersCount = users.length;
+    const halfIndex = Math.ceil(usersCount / 2);
+
+    let currentIndex = 0; // Initialize currentIndex outside the loop
+
+    for (let index = 0; index < splitCount; index++) {
+      const usersToSend = users.slice(currentIndex, currentIndex + halfIndex);
+      
+      // Send message queue for each split, passing the index
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content, users: usersToSend, index: currentIndex }, { delay: index * 10000 });
+      
+      currentIndex += halfIndex; // Update currentIndex for the next split
     }
+
     return res.status(200).json({ success: true, message: 'Messages sent successfully' });
   } catch (error) {
     console.error(error);
@@ -233,6 +244,10 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 });
 
 app.use(async (req, res) => {
+  // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
+  const counts = await sendMessageQueue.getJobCounts();
+  console.log("Number of jobs in queue:", counts.waiting + counts.active);
+
   res.status(404).send("Page Not Found");
 });
 
@@ -242,7 +257,32 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
   console.log('Queue resumed.');
 })
 
-let jobCounter = 0;
+sendMessageQueue.process('send-large-messages', 1, async (job) => {
+  const { imgUrl, content, users } = job.data;
+
+  try {
+    let index = job.data.index || 0; // Retrieve index from job data or default to 0
+    for (const user of users) {
+      if (user.phone && `${user.phone}`.length >= 5) {
+        const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+        if (target) {
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content }, { delay: index * 10000 });
+          index++;
+        }
+      }
+    }
+  } catch (error) {
+    console.log(`Error processing job, attempt ${index}: ${error?.message}`);
+    // Retry the job after a delay of 10 seconds
+    await sendMessageQueue.add('send-message', { target, index, imgUrl, content }, { delay: index * 30000 });
+    return Promise.resolve();
+  }
+
+  // Introduce a delay of 3 seconds before processing the next job
+  await job.delay(5000);
+
+  return Promise.resolve();
+});
 
 sendMessageQueue.process('send-message', 1, async (job) => {
   const { target, index, imgUrl, content } = job.data;

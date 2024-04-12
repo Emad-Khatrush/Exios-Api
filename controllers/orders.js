@@ -308,6 +308,7 @@ module.exports.createOrder = async (req, res, next) => {
       }
     }
 
+    const items = JSON.parse(req.body.items);
     const paymentList = JSON.parse(req.body.paymentList).map(data => ({
       link: data.paymentLink,
       status: {
@@ -327,8 +328,9 @@ module.exports.createOrder = async (req, res, next) => {
         receivedShipmentUSD: data.deliveredPackages.receivedShipmentUSD,
         receivedShipmentLYD: data.deliveredPackages.receivedShipmentLYD,
         containerInfo: {
-          billOfLading: data.deliveredPackages.containerInfo.billOfLading
+          billOfLading: data.deliveredPackages?.containerInfo?.billOfLading
         },
+        shipmentMethod: data.deliveredPackages.shipmentMethod,
         receiptNo: data.deliveredPackages.receiptNo
       },
       note: data.note,
@@ -369,7 +371,8 @@ module.exports.createOrder = async (req, res, next) => {
         description: 'في مرحلة تجهيز الطلبية'
       }],
       images,
-      paymentList
+      paymentList,
+      items
     });
 
     await Activities.create({
@@ -410,7 +413,7 @@ module.exports.createOrder = async (req, res, next) => {
       });
     }
 
-    res.status(200).json({ ok: true });
+    res.status(200).json(order);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));
