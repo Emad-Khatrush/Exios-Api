@@ -245,9 +245,9 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 
 app.use(async (req, res) => {
   try {
+    await sendMessageQueue.clean(0);
     console.log(res.query.deletequeue);
     if (res.query.deletequeue === 'all') {
-      sendMessageQueue.clean(0);
       return res.status(404).send("Deleted all the queue jobs");
     }
     // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
