@@ -244,9 +244,13 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 });
 
 app.use(async (req, res) => {
-  // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
-  const counts = await sendMessageQueue.getJobCounts();
-  console.log("Number of jobs in queue:", counts.waiting + counts.active);
+  try {
+    // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
+    const counts = await sendMessageQueue.getJobCounts();
+    console.log("Number of jobs in queue:", counts.waiting + counts.active);
+  } catch (error) {
+    console.log(error);
+  }
 
   res.status(404).send("Page Not Found");
 });
