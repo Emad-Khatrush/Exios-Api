@@ -190,7 +190,8 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
       users = await Users.aggregate([
         {
           $match: {
-            'roles.isClient': true
+            'roles.isClient': true,
+            isCanceled: false
           }
         },
         {
@@ -220,7 +221,6 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     } else {
       users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 });
     }
-    console.log(users);
     const splitCount = 2;
     const usersCount = users.length;
     const halfIndex = Math.ceil(usersCount / 2);
