@@ -568,7 +568,7 @@ module.exports.updateOrder = async (req, res, next) => {
         { inventoryType: 'warehouseInventory' },
         {
           $pull: { 
-            orders: { "paymentList._id": { $in: receivedOrders.map(orderPackage => orderPackage._id) } } 
+            orders: { "paymentList._id": { $in: receivedOrders.map(orderPackage => ObjectId(orderPackage._id)) } } 
           },
         },
         { safe: true, upsert: true, new: true }
