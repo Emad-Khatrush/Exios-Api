@@ -12,7 +12,35 @@ module.exports.getInventory = async (req, res, next) => {
     const inventory = await Inventory.find({ inventoryType: 'inventoryGoods' }).sort({ createdAt: -1 }).populate(['createdBy', 'orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
 
-    res.status(200).json(inventory);
+    // Extract order IDs from each inventory item
+    const orderIds = inventory.map(item => item.orders.map(order => order._id));
+
+    // Flatten the array of arrays of order IDs
+    const flattenedOrderIds = orderIds.flat();
+
+    // Perform aggregation to get orders using the extracted order IDs
+    const orders = await Orders.aggregate([
+        { 
+          $unwind: {
+            path: '$paymentList', 
+            preserveNullAndEmptyArrays: true
+          }
+        },
+        { $match: { _id: { $in: flattenedOrderIds } } }
+    ]);
+
+    // Create a map of order IDs to orders for efficient lookup
+    const orderMap = orders.reduce((acc, order) => {
+        acc[order._id.toString()] = order;
+        return acc;
+    }, {});
+
+    // Replace inventory.orders with corresponding orders
+    const updatedInventory = inventory.map(item => ({
+        ...item.toObject(),
+        orders: item.orders.map(order => orderMap[order._id.toString()])
+    }));
+    res.status(200).json(updatedInventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
