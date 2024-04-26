@@ -429,10 +429,20 @@ module.exports.getOrder = async (req, res, next) => {
     if (mongoose.Types.ObjectId.isValid(id)) {
       query = { _id: id };
     }
-    const order = await Orders.findOne(query).populate(['madeBy', 'user']);
-
+    const order = await Orders.findOne(query).populate(['madeBy', 'user']).lean();
     if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
-    
+
+    const updatedPaymentList = await Promise.all(order.paymentList.map(async (data) => {
+      const inventory = await Inventory.findOne({ 'orders.paymentList._id': data._id, inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } });
+      if (inventory) {
+        // If inventory is found, add the flight property to the payment data
+        data.flight = inventory;
+      }
+      return data; // Return the updated payment data
+    }));
+
+    order.paymentList = updatedPaymentList; // Assign the updated paymentList back to order
+
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
@@ -525,7 +535,7 @@ module.exports.updateOrder = async (req, res, next) => {
     }
 
     if (user) update.user = user;
-    const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
+    const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true }).populate('user');
     if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
     // calculate the revenue of the order
