@@ -2,6 +2,7 @@ const User = require('../models/user');
 const Orders = require('../models/order');
 
 const ErrorHandler = require('../utils/errorHandler');
+const { formatPhoneNumber } = require('../utils/messages');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { errorMessages } = require('../constants/errorTypes');
@@ -12,13 +13,16 @@ const { generateString } = require('../middleware/helper');
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const numbers = '0123456789';
-  const { repeatedPassword, password, email } = req.body;
+  const { repeatedPassword, password, email, phone } = req.body;
 
   try {
     if (repeatedPassword !== password) return next(new ErrorHandler(400, errorMessages.PASSWORD_NOT_MATCH));
     const customerId = generateString(1, characters) + generateString(3, numbers);
     const userFound = await User.findOne({ $or: [ { customerId }, { username: email } ] });
     if (!!userFound) return next(new ErrorHandler(400, errorMessages.USER_EXIST));
+
+    const phoneExist = await User.findOne({ phone });
+    if (!!phoneExist) return next(new ErrorHandler(400, errorMessages.PHONE_EXIST));
     
     const hashedPassword = await bcrypt.hash(req.body.password, 12);
     const user = await User.create({
@@ -108,14 +112,19 @@ module.exports.getEmployees = async (req, res, next) => {
 }
 
 module.exports.login = async (req, res, next) => {
-  const { username, password, loginType } = req.body;
+  const { username, password, loginType, loginMethod } = req.body;
 
   if (!username || !password) {
     return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
   }
 
   try {
-    let user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i'} }).select('+password');
+    let user;
+    if (loginMethod === 'phone') {
+      user = await User.findOne({ phone: Number(formatPhoneNumber(username)) }).select('+password');
+    } else {
+      user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i'} }).select('+password');
+    }
     if (!user) {
       return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
     }
@@ -133,9 +142,12 @@ module.exports.login = async (req, res, next) => {
     if (!isMatch) {
       return next(new ErrorHandler(404, errorMessages.INVALID_CREDENTIALS));
     }
-
-    user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i'} }, { password: 0 });
-
+    if (loginMethod === 'phone') {
+      user = await User.findOne({ phone: Number(formatPhoneNumber(username)) }, { password: 0 });
+    } else {
+      user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i'} }, { password: 0 });
+    }
+    
     const token = await user.getSignedToken();
     res.status(200).json({
       success: true,

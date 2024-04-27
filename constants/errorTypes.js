@@ -2,6 +2,7 @@ exports.errorMessages = {
   // user errors
   USER_NOT_FOUND: 'user-not-found',
   USER_EXIST: 'user-exist',
+  PHONE_EXIST: 'phone-exist',
   INVALID_CREDENTIALS: 'invalid-credentials',
   TOKEN_NOT_FOUND: 'token-not-found',
   INVALID_TOKEN: 'invalid-token',

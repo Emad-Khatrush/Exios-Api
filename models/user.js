@@ -72,7 +72,4 @@ userSchema.methods.getSignedToken = function() {
   })
 }
 
-// Create unique index for the phone field
-userSchema.index({ phone: 1 }, { unique: true });
-
 module.exports = mongoose.model("User", userSchema);

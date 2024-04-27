@@ -24,6 +24,27 @@ const validatePhoneNumber = (phone) => {
   return generatePhone;
 };
 
+const formatPhoneNumber = (phone) => {
+  let generatePhone = phone.trim();
+
+  // if phone number is starts with +
+  if (generatePhone.startsWith('+')) {
+    generatePhone =  generatePhone.substring(1);
+  }
+  // if phone number is starts with 00
+  if (generatePhone.startsWith('00')) {
+    generatePhone = generatePhone.substring(2);
+  }
+  if (generatePhone.startsWith('218')) {
+    generatePhone =  generatePhone.substring(3);
+  }
+  // if phone number is starts with 0
+  if (generatePhone.startsWith('0')) {
+    generatePhone = generatePhone.substring(1);
+  }
+  return generatePhone;
+};
+
 const checkIfPhoneValid = (phone) => {
   // check if it has 13 number
   if (phone.trim().length - 1 === 13) {
@@ -44,4 +65,4 @@ const imageToBase64 = async (url) => {
   }
 }
 
-module.exports = { validatePhoneNumber, checkIfPhoneValid, imageToBase64 };
+module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64 };
