@@ -7,14 +7,11 @@ const morgan = require('morgan');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
-const { generatePDF } = require("./utils/sender");
-const numbers = require("./utils/data");
 const { validatePhoneNumber, imageToBase64 } = require('./utils/messages');
 const Queue = require('bull');
 
 // DB Collections
 const Users = require('./models/user');
-const order = require('./models/order');
 
 // import routes
 const orders = require('./routes/orders');

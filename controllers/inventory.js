@@ -5,6 +5,9 @@ const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { errorMessages } = require("../constants/errorTypes");
 const mongodb = require('mongodb');
 const Activities = require("../models/activities");
+const ReturnedPayments = require("../models/returnedPayments");
+const Users = require("../models/user");
+
 const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
@@ -324,6 +327,71 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
     inventory[0].orders = orders;
     res.status(200).json(inventory);
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+// Returned Payments functions
+module.exports.getReturnedPayments = async (req, res, next) => {
+  try {
+    const returnedPayments = await ReturnedPayments.find({ status: req.query.status || 'active' }).sort({ createdAt: -1 }).populate(['createdBy', 'customer']);
+    if (!returnedPayments) return next(new ErrorHandler(404, errorMessages.RETURNED_PAYMENTS_NOT_FOUND));
+
+    res.status(200).json(returnedPayments);
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.updateReturnedPayment = async (req, res, next) => {
+  try {
+    const returnedPayments = await ReturnedPayments.updateOne({ _id: req.body._id }, { ...req.body }, { new: true });
+    if (!returnedPayments) return next(new ErrorHandler(404, errorMessages.RETURNED_PAYMENTS_NOT_FOUND));
+
+    res.status(200).json(returnedPayments);
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.createReturnedPayment = async (req, res, next) => {
+  try {
+    const { customerId, amount, currency, shippingCompanyName, deliveryTo, issuedOffice, goodsSentDate, shippingType, note, orders } = req.body;
+    const attachments = [];
+    if (req.files) {
+      for (let i = 0; i < req.files.length; i++) {
+        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-returned-payments");
+        attachments.push({
+          path: uploadedImg.publicUrl,
+          filename: uploadedImg.filename,
+          folder: uploadedImg.folder,
+          bytes: uploadedImg.bytes,
+          fileType: req.files[i].mimetype
+        });
+      }
+    }
+    const parsedOrders = JSON.parse(orders);
+
+    const customer = await Users.findOne({ customerId });
+    if (!customer) return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
+
+    const returnedPayment = await ReturnedPayments.create({
+      createdBy: req.user,
+      attachments,
+      customer,
+      amount,
+      currency,
+      deliveryTo,
+      issuedOffice,
+      goodsSentDate,
+      shippingType,
+      note,
+      orders: parsedOrders,
+      shippingCompanyName
+    })
+
+    res.status(200).json(returnedPayment);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }

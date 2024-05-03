@@ -24,8 +24,10 @@ exports.errorMessages = {
   BALANCE_CURRENCY_NOT_ACCEPTED: 'balance-currency-not-accepted',
   BALANCE_ALREADY_PAID: 'balance-already-paid',
   BALANCE_RATE_ZERO: 'balance-rate-zero',
-  // Balances errors
+  // Invetnory errors
   INVENTORY_NOT_FOUND: 'inventory-not-found',
+  // Returned Payments errors
+  RETURNED_PAYMENTS_NOT_FOUND: 'returned-payments-not-found',
   // expense errors
   EXPENSE_ID_TAKEN: 'expense-id-taken',
   EXPENSE_NOT_FOUND: 'expense-not-found',

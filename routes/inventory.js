@@ -25,4 +25,10 @@ router.route('/inventory/:id')
 router.route('/warehouse/:office/goods')
     .get(protect, allowAdminsAndEmployee, inventory.getWarehouseInventory)
 
+// Returned Payments routes
+router.route('/returnedPayments')
+    .get(protect, allowAdminsAndEmployee, inventory.getReturnedPayments)
+    .post(protect, allowAdminsAndEmployee, upload.array('files'), inventory.createReturnedPayment)
+    .put(protect, allowAdminsAndEmployee, inventory.updateReturnedPayment)
+
 module.exports = router;
