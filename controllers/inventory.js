@@ -12,7 +12,7 @@ const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.find({ inventoryType: 'inventoryGoods' }).sort({ createdAt: -1 }).populate(['createdBy', 'orders']);
+    const inventory = await Inventory.find({ inventoryType: 'inventoryGoods' }).sort({ createdAt: -1 }).limit(50).populate(['createdBy', 'orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
 
     // Extract order IDs from each inventory item
