@@ -65,4 +65,14 @@ const imageToBase64 = async (url) => {
   }
 }
 
-module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64 };
+const getRandomChars = (length) => {
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return result;
+}
+
+
+module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64, getRandomChars };
