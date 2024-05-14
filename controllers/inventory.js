@@ -12,8 +12,58 @@ const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.find({ inventoryType: 'inventoryGoods' }).sort({ createdAt: -1 }).limit(40).populate(['createdBy', 'orders']);
+    const { limit, skip, searchValue } = req.query;
+
+    let query = [
+      {
+        $match: {
+          inventoryType: 'inventoryGoods'
+        }
+      },
+      {
+        $sort: {
+          createdAt: -1
+        }
+      },
+      {
+        $skip: Number(skip) || 0
+      },
+      {
+        $limit: Number(limit)
+      }
+    ];
+    if (searchValue) {
+      query = [
+        {
+          $match: {
+            inventoryType: 'inventoryGoods',
+            $or: [
+              { 'voyage': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+              { 'shippingType': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+              { 'inventoryPlace': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+              { 'shippedCountry': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+              { '_id': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+              { 'orders.orderId': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+              { 'orders.paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
+            ]
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
+          }
+        }
+      ]
+    }
+
+    let inventory = await Inventory.aggregate(query);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    inventory = await Inventory.populate(inventory, [{ path: "createdBy" }, { path: "orders" }]);
+
+    let counts = inventory?.length;
+    if (!searchValue) {
+      counts = await Inventory.count({ inventoryType: 'inventoryGoods' });
+    }
 
     // Extract order IDs from each inventory item
     const orderIds = inventory.map(item => item.orders.map(order => order._id));
@@ -40,10 +90,15 @@ module.exports.getInventory = async (req, res, next) => {
 
     // Replace inventory.orders with corresponding orders
     const updatedInventory = inventory.map(item => ({
-        ...item.toObject(),
+        ...item,
         orders: item.orders.map(order => orderMap[order._id.toString()])
     }));
-    res.status(200).json(updatedInventory);
+    res.status(200).json({
+      results: updatedInventory,
+      total: counts,
+      limit,
+      skip
+    });
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
