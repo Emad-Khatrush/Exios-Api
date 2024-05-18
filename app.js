@@ -218,19 +218,18 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     } else {
       users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 });
     }
-    const splitCount = 2;
+    const splitCount = 30;
     const usersCount = users.length;
-    const halfIndex = Math.ceil(usersCount / 2);
+    const chunkSize = Math.ceil(usersCount / splitCount);
 
     let currentIndex = 0; // Initialize currentIndex outside the loop
 
     for (let index = 0; index < splitCount; index++) {
-      const usersToSend = users.slice(currentIndex, currentIndex + halfIndex);
-      
+      const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
       // Send message queue for each split, passing the index
       await sendMessageQueue.add('send-large-messages', { imgUrl, content, users: usersToSend, index: currentIndex }, { delay: index * 10000 });
       
-      currentIndex += halfIndex; // Update currentIndex for the next split
+      currentIndex += chunkSize; // Update currentIndex for the next split
     }
 
     return res.status(200).json({ success: true, message: 'Messages sent successfully' });
