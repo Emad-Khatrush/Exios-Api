@@ -36,8 +36,7 @@ module.exports.getBalances = async (req, res, next) => {
       },
       {
         $sort: {
-          createdAt: -1,
-          'paymentHistory.createdAt': -1
+          updatedAt: -1,
         }
       },
       {
@@ -66,6 +65,15 @@ module.exports.getBalances = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [{ $eq: ["$status", 'closed'] }, { $eq: ["$createdOffice", officeType] }] },
+                1,
+                0
+              ]
+            }
+          },
+          waitingApprovalDebtsCount: {
+            $sum: {
+              $cond: [
+                { $and: [{ $eq: ["$status", 'waitingApproval'] }, { $eq: ["$createdOffice", officeType] }] },
                 1,
                 0
               ]
@@ -103,7 +111,8 @@ module.exports.getBalances = async (req, res, next) => {
         openedDebtsCount: 0,
         closedDebtsCount: 0,
         overdueDebtsCount: 0,
-        lostDebtsCount: 0
+        lostDebtsCount: 0,
+        waitingApprovalDebtsCount: 0
       }
     }
 
@@ -217,7 +226,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
     }
 
     if (updatedAmount == 0 || updatedAmount == 0.00) {
-      updateQuery.$set.status = 'closed';
+      updateQuery.$set.status = 'waitingApproval';
     }
 
     const balance = await Balance.findByIdAndUpdate({ _id: id }, updateQuery, { safe: true, upsert: true, new: true });
@@ -334,7 +343,7 @@ module.exports.searchForDebt = async (req, res, next) => {
       },
       {
         $sort: {
-          createdAt: -1
+          updatedAt: -1
         }
       },
       {
@@ -378,6 +387,19 @@ module.exports.checkDebtsByUser = async (req, res, next) => {
     if (!debts) return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_FOUND));
     
     res.status(200).json(debts);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+module.exports.confirmDebt = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const balance = await Balance.updateOne({ _id: id }, { $set: { status: 'closed' } });
+    if (!balance) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
+    
+    res.status(200).json(balance);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));

@@ -40,7 +40,7 @@ const balanceSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['open', 'closed', 'overdue', 'lost'],
+    enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost'],
     required: true,
     default: 'open'
   },
