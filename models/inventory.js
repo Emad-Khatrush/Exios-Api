@@ -50,6 +50,12 @@ const inventorySchema = new Schema({
     required: true,
     enum: ['air', 'sea', 'domestic'],
   },
+  status: {
+    type: String,
+    required: true,
+    default: 'processing',
+    enum: ['processing', 'finished'],
+  },
   note: String
 },
 {

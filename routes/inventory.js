@@ -9,8 +9,9 @@ const router  = express.Router();
 
 router.route('/inventory')
       .get(protect, allowAdminsAndEmployee, inventory.getInventory)
-      .post(protect, allowAdminsAndEmployee, upload.array('files'), inventory.createInventory);
-
+      .post(protect, allowAdminsAndEmployee, upload.array('files'), inventory.createInventory)
+      .put(protect, allowAdminsAndEmployee, inventory.updateInventory);
+      
 router.route('/inventory/orders')
     .get(protect, allowAdminsAndEmployee, inventory.getInventoryOrders)
     .put(protect, allowAdminsAndEmployee, inventory.addOrdersToTheInventory)

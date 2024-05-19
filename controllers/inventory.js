@@ -12,7 +12,7 @@ const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const { limit, skip, searchValue } = req.query;
+    const { limit, skip, searchValue, searchType } = req.query;
 
     let query = [
       {
@@ -32,6 +32,14 @@ module.exports.getInventory = async (req, res, next) => {
         $limit: Number(limit)
       }
     ];
+    if (searchType && searchType !== 'all') {
+      if (searchType === 'finished') {
+        query[0].$match.status = searchType;
+      } else {
+        query[0]['$match']['shippingType'] = searchType;
+        query[0]['$match']['status'] = { $ne: 'finished' };
+      }
+    }
     if (searchValue) {
       query = [
         {
@@ -60,9 +68,66 @@ module.exports.getInventory = async (req, res, next) => {
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     inventory = await Inventory.populate(inventory, [{ path: "createdBy" }, { path: "orders" }]);
 
-    let counts = inventory?.length;
+    let counts = { all: inventory?.length };
     if (!searchValue) {
-      counts = await Inventory.count({ inventoryType: 'inventoryGoods' });
+      counts = (await Inventory.aggregate([
+        { $match: { inventoryType: 'inventoryGoods' } },
+        {
+          $group: {
+            _id: null,
+            all: {
+              $sum: {
+                $cond: [
+                  { $ne: ["$status", 'finished'] },
+                  1,
+                  0
+                ]
+              }
+            },
+            air: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $ne: ["$status", 'finished'] }, { $eq: ["$shippingType", 'air'] }] },
+                  1,
+                  0
+                ]
+              }
+            },
+            sea: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $ne: ["$status", 'finished'] }, { $eq: ["$shippingType", 'sea'] }] },
+                  1,
+                  0
+                ]
+              }
+            },
+            domestic: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $ne: ["$status", 'finished'] }, { $eq: ["$shippingType", 'domestic'] }] },
+                  1,
+                  0
+                ]
+              }
+            },
+            finished: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$status", 'finished'] },
+                  1,
+                  0
+                ]
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            _id: 0
+          }
+        }
+      ]))[0];
     }
 
     // Extract order IDs from each inventory item
@@ -95,7 +160,8 @@ module.exports.getInventory = async (req, res, next) => {
     }));
     res.status(200).json({
       results: updatedInventory,
-      total: counts,
+      total: 0,
+      countList: counts,
       limit,
       skip
     });
@@ -382,6 +448,19 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
     inventory[0].orders = orders;
     res.status(200).json(inventory);
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.updateInventory = async (req, res, next) => {
+  try {
+    const { id } = req.query;
+    if (!id) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    const updatedInventory = await Inventory.updateOne({ _id: id }, { ...req.body }, { new: true });
+
+    res.status(200).json(updatedInventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
