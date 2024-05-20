@@ -17,7 +17,8 @@ module.exports.getInventory = async (req, res, next) => {
     let query = [
       {
         $match: {
-          inventoryType: 'inventoryGoods'
+          inventoryType: 'inventoryGoods',
+          status: { $ne: 'finished' }
         }
       },
       {
