@@ -227,7 +227,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     for (let index = 0; index < splitCount; index++) {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
       // Send message queue for each split, passing the index
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content, users: usersToSend, index: currentIndex }, { delay: index * 10000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content, users: usersToSend, index: currentIndex }, { delay: index * 5000 });
       
       currentIndex += chunkSize; // Update currentIndex for the next split
     }
