@@ -27,6 +27,7 @@ const settings = require('./routes/settings');
 const notifications = require('./routes/notifications');
 const balances = require('./routes/balance');
 const inventory = require('./routes/inventory');
+// const wallet = require('./routes/wallet');
 
 // Whatsup packages
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -127,6 +128,7 @@ app.use('/api', settings);
 app.use('/api', notifications);
 app.use('/api', balances);
 app.use('/api', inventory);
+// app.use('/api', wallet);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {
@@ -159,7 +161,8 @@ app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
       if (user.phoneNumber && `${user.phoneNumber}`.length >= 5) {
         const target = await client.getContactById(validatePhoneNumber(`${user.phoneNumber}@c.us`));
         if (target) {
-          await sendMessageQueue.add('send-message', { target, index: index + 1, content: user.message }, { delay: index * 10000 });
+          const rtlContent = `\u202B${user.message}`;
+          await sendMessageQueue.add('send-message', { target, index: index + 1, content: rtlContent }, { delay: index * 10000 });
           index++;
         }
       }
@@ -177,7 +180,8 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     if (testMode) {
       const target = await client.getContactById(validatePhoneNumber(`00905535728209@c.us`));
       if (target) {
-        await sendMessageQueue.add('send-message', { target, index: 1, imgUrl, content }, { delay: 1 });
+        const rtlContent = `\u202B${content}`;
+        await sendMessageQueue.add('send-message', { target, index: 1, imgUrl, content: rtlContent }, { delay: 1 });
         return res.status(200).json({ success: true, message: 'Message sent successfully' });
       }
     }
@@ -226,8 +230,9 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 
     for (let index = 0; index < splitCount; index++) {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
+      const rtlContent = `\u202B${content}`;
       // Send message queue for each split, passing the index
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content, users: usersToSend, index: currentIndex }, { delay: index * 5000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * 5000 });
       
       currentIndex += chunkSize; // Update currentIndex for the next split
     }
@@ -270,7 +275,8 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
       if (user.phone && `${user.phone}`.length >= 5) {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content }, { delay: index * 10000 });
+          const rtlContent = `\u202B${content}`;
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 6000 });
           index++;
         }
       }
