@@ -27,7 +27,7 @@ const settings = require('./routes/settings');
 const notifications = require('./routes/notifications');
 const balances = require('./routes/balance');
 const inventory = require('./routes/inventory');
-// const wallet = require('./routes/wallet');
+const wallet = require('./routes/wallet');
 
 // Whatsup packages
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -128,7 +128,7 @@ app.use('/api', settings);
 app.use('/api', notifications);
 app.use('/api', balances);
 app.use('/api', inventory);
-// app.use('/api', wallet);
+app.use('/api', wallet);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {

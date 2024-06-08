@@ -25,6 +25,8 @@ router.route('/balances/:id/confirmed')
 router.route('/debts/search')
       .get(protect, allowAdminsAndEmployee, balance.searchForDebt)
 
+router.route('/debts/:userId')
+      .get(protect, allowAdminsAndEmployee, balance.getDebtOfUser)
 
 router.route('/debts/user/:customerId')
       .get(protect, allowAdminsAndEmployee, balance.checkDebtsByUser)

@@ -111,6 +111,75 @@ module.exports.getEmployees = async (req, res, next) => {
   }
 }
 
+module.exports.getClients = async (req, res, next) => {
+  try {
+    const { searchValue, limit, skip } = req.query;
+    let query = [{ $match: { isCanceled: false, 'roles.isClient': true } }, { $sort: { createdAt: -1 } }, { $skip: Number(skip) || 0 }, { $limit: Number(limit) || 10 }];
+    
+    if (searchValue) {
+      query = [
+        {
+          $addFields: {
+            fullName: {
+              $concat: [
+                {
+                  $reduce: {
+                    input: { $split: ["$firstName", " "] },
+                    initialValue: " ",
+                    in: { $concat: ["$$value", "$$this"] }
+                  }
+                },
+                {
+                  $reduce: {
+                    input: { $split: ["$lastName", " "] },
+                    initialValue: " ",
+                    in: { $concat: ["$$value", "$$this"] }
+                  }
+                }
+              ]
+            },
+            phoneString: { "$toString": { "$toLong": "$phone" } }
+          }
+        },
+        { 
+          $match: {
+            isCanceled: false, 
+            'roles.isClient': true,
+            $or: [
+              { fullName: { $regex: new RegExp(searchValue.trim(), 'i') } },
+              { customerId: { $regex: new RegExp(searchValue.trim(), 'i') } },
+              { phoneString: { $regex: new RegExp(searchValue.trim(), 'i') } },
+            ]
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
+          }
+        }
+      ]
+    }
+    const clients = await User.aggregate(query);
+    const total = await User.count({ isCanceled: false, 'roles.isClient': true });
+    res.status(200).json({ results: clients, meta: { total, limit, skip } });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+module.exports.searchForClient = async (req, res, next) => {
+  try {
+    let query = [{ $match: { isCanceled: false, 'roles.isClient': true } }];
+    const clients = await User.aggregate(query);
+    const total = await User.count({ isCanceled: false, 'roles.isClient': true });
+    res.status(200).json({ results: clients, meta: { total } });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
 module.exports.login = async (req, res, next) => {
   const { username, password, loginType, loginMethod } = req.body;
 
@@ -180,14 +249,21 @@ module.exports.verifyToken = async (req, res, next) => {
 module.exports.getCustomerData = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const user = await User.findOne({ customerId: id });
+    let user;
+    if (id.length === 4) {
+      user = await User.findOne({ customerId: id });
+    } else {
+      user = await User.findOne({ _id: id });
+    }
+
     if (!user) {
       return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
     }
 
     res.status(200).json(user);
   } catch (error) {
-    return next(new ErrorHandler(401, errorMessages.SERVER_ERROR));
+    console.log(error);
+    return next(new ErrorHandler(401, errorMessages.USER_NOT_FOUND));
   }
 }
 

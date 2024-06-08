@@ -26,6 +26,8 @@ exports.errorMessages = {
   BALANCE_RATE_ZERO: 'balance-rate-zero',
   // Invetnory errors
   INVENTORY_NOT_FOUND: 'inventory-not-found',
+  // Invetnory errors
+  WALLET_NOT_FOUND: 'wallet-not-found',
   // Returned Payments errors
   RETURNED_PAYMENTS_NOT_FOUND: 'returned-payments-not-found',
   // expense errors

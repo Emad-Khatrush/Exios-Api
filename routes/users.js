@@ -14,6 +14,9 @@ router.route('/home')
 router.route('/employees')
       .get(protect, allowAdminsAndEmployee, users.getEmployees)
 
+router.route('/clients')
+      .get(protect, allowAdminsAndEmployee, users.getClients)
+      
 router.route('/customer/:id')
       .get(protect, allowAdminsAndEmployee, users.getCustomerData)
 

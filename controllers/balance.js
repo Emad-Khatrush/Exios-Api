@@ -405,3 +405,16 @@ module.exports.confirmDebt = async (req, res, next) => {
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
   }
 }
+
+module.exports.getDebtOfUser = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const debts = await Balance.find({ owner: userId, status: 'open' });
+    if (!debts) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
+    
+    res.status(200).json(debts);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}

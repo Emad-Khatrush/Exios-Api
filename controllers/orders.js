@@ -112,6 +112,28 @@ module.exports.getOrders = async (req, res, next) => {
               ]
             }
           },
+          hasRemainingPayment: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ["$hasRemainingPayment", true] }, 
+                ] },
+                1,
+                0
+              ]
+            }
+          },
+          hasProblem: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ["$hasProblem", true] }, 
+                ] },
+                1,
+                0
+              ]
+            }
+          },
           unpaidOrders: {
             $sum: {
               $cond: [
@@ -142,7 +164,9 @@ module.exports.getOrders = async (req, res, next) => {
         unsureOrders: 0,
         arrivingOrders: 0,
         shipmentOrders: 0,
-        unpaidOrders: 0
+        unpaidOrders: 0,
+        hasProblem: 0,
+        hasRemainingPayment: 0
       }
     }
     
@@ -154,6 +178,8 @@ module.exports.getOrders = async (req, res, next) => {
       unpaidOrdersCount: ordersCountList.unpaidOrders,
       unsureOrdersCount: ordersCountList.unsureOrders,
       arrivingOrdersCount: ordersCountList.arrivingOrders,
+      hasProblemOrdersCount: ordersCountList.hasProblem,
+      hasRemainingPaymentOrdersCount: ordersCountList.hasRemainingPayment,
       tabType: tabType ? tabType : 'active',
       total: 0,
       query: {

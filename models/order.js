@@ -82,6 +82,14 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false
   },
+  hasRemainingPayment: {
+    type: Boolean,
+    default: false
+  },
+  hasProblem: {
+    type: Boolean,
+    default: false
+  },
   orderStatus: {
     type: Number,
     default: 0
