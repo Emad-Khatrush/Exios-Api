@@ -1,6 +1,6 @@
 const express = require('express');
 const wallet = require('../controllers/wallet');
-const { protect, allowAdminsAndEmployee } = require('../middleware/check-auth');
+const { protect, allowAdminsAndEmployee, isAdmin } = require('../middleware/check-auth');
 
 const router  = express.Router();
 
@@ -17,5 +17,10 @@ router.route('/wallet/:id/usebalance')
 router.route('/user/:id/statement')
       .get(protect, allowAdminsAndEmployee, wallet.getUserStatement)
 
+router.route('/unverifiedUsersStatement')
+      .get(protect, isAdmin, wallet.getUnverifiedUsersStatement)
 
+router.route('/user/:id/statement/:statementId')
+      .post(protect, isAdmin, wallet.verifyStatement)
+      
 module.exports = router;

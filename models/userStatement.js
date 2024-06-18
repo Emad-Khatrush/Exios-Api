@@ -16,6 +16,10 @@ const userStatementSchema = new Schema({
   total: { type: Number, required: true },
   paymentType: { type: String, enum: ['wallet', 'debt'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
+  review: {
+    receivedDate: Date,
+    isAdminConfirmed: Boolean
+  },
 }, 
 {
   timestamps: true

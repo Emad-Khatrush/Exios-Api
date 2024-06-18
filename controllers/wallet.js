@@ -87,6 +87,93 @@ module.exports.getUserStatement = async (req, res, next) => {
   }
 }
 
+module.exports.verifyStatement = async (req, res, next) => {
+  try {
+    const { statementId, id } = req.params;
+    const { receivedDate } = req.body;
+
+    const review = { receivedDate, isAdminConfirmed: true }
+    const userStatement = await UserStatement.updateMany({ _id: statementId, user: id }, { $set: { review } });
+    if (!userStatement) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
+
+    res.status(200).json({
+      results: userStatement
+    });
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.getUnverifiedUsersStatement = async (req, res, next) => {
+  try {
+    const { tab } = req.query;
+
+    let userStatements;
+    let query = [
+      {
+        $match: { review: { $exists: false } }  // Match documents where review does not exist
+      },
+      {
+        $group: {
+          _id: "$user",                          // Group by user field
+        }
+      },
+      {
+        $lookup: {
+          from: "users",                        // Specify the 'users' collection to join with
+          localField: "_id",                    // Use the _id field (which is user) in the current pipeline
+          foreignField: "_id",                  // Match with the _id field in the 'users' collection
+          as: "userDetails"                     // Name the new array field to add the user details
+        }
+      },
+      {
+        $unwind: "$userDetails"                 // Unwind the array to deconstruct it
+      },
+      {
+        $replaceRoot: {                         // Replace the root with the userDetails document
+          newRoot: "$userDetails"
+        }
+      }
+    ]
+
+    if (tab === 'openedWallet') {
+      query = [
+        {
+          $group: {
+            _id: "$user",                          // Group by user field
+          }
+        },
+        {
+          $lookup: {
+            from: "users",                        // Specify the 'users' collection to join with
+            localField: "_id",                    // Use the _id field (which is user) in the current pipeline
+            foreignField: "_id",                  // Match with the _id field in the 'users' collection
+            as: "userDetails"                     // Name the new array field to add the user details
+          }
+        },
+        {
+          $unwind: "$userDetails"                 // Unwind the array to deconstruct it
+        },
+        {
+          $replaceRoot: {                         // Replace the root with the userDetails document
+            newRoot: "$userDetails"
+          }
+        }
+      ]
+    }
+
+    userStatements = await UserStatement.aggregate(query);
+
+    if (!userStatements) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
+
+    res.status(200).json({
+      results: userStatements
+    });
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
 module.exports.getAllWallets = async (req, res, next) => {
   try {
     const wallets = await Wallet.find({ balance: { $ne: 0 } }).sort({ user: -1 }).populate('user');

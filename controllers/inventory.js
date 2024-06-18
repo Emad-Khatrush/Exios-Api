@@ -473,7 +473,52 @@ module.exports.getReturnedPayments = async (req, res, next) => {
     const returnedPayments = await ReturnedPayments.find({ status: req.query.status || 'active' }).sort({ createdAt: -1 }).populate(['createdBy', 'customer']);
     if (!returnedPayments) return next(new ErrorHandler(404, errorMessages.RETURNED_PAYMENTS_NOT_FOUND));
 
-    res.status(200).json(returnedPayments);
+    const counts = (await ReturnedPayments.aggregate([
+      {
+        $group: {
+          _id: null,
+          active: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", 'active'] },
+                1,
+                0
+              ]
+            }
+          },
+          waitingApproval: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", 'waitingApproval'] },
+                1,
+                0
+              ]
+            }
+          },
+          finished: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", 'finished'] },
+                1,
+                0
+              ]
+            }
+          },
+        }
+      },
+      {
+        $project: {
+          _id: 0
+        }
+      }
+    ]))[0];
+
+    res.status(200).json({
+      results: returnedPayments,
+      meta: {
+        counts
+      }
+    });
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }

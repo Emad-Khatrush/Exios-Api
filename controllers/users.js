@@ -9,6 +9,7 @@ const { errorMessages } = require('../constants/errorTypes');
 const moment = require('moment-timezone');
 const Office = require('../models/office');
 const { generateString } = require('../middleware/helper');
+const UserStatement = require('../models/userStatement');
 
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -160,8 +161,111 @@ module.exports.getClients = async (req, res, next) => {
       ]
     }
     const clients = await User.aggregate(query);
-    const total = await User.count({ isCanceled: false, 'roles.isClient': true });
-    res.status(200).json({ results: clients, meta: { total, limit, skip } });
+
+    const verifyStatementCounts = (await UserStatement.aggregate([
+      {
+        $match: { review: { $exists: false } }  // Match documents where review does not exist
+      },
+      {
+        $group: {
+          _id: "$user",                          // Group by user field
+          statements: { $push: "$$ROOT" }        // Push the entire document into an array
+        }
+      },
+      {
+        $project: {
+          _id: 1                                 // Include the _id field (user field) in the output
+        }
+      },
+      {
+        $lookup: {
+          from: "users",                        // Specify the 'users' collection to join with
+          localField: "_id",                    // Use the _id field (which is user) in the current pipeline
+          foreignField: "_id",                  // Match with the _id field in the 'users' collection
+          as: "userDetails"                     // Name the new array field to add the user details
+        }
+      },
+      {
+        $unwind: "$userDetails"                 // Unwind the array to deconstruct it
+      },
+      {
+        $replaceRoot: {                         // Replace the root with the userDetails document
+          newRoot: "$userDetails"
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: {
+              $cond: [
+                { $eq: [{ $type: "$review" }, "missing"] },
+                1,
+                0
+              ]
+            }
+          },
+        }
+      }
+    ]))[0];
+
+    const openedWalletCounts = (await UserStatement.aggregate([
+      {
+        $group: {
+          _id: "$user",                          // Group by user field
+          statements: { $push: "$$ROOT" }        // Push the entire document into an array
+        }
+      },
+      {
+        $project: {
+          _id: 1                                 // Include the _id field (user field) in the output
+        }
+      },
+      {
+        $lookup: {
+          from: "users",                        // Specify the 'users' collection to join with
+          localField: "_id",                    // Use the _id field (which is user) in the current pipeline
+          foreignField: "_id",                  // Match with the _id field in the 'users' collection
+          as: "userDetails"                     // Name the new array field to add the user details
+        }
+      },
+      {
+        $unwind: "$userDetails"                 // Unwind the array to deconstruct it
+      },
+      {
+        $replaceRoot: {                         // Replace the root with the userDetails document
+          newRoot: "$userDetails"
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: {
+              $cond: [
+                {},
+                1,
+                0
+              ]
+            }
+          },
+        }
+      }
+    ]))[0];
+        
+    const userCounts = await User.count({ isCanceled: false, 'roles.isClient': true });
+    res.status(200).json({
+      results: clients, 
+      meta: {
+        counts: {
+          openedWalletCounts: openedWalletCounts.total,
+          verifyStatementCounts: verifyStatementCounts.total,
+          userCounts
+        }, 
+        limit, 
+        skip
+      }
+    });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
