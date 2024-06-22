@@ -258,8 +258,8 @@ module.exports.getClients = async (req, res, next) => {
       results: clients, 
       meta: {
         counts: {
-          openedWalletCounts: openedWalletCounts.total,
-          verifyStatementCounts: verifyStatementCounts.total,
+          openedWalletCounts: openedWalletCounts?.total || 0,
+          verifyStatementCounts: verifyStatementCounts?.total || 0,
           userCounts
         }, 
         limit, 
