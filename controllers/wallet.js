@@ -3,13 +3,13 @@ const UserStatement = require("../models/userStatement");
 const Wallet = require("../models/wallet");
 const ErrorHandler = require('../utils/errorHandler');
 const mongoose = require('mongoose');
-const { ObjectId } = mongoose.Types; // Import ObjectId from mongoose
+const { ObjectId } = mongoose.Types; // Import new ObjectId from mongoose
 
 module.exports.getUserWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const wallet = await Wallet.find({ user: ObjectId(id) }).populate('user');
+    const wallet = await Wallet.find({ user: new ObjectId(id) }).populate('user');
     if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
 
     res.status(200).json({
@@ -76,7 +76,7 @@ module.exports.getUserStatement = async (req, res, next) => {
     const { id } = req.params;
     const { currency } = req.query;
 
-    const userStatement = await UserStatement.find({ user: ObjectId(id), currency }).sort({ _id: -1 }).populate('user');
+    const userStatement = await UserStatement.find({ user: new ObjectId(id), currency }).sort({ _id: -1 }).populate('user');
     if (!userStatement) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
 
     res.status(200).json({

@@ -6,7 +6,7 @@ module.exports.getActivities = async (req, res, next) => {
     const { limit, skip } = req.query;
 
     const activities = await Activities.find({}).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit);
-    const total = await Activities.count();
+    const total = await Activities.countDocuments();
     res.status(200).json({
       activities,
       limit,

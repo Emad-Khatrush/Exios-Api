@@ -38,7 +38,7 @@ module.exports.getMyTasks = async (req, res, next) => {
             $filter: {
               input: "$hasNotification",
               as: "notification",
-              cond: { $eq: ["$$notification.user", ObjectId(req.user._id)] }
+              cond: { $eq: ["$$notification.user", new ObjectId(req.user._id)] }
             }
           }
         }
@@ -486,7 +486,7 @@ module.exports.markAsReaded = async (req, res, next) => {
       return next(new ErrorHandler(400, errorMessages.TASK_NOT_FOUND));
     }
 
-    await Notifications.deleteMany({ entityId: ObjectId(task._id), user: ObjectId(req.user._id) });
+    await Notifications.deleteMany({ entityId: new ObjectId(task._id), user: new ObjectId(req.user._id) });
 
     res.status(200).json({ isSuccess: true });
   } catch (error) {

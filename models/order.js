@@ -142,12 +142,10 @@ const orderSchema = new Schema({
   debt: {
     currency: String,
     total: Number,
-    default: 0
   },
   credit: {
     currency: String,
     total: Number,
-    default: 0
   },
   paymentList: [{
     link: {

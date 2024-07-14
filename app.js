@@ -32,7 +32,6 @@ const wallet = require('./routes/wallet');
 // Whatsup packages
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
-const user = require('./models/user');
 const { isAdmin, protect } = require('./middleware/check-auth');
 
 let qrCodeData = null;
@@ -49,7 +48,7 @@ const sendMessageQueue = new Queue('send-message', REDIS_URL, {
   attempts: 3, // Number of times to retry a job after it fails
 }); 
 
-const connectionUrl = process.env.MONGO_URL || 'mongodb://localhost:27017/exios-admin'
+const connectionUrl = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
 mongoose.connect(connectionUrl, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -77,19 +76,20 @@ db.once("open", () => {
   const store = new MongoStore({ mongoose: mongoose });
   const WhatsAppConfig = process.env.NODE_ENV !== "production" ? LocalAuth : RemoteAuth;
   client = new Client({
+    webVersion: "2.2409.4-beta",
     authStrategy: new WhatsAppConfig({
-      clientId: 'admin-client',
+      clientId: 'admin-client-2',
       store,
       backupSyncIntervalMs: 300000
     }),
     puppeteer: {
       headless: true,
-      args: ['--no-sandbox']
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
     },
     webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-    }
+      type: "remote",
+      remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2409.4-beta.html",
+    },
   });
   client.initialize();
 

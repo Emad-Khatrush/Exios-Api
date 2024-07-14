@@ -1,14 +1,14 @@
 const { validatePhoneNumber } = require('../utils/messages');
 const ErrorHandler = require('../utils/errorHandler');
-const { Client } = require('whatsapp-web.js');
+// const { Client } = require('whatsapp-web.js');
 
-const client = new Client(); // Use a common client instance
+// const client = new Client(); // Use a common client instance
 
-client.on('ready', () => {
-  console.log('WhatsApp client is ready! 2');
-});
+// client.on('ready', () => {
+//   console.log('WhatsApp client is ready! 2');
+// });
 
-client.initialize();
+// client.initialize();
 
 // module.exports.sendWhatsupMessage = async (req, res, next) => {
 //   const { phone, message, shouldVerifyQrCode } = req.body;

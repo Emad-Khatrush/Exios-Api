@@ -212,7 +212,7 @@ module.exports.getSingleInventory = async (req, res, next) => {
   try {
     const inventory = await Inventory.findOne({ _id: req.params.id }).populate(['orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    const ids = inventory.orders.map(order => ObjectId(order.paymentList?._id));
+    const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
 
     let orders = await Orders.aggregate([
       {
@@ -293,7 +293,7 @@ module.exports.getInventoryOrders = async (req, res, next) => {
 
 module.exports.addOrdersToTheInventory = async (req, res, next) => {
   try {
-    const paymentListIds = req.body.map(order => ObjectId(order?.paymentList?._id));
+    const paymentListIds = req.body.map(order => new ObjectId(order?.paymentList?._id));
     const orders = await Orders.aggregate([
       {
         $unwind: '$paymentList'
@@ -319,7 +319,7 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
     .populate(['createdBy', 'orders'])
 
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    const ids = inventory.orders.map(order => ObjectId(order.paymentList?._id));
+    const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
     
     let updatedOrders = await Orders.aggregate([
       {
@@ -361,7 +361,7 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
           orders: { 
             $or: [
               { "paymentList._id": { $in: paymentList.map(id => id) } },
-              { "paymentList._id": { $in: paymentList.map(id => ObjectId(id)) } }
+              { "paymentList._id": { $in: paymentList.map(id => new ObjectId(id)) } }
             ]
           } 
         }
@@ -426,7 +426,7 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     const inventory = await Inventory.find({ inventoryType: 'warehouseInventory', inventoryPlace: office }).sort({ createdAt: -1 }).populate(['createdBy', 'orders']);
     if (inventory.length === 0) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
 
-    const ids = (inventory[0].orders || []).map(order => ObjectId(order.paymentList?._id));
+    const ids = (inventory[0].orders || []).map(order => new ObjectId(order.paymentList?._id));
 
     let orders = await Orders.aggregate([
       {

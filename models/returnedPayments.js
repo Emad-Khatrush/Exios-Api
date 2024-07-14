@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const returnedPaymentsSchema = new Schema({
-  createdBy: { type: Schema.Types.ObjectId, ref: 'User'},
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User'},
   orders: [],
   attachments: [{
     filename: String,
@@ -12,7 +12,7 @@ const returnedPaymentsSchema = new Schema({
     fileType: String,
     description: String
   }],
-  customer: { type: Schema.Types.ObjectId, ref: 'User'},
+  customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User'},
   deliveryTo: {
     type: String,
     required: true,

@@ -36,7 +36,7 @@ module.exports.getInvoices = async (req, res, next) => {
       }
     ]);
     orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
-    const ordersCount = await Orders.count({ isCanceled: false, unsureOrder: false });
+    const ordersCount = await Orders.countDocuments({ isCanceled: false, unsureOrder: false });
 
     res.status(200).json({
       orders,
@@ -199,7 +199,7 @@ module.exports.getOrdersTab = async (req, res, next) => {
     const tabTypeQuery = getTapTypeQuery(tabType);
     tabTypeQuery.isCanceled = false;
     const orders = await Orders.find(tabTypeQuery).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit);
-    const totalOrders = await Orders.count();
+    const totalOrders = await Orders.countDocuments();
     
     res.status(200).json({
       orders,
@@ -221,7 +221,7 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
   endDate = endDate && new Date(endDate) || null;
 
   let query = [{ $match: { $or: [{orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') }}, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }] } }];
-  const totalOrders = await Orders.count();
+  const totalOrders = await Orders.countDocuments();
   if (searchType === 'trackingNumber') {
     query = [
       { $unwind: '$paymentList' },
@@ -237,12 +237,12 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
       { $match: { $or: [ { 'paymentList.deliveredPackages.receiptNo': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'paymentList.deliveredPackages.containerInfo.billOfLading': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } } ] } }
     ]
   } else if (searchType === 'createdAtDate') {
-    const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+    const ObjectIdRegex = /^[0-9a-fA-F]{24}$/;
     // Check if the value is _id
-    if (objectIdRegex.test(searchValue.toLowerCase())) {
+    if (ObjectIdRegex.test(searchValue.toLowerCase())) {
       query = [{
         $match: {
-          _id: ObjectId(searchValue.toLowerCase())
+          _id: new ObjectId(searchValue.toLowerCase())
         }
       }];
     } else {
@@ -451,10 +451,11 @@ module.exports.getOrder = async (req, res, next) => {
   if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
   try {
-    let query = { $or: [{ orderId : String(id) }] };
+    let query = { $or: [{ orderId: String(id) }] };
     if (mongoose.Types.ObjectId.isValid(id)) {
       query = { _id: id };
     }
+
     const order = await Orders.findOne(query).populate(['madeBy', 'user']).lean();
     if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
@@ -607,7 +608,7 @@ module.exports.updateOrder = async (req, res, next) => {
             orders: { 
               $or: [
                 { "paymentList._id": { $in: receivedOrders.map(orderPackage => orderPackage._id) } },
-                { "paymentList._id": { $in: receivedOrders.map(orderPackage => ObjectId(orderPackage._id)) } }
+                { "paymentList._id": { $in: receivedOrders.map(orderPackage => new ObjectId(orderPackage._id)) } }
               ]
             } 
           }
@@ -654,7 +655,7 @@ module.exports.updateSinglePackage = async (req, res, next) => {
     }
 
     let oldOrder = await Orders.findOne({ _id: String(id) });
-    const index = oldOrder.paymentList.findIndex(orderPackage => ObjectId(req.body.paymentList._id).equals(ObjectId(orderPackage._id)));
+    const index = oldOrder.paymentList.findIndex(orderPackage => new ObjectId(req.body.paymentList._id).equals(new ObjectId(orderPackage._id)));
     if (index !== -1) {
       oldOrder.paymentList[index] = req.body.paymentList;
     }
@@ -979,7 +980,7 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
     
     await Inventory.updateMany(
       {
-        _id: ObjectId(inventoryId),
+        _id: new ObjectId(inventoryId),
         'orders.paymentList._id': { $in: orders.map(order => order?.paymentListId) }
       },
       {
@@ -999,9 +1000,9 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
 // Client Interface Controllers
 module.exports.getClientHomeData = async (req, res, next) => {
   try {
-    const receivedOrders = await Orders.count({ user: req.user._id, isFinished: true, unsureOrder: false });
-    const readyForReceivement = await Orders.count({ user: req.user._id, unsureOrder: false, $or: [ { isPayment: true, orderStatus: 4 }, { isPayment: false, orderStatus: 3 } ] });
-    const activeOrders = await Orders.count({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false });
+    const receivedOrders = await Orders.countDocuments({ user: req.user._id, isFinished: true, unsureOrder: false });
+    const readyForReceivement = await Orders.countDocuments({ user: req.user._id, unsureOrder: false, $or: [ { isPayment: true, orderStatus: 4 }, { isPayment: false, orderStatus: 3 } ] });
+    const activeOrders = await Orders.countDocuments({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false });
     const totalPaidInvoices = (await Orders.aggregate([
       { $match: { user: req.user._id, isCanceled: false, unsureOrder: false } },
       { $group: { _id: 'id', total: { $sum: '$totalInvoice' } } },

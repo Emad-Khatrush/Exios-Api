@@ -4,7 +4,7 @@ const Schema = mongoose.Schema;
 const userStatementSchema = new Schema({
   user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'User', // Reference to the 'User' collection
     required: true
   },

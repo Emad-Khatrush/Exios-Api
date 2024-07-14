@@ -253,7 +253,7 @@ module.exports.getClients = async (req, res, next) => {
       }
     ]))[0];
         
-    const userCounts = await User.count({ isCanceled: false, 'roles.isClient': true });
+    const userCounts = await User.countDocuments({ isCanceled: false, 'roles.isClient': true });
     res.status(200).json({
       results: clients, 
       meta: {
@@ -276,7 +276,7 @@ module.exports.searchForClient = async (req, res, next) => {
   try {
     let query = [{ $match: { isCanceled: false, 'roles.isClient': true } }];
     const clients = await User.aggregate(query);
-    const total = await User.count({ isCanceled: false, 'roles.isClient': true });
+    const total = await User.countDocuments({ isCanceled: false, 'roles.isClient': true });
     res.status(200).json({ results: clients, meta: { total } });
   } catch (error) {
     console.log(error);
@@ -395,12 +395,12 @@ module.exports.getHomeData = async (req, res, next) => {
   try {
     const offices = await Office.find({ office: ['tripoli', 'benghazi'] });
 
-    const activeOrdersCount = await Orders.count({ isFinished: false, unsureOrder: false, isCanceled: false });
+    const activeOrdersCount = await Orders.countDocuments({ isFinished: false, unsureOrder: false, isCanceled: false });
 
     const debts = await Orders.find({ 'debt.total': { $gt: 0 } }).populate('user');
     const credits = await Orders.find({ 'credit.total': { $gt: 0 } }).populate('user');
 
-    const clientUsersCount = await User.count({ 'roles.isClient': true });
+    const clientUsersCount = await User.countDocuments({ 'roles.isClient': true });
 
     const totalInvoices = (await Orders.aggregate([
       { $match: {
