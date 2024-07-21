@@ -76,7 +76,6 @@ db.once("open", () => {
   const store = new MongoStore({ mongoose: mongoose });
   const WhatsAppConfig = process.env.NODE_ENV !== "production" ? LocalAuth : RemoteAuth;
   client = new Client({
-    webVersion: "2.2409.4-beta",
     authStrategy: new WhatsAppConfig({
       clientId: 'admin-client-2',
       store,
@@ -84,7 +83,7 @@ db.once("open", () => {
     }),
     puppeteer: {
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--no-sandbox'],
     },
     webVersionCache: {
       type: "remote",
