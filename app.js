@@ -73,44 +73,44 @@ const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
 db.once("open", () => {
   console.log('MongoDB connected');
-  const store = new MongoStore({ mongoose: mongoose });
-  const WhatsAppConfig = process.env.NODE_ENV !== "production" ? LocalAuth : RemoteAuth;
-  client = new Client({
-    authStrategy: new WhatsAppConfig({
-      clientId: 'adminClient',
-      store,
-      backupSyncIntervalMs: 300000
-    }),
-    puppeteer: {
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    },
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-    }
-  });
-  client.initialize();
+  // const store = new MongoStore({ mongoose: mongoose });
+  // const WhatsAppConfig = process.env.NODE_ENV !== "production" ? LocalAuth : RemoteAuth;
+  // client = new Client({
+  //   authStrategy: new WhatsAppConfig({
+  //     clientId: 'adminClient',
+  //     store,
+  //     backupSyncIntervalMs: 300000
+  //   }),
+  //   puppeteer: {
+  //     headless: true,
+  //     args: ['--no-sandbox', '--disable-setuid-sandbox']
+  //   },
+  //   webVersionCache: {
+  //     type: 'remote',
+  //     remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+  //   }
+  // });
+  // client.initialize();
 
-  client.on('qr', (qr) => {
-    console.log(qr);
-    qrCodeData = qr;
-    qrcode.generate(qr, { small: true });
-  })
+  // client.on('qr', (qr) => {
+  //   console.log(qr);
+  //   qrCodeData = qr;
+  //   qrcode.generate(qr, { small: true });
+  // })
 
-  client.on('ready', () => {
-    console.log('WhatsApp client is ready!');
-  });
+  // client.on('ready', () => {
+  //   console.log('WhatsApp client is ready!');
+  // });
   
-  client.on('authenticated', (session) => {    
-    // Save the session object however you prefer.
-    // Convert it to json, save it to a file, store it in a database...
-    console.log("authenticated");
-  });
+  // client.on('authenticated', (session) => {    
+  //   // Save the session object however you prefer.
+  //   // Convert it to json, save it to a file, store it in a database...
+  //   console.log("authenticated");
+  // });
   
-  client.on('remote_session_saved', () => {
-    console.log('Remote Session Saved');
-  });
+  // client.on('remote_session_saved', () => {
+  //   console.log('Remote Session Saved');
+  // });
 })
 
 // render routes
