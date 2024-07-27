@@ -74,16 +74,21 @@ db.on("error", console.error.bind(console, "connection error:"));
 db.once("open", () => {
   console.log('MongoDB connected');
   const store = new MongoStore({ mongoose: mongoose });
-  const WhatsAppConfig = process.env.NODE_ENV !== "production" ? LocalAuth : LocalAuth;
+  const WhatsAppConfig = process.env.NODE_ENV !== "production" ? LocalAuth : RemoteAuth;
   client = new Client({
     authStrategy: new WhatsAppConfig({
       clientId: 'adminClient',
       store,
+      backupSyncIntervalMs: 300000
     }),
     puppeteer: {
       headless: true,
       args: ['--no-sandbox'],
     },
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+    }
   });
   client.initialize();
 
