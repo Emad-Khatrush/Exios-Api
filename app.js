@@ -83,7 +83,7 @@ db.once("open", () => {
     }),
     puppeteer: {
       headless: true,
-      args: ['--no-sandbox'],
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
     },
     webVersionCache: {
       type: 'remote',
