@@ -320,8 +320,9 @@ sendMessageQueue.process('send-message', 1, async (job) => {
 // Error Handler
 app.use(errorHandler);
 
-const server = app.listen(process.env.PORT || 8080, () => {
-  console.log(`Server working on http://localhost:${process.env.PORT || 8080}/`); 
+const port = process.env.port || 8080;
+
+const server = app.listen(port, () => {
+  console.log(`Server working on http://localhost:${port}/`); 
 })
 server.timeout = 300000;  
-  
