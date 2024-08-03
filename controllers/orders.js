@@ -1172,10 +1172,11 @@ module.exports.deleteUnsureOrder = async (req, res, next) => {
 module.exports.createTrackingNumbersForClient = async (req, res, next) => {
   try {
     const trackingArray = [];
-    req.body.forEach(({ trackingNumber }) => {
+    req.body.forEach(({ trackingNumber, method }) => {
       trackingArray.push({
         deliveredPackages: {
-          trackingNumber
+          trackingNumber,
+          shipmentMethod: method
         }
       })
     })
