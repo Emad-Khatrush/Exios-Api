@@ -541,7 +541,8 @@ module.exports.updateOrder = async (req, res, next) => {
     if (req.body.credit && req.body.credit.creditCurrency) {
       req.body.credit.currency = req.body.credit.creditCurrency;
     }
-    const update = {
+    
+    let update = {
       ...req.body,
       customerInfo: {
         ...oldOrder.customerInfo,
@@ -600,7 +601,34 @@ module.exports.updateOrder = async (req, res, next) => {
 
     // Remove received goods from the warehouse
     if (req.body?.paymentList?.length > 0) {
-      const receivedOrders = req.body.paymentList.filter(orderPackage => orderPackage.status.received);
+      // Filter delivered goods and update the deliveredDate
+      const receivedOrders = req.body.paymentList.filter(orderPackage => orderPackage.status.received);      
+      const ordersHasReceviedNow = (oldOrder.paymentList || []).map(oldOrderPackage => {
+        
+        const newUpdatedOrder = receivedOrders.find((newOrderPackage => {
+          const found = new ObjectId(newOrderPackage._id).equals(oldOrderPackage._id);
+          return found;
+        }));
+        
+        if (!!newUpdatedOrder && !oldOrderPackage.status.received && newUpdatedOrder.status.received) {
+          return oldOrderPackage._id;
+        }
+        return;
+      })
+        .filter(orderPackage => !!orderPackage)
+        
+      update.paymentList = req.body.paymentList.map(orderPackage => {
+        const newPackage = orderPackage.status.received && !!orderPackage?.index;
+        const isOrderReceived = ordersHasReceviedNow.find(id => new ObjectId(id).equals(orderPackage._id));
+        
+        if (isOrderReceived || newPackage) {
+          return ({ ...orderPackage, deliveredPackages: { ...orderPackage.deliveredPackages, deliveredInfo: { deliveredDate: new Date() } } });
+        }
+        return orderPackage;
+      });
+
+      await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
+
       await Inventory.updateMany(
         { inventoryType: 'warehouseInventory' },
         {

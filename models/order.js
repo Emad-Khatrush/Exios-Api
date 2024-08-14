@@ -197,6 +197,13 @@ const orderSchema = new Schema({
         type: Date,
         default: Date.now
       },
+      deliveredInfo: {
+        deliveredDate: {
+          type: Date,
+          defaule: Date.now
+        },
+        note: String
+      },
       locationPlace: String,
       trackingNumber: {
         type: String,
