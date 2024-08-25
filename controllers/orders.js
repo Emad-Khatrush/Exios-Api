@@ -1425,14 +1425,15 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       
       if (category === 'receivedGoods') {
         data.list = newList || [];
-        const ids = newList.map(data => new ObjectId(data._id));
         
-        for (const id of ids) {
-          await Orders.updateOne(
-            { "paymentList._id": id },
-            { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
-          );
-        }
+        // To Check received status for the selected packages
+        // const ids = newList.map(data => new ObjectId(data._id));
+        // for (const id of ids) {
+        //   await Orders.updateOne(
+        //     { "paymentList._id": id },
+        //     { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
+        //   );
+        // }
       }
     }
     const payment = await OrderPaymentHistory.create(data);

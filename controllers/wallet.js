@@ -250,14 +250,15 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
         data.category = category;
         if (category === 'receivedGoods') {
           data.list = list || [];
-          const ids = list.map(data => new ObjectId(data._id));
-        
-          for (const id of ids) {
-            await Order.updateOne(
-              { "paymentList._id": id },
-              { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
-            );
-          }
+          
+          // To Check received status for the selected packages
+          // const ids = list.map(data => new ObjectId(data._id));
+          // for (const id of ids) {
+          //   await Order.updateOne(
+          //     { "paymentList._id": id },
+          //     { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
+          //   );
+          // }
         }
       }
       
