@@ -66,6 +66,22 @@ router.route('/order/:id/addActivity')
 router.route('/orders/rating')
       .get(protect, isAdmin, orders.getRatings)
 
+router.route('/order/:id/payments')
+      .get(protect, allowAdminsAndEmployee, orders.getPaymentsOfOrder)
+      .post(protect, allowAdminsAndEmployee, upload.array('files'), orders.addPaymentToOrder)
+
+router.route('/orders/:id/confirmInvoice')
+      .post(protect, allowAdminsAndEmployee, orders.confirmInvoice)
+
+router.route('/orders/:id/items')
+      .put(protect, allowAdminsAndEmployee, orders.updateOrderItems)
+
+router.route('/orders/:id/confirmItemsChanges')
+      .put(protect, allowAdminsAndEmployee, orders.confirmItemsChanges)
+
+router.route('/monthReport')
+      .get(protect, isAdmin, orders.getMonthReport)
+      
 // Client Routes
 
 router.route('/client/home')

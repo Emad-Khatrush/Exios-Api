@@ -42,6 +42,48 @@ const orderSchema = new Schema({
     type: Number,
     default: 0
   },
+  invoiceConfirmed: {
+    type: Boolean,
+    default: false
+  },
+  requestedEditDetails: {
+    type: {
+      amount: Number,
+      createdAt: Date,
+      items: [{
+        description: String,
+        unitPrice: Number,
+        quantity: Number
+      }]
+    },
+    default: null
+  },
+  editedAmounts: {
+    type: [{
+      oldAmount: Number,
+      newAmount: Number,
+      createdAt: {
+        type: Date,
+      },
+      status: {
+        type: String,
+        enum: ['accepted', 'waiting', 'rejected', 'deleted'],
+      },
+      note: String,
+      items: [{
+        description: {
+          type: String,
+        },
+        unitPrice: {
+          type: Number,
+        },
+        quantity: {
+          type: Number,
+        }, 
+      }],
+    }],
+    default: [],
+  },
   shipment: {
     fromWhere: {
       type: String,

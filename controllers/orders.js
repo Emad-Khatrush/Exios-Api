@@ -12,14 +12,16 @@ const mongodb = require('mongodb');
 const Users = require('../models/user');
 const OrderRating = require('../models/orderRating');
 const Inventory = require('../models/inventory');
+const OrderPaymentHistory = require('../models/OrderPaymentHistory');
+const Balances = require('../models/balance');
 
 const { ObjectId } = mongodb;
 
 module.exports.getInvoices = async (req, res, next) => {
   try {
-    const { limit, skip } = req.query;
+    const { limit, skip, tabType } = req.query;
 
-    let orders = await Orders.aggregate([
+    let query = [
       {
         $match: { unsureOrder: false }
       },
@@ -34,13 +36,78 @@ module.exports.getInvoices = async (req, res, next) => {
       {
         $limit: Number(limit)
       }
-    ]);
+    ]
+
+    if (tabType === 'requestedEditInvoices') {
+      query = [
+        {
+          $match: {
+            $and: [
+              { unsureOrder: false, isCanceled: false },
+              { 
+                $or: [
+                  { requestedEditDetails: { $ne: null } },
+                ]
+              }
+            ]
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
+          }
+        }
+      ]
+    }
+
+    let orders = await Orders.aggregate(query); 
     orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
-    const ordersCount = await Orders.countDocuments({ isCanceled: false, unsureOrder: false });
+
+    let ordersCountList = (await Orders.aggregate([
+      { $match: { isCanceled: false } },
+      {
+        $group: {
+          _id: null,
+          all: {
+            $sum: {
+              $cond: [
+                { $eq: ["$unsureOrder", false] },
+                1,
+                0
+              ]
+            }
+          },
+          requestedEditInvoices: {
+            $sum: {
+              $cond: [
+                { 
+                  $and: [
+                    { $eq: ["$unsureOrder", false] },
+                    { 
+                      $and: [
+                        { $ne: [{ $ifNull: ["$requestedEditDetails", null] }, null] }, // Handles missing or null
+                        { $ne: [{ $ifNull: ["$requestedEditDetails", {}] }, {}] }       // Handles missing or empty object
+                      ]
+                    }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
+        }
+      },
+      {
+        $project: {
+          _id: 0
+        }
+      }
+    ]))[0];
 
     res.status(200).json({
       orders,
-      total: ordersCount,
+      countList: ordersCountList,
       limit,
       skip
     });
@@ -335,6 +402,8 @@ module.exports.createOrder = async (req, res, next) => {
     }
 
     const items = JSON.parse(req.body.items);
+    const totalInvoice = calculateTotalInvoice(items);
+
     const paymentList = JSON.parse(req.body.paymentList).map(data => ({
       link: data.paymentLink,
       status: {
@@ -366,6 +435,7 @@ module.exports.createOrder = async (req, res, next) => {
       ...req.body,
       user,
       orderId,
+      totalInvoice,
       customerInfo: {
         fullName,
         email,
@@ -1299,4 +1369,259 @@ module.exports.getOrderRating = async (req, res, next) => {
     console.log(error);
     return next(new ErrorHandler(404, error.message));
   }
+}
+
+module.exports.getPaymentsOfOrder = async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const query = { order: id };
+    if (req.query.category) {
+      query.category = req.query.category;
+    }
+    const payments = await OrderPaymentHistory.find(query).sort({ createdAt: -1 }).populate(['order', 'createdBy', 'customer']);
+
+    res.status(200).json({
+      results: payments
+    });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.addPaymentToOrder = async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const { receivedAmount, currency, createdAt, paymentType, customerId, category, list } = req.body;
+    const newList = JSON.parse(list);
+
+    const files = [];
+    if (req.files) {
+      for (let i = 0; i < req.files.length; i++) {
+        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoice-history");
+        files.push({
+          path: uploadedImg.publicUrl,
+          filename: uploadedImg.filename,
+          folder: uploadedImg.folder,
+          bytes: uploadedImg.bytes,
+          fileType: req.files[i].mimetype
+        });
+      }
+    }
+
+    const data = {
+      createdBy: req.user,
+      customer: customerId,
+      order: id,
+      attachments: files,
+      paymentType,
+      receivedAmount,
+      currency,
+      createdAt,
+    };
+
+    if (category) {
+      data.category = category;
+      
+      if (category === 'receivedGoods') {
+        data.list = newList || [];
+        const ids = newList.map(data => new ObjectId(data._id));
+        
+        for (const id of ids) {
+          await Orders.updateOne(
+            { "paymentList._id": id },
+            { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
+          );
+        }
+      }
+    }
+    const payment = await OrderPaymentHistory.create(data);
+
+    res.status(200).json(payment);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.confirmInvoice = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    await Orders.findOneAndUpdate({ _id: id }, { $set: { invoiceConfirmed: true } });
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.updateOrderItems = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { items } = req.body;
+    const totalInvoice = calculateTotalInvoice(items);
+    
+    await Orders.findOneAndUpdate({ _id: id }, {
+      $set: {
+        invoiceConfirmed: true,
+        requestedEditDetails: {
+          amount: totalInvoice,
+          items,
+          createdAt: new Date()
+        }
+      }
+    });
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.confirmItemsChanges = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { requestedEditDetails, status } = req.body;
+    const order = await Orders.findOne({ _id: id });
+    const newTotalInvoice = calculateTotalInvoice(requestedEditDetails.items);
+    const oldTotalInvoice = calculateTotalInvoice(order.items);
+    const update = {
+      $set: {
+        invoiceConfirmed: true,
+        requestedEditDetails: null,
+      },
+      $push: {
+        editedAmounts: {
+          oldAmount: oldTotalInvoice,
+          newAmount: newTotalInvoice,
+          items: order.items,
+          status,
+          createdAt: new Date()
+        }
+      }
+    }
+    
+    if (status === 'accepted') {
+      update.$set.items = requestedEditDetails.items;
+      update.$set.totalInvoice = newTotalInvoice;
+    }
+
+    await Orders.findOneAndUpdate({ _id: id }, update);
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.getMonthReport = async (req, res, next) => {
+  try {
+    const { date } = req.query;
+    const formatedDate = new Date(date);
+    const year = formatedDate.getFullYear();
+    const month = formatedDate.getMonth() + 1; // getMonth() returns 0-indexed month
+
+    let receivedGoods = await Orders.aggregate([
+      {
+        $unwind: '$paymentList'
+      },
+      {
+        $match: {
+          isCanceled: false,
+          unsureOrder: false,
+          'paymentList.deliveredPackages.deliveredInfo.deliveredDate': { $exists: true },
+          $expr: {
+            $and: [
+              { $eq: [{ $year: '$paymentList.deliveredPackages.deliveredInfo.deliveredDate' }, year] },
+              { $eq: [{ $month: '$paymentList.deliveredPackages.deliveredInfo.deliveredDate' }, month] }
+            ]
+          }
+        }
+      },
+      {
+        $sort: {
+          'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1
+        }
+      }
+    ]);
+    receivedGoods = await Orders.populate(receivedGoods, [{ path: "madeBy" }, { path: "user" }]);
+
+    let invoices = await Orders.aggregate([
+      {
+        $match: {
+          isCanceled: false,
+          unsureOrder: false,
+          isPayment: true,
+          $expr: {
+            $and: [
+              { $eq: [{ $year: '$createdAt' }, year] },
+              { $eq: [{ $month: '$createdAt' }, month] }
+            ]
+          }
+        }
+      },
+      {
+        $sort: {
+          createdAt: -1
+        }
+      }
+    ]);
+    invoices = await Orders.populate(invoices, [{ path: "madeBy" }, { path: "user" }]);
+
+    let paymentHistory = await OrderPaymentHistory.aggregate([
+      {
+        $match: {
+          $expr: {
+            $and: [
+              { $eq: [{ $year: '$createdAt' }, year] },
+              { $eq: [{ $month: '$createdAt' }, month] }
+            ]
+          }
+        }
+      },
+      {
+        $sort: {
+          createdAt: -1
+        }
+      }
+    ]);
+    paymentHistory = await OrderPaymentHistory.populate(paymentHistory, [{ path: "customer" }]);
+
+    let paidDebts = await Balances.aggregate([
+      {
+        $unwind: '$paymentHistory'
+      },
+      {
+        $match: {
+          $expr: {
+            $and: [
+              { $eq: [{ $year: '$paymentHistory.createdAt' }, year] },
+              { $eq: [{ $month: '$paymentHistory.createdAt' }, month] }
+            ]
+          }
+        }
+      },
+      {
+        $sort: {
+          'paymentHistory.createdAt': -1
+        }
+      }
+    ]);
+    paidDebts = await Balances.populate(paidDebts, [{ path: "owner" }]);
+
+    res.status(200).json({ success: true, results: { receivedGoods, invoices, paymentHistory, paidDebts } });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+const calculateTotalInvoice = (items) => {
+  let total = 0;
+  items.forEach(item => {
+    const amount = item.unitPrice * item.quantity;
+    total += amount;
+  })
+  return total;
 }

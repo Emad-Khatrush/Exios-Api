@@ -1,4 +1,6 @@
 const { errorMessages } = require("../constants/errorTypes");
+const Order = require("../models/order");
+const OrderPaymentHistory = require("../models/OrderPaymentHistory");
 const UserStatement = require("../models/userStatement");
 const Wallet = require("../models/wallet");
 const ErrorHandler = require('../utils/errorHandler');
@@ -190,7 +192,7 @@ module.exports.getAllWallets = async (req, res, next) => {
 module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { createdAt, amount, currency, description, note } = req.body;
+    const { createdAt, amount, currency, description, note, orderId, category, list } = req.body;
 
     const wallet = await Wallet.findOne({
       user: id,
@@ -217,6 +219,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
 
     const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
     const total = (lastUserStatement[0]?.total || 0) - Number(amount);
+    
     const userStatement = await UserStatement.create({
       user: id,
       createdBy: req.user,
@@ -229,6 +232,37 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       total,
       note
     });
+
+    if (orderId) {
+      const order = await Order.findOne({ orderId }).populate('user');
+      const data = {
+        createdBy: req.user,
+        customer: order.user._id,
+        order: order._id,
+        paymentType: 'wallet',
+        receivedAmount: amount,
+        currency,
+        createdAt,
+        note: `(Wallet was ${lastUserStatement[0]?.total} ${lastUserStatement[0]?.currency})`
+      };
+
+      if (category) {
+        data.category = category;
+        if (category === 'receivedGoods') {
+          data.list = list || [];
+          const ids = list.map(data => new ObjectId(data._id));
+        
+          for (const id of ids) {
+            await Order.updateOne(
+              { "paymentList._id": id },
+              { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
+            );
+          }
+        }
+      }
+      
+      await OrderPaymentHistory.create(data);
+    }
 
     res.status(200).json({
       createdAt: userStatement.createdAt
