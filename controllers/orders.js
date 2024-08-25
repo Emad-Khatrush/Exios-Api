@@ -12,7 +12,7 @@ const mongodb = require('mongodb');
 const Users = require('../models/user');
 const OrderRating = require('../models/orderRating');
 const Inventory = require('../models/inventory');
-const OrderPaymentHistory = require('../models/OrderPaymentHistory');
+const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 
 const { ObjectId } = mongodb;

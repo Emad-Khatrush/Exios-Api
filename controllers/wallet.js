@@ -1,6 +1,6 @@
 const { errorMessages } = require("../constants/errorTypes");
 const Order = require("../models/order");
-const OrderPaymentHistory = require("../models/OrderPaymentHistory");
+const OrderPaymentHistory = require("../models/orderPaymentHistory");
 const UserStatement = require("../models/userStatement");
 const Wallet = require("../models/wallet");
 const ErrorHandler = require('../utils/errorHandler');
