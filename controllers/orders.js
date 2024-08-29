@@ -1519,16 +1519,15 @@ module.exports.confirmItemsChanges = async (req, res, next) => {
 module.exports.getMonthReport = async (req, res, next) => {
   try {
     const { date, fetchType } = req.query;
-    const formatedDate = new Date(date);
-    const year = formatedDate.getFullYear();
-    const month = formatedDate.getMonth() + 1; // getMonth() returns 0-indexed month
-    let receivedGoods, invoices, paymentHistory, paidDebts;
+    const formattedDate = new Date(date);
+    const year = formattedDate.getFullYear();
+    const month = formattedDate.getMonth() + 1;
 
+    let cursor;
+    
     if (fetchType === 'receivedGoods') {
-      receivedGoods = await Orders.aggregate([
-        {
-          $unwind: '$paymentList'
-        },
+      cursor = Orders.aggregate([
+        { $unwind: '$paymentList' },
         {
           $match: {
             isCanceled: false,
@@ -1542,15 +1541,11 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        {
-          $sort: {
-            'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1
-          }
-        }
-      ]);
-      receivedGoods = await Orders.populate(receivedGoods, [{ path: "madeBy" }, { path: "user" }]);
+        { $sort: { 'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1 } }
+      ]).cursor();
+
     } else if (fetchType === 'invoices') {
-      invoices = await Orders.aggregate([
+      cursor = Orders.aggregate([
         {
           $match: {
             isCanceled: false,
@@ -1564,18 +1559,12 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        {
-          $sort: {
-            createdAt: -1
-          }
-        }
-      ]);
-      invoices = await Orders.populate(invoices, [{ path: "madeBy" }, { path: "user" }]);
+        { $sort: { createdAt: -1 } }
+      ]).cursor();
+
     } else if (fetchType === 'paidDebts') {
-      paidDebts = await Balances.aggregate([
-        {
-          $unwind: '$paymentHistory'
-        },
+      cursor = Balances.aggregate([
+        { $unwind: '$paymentHistory' },
         {
           $match: {
             $expr: {
@@ -1586,15 +1575,11 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        {
-          $sort: {
-            'paymentHistory.createdAt': -1
-          }
-        }
-      ]);
-      paidDebts = await Balances.populate(paidDebts, [{ path: "owner" }]);
+        { $sort: { 'paymentHistory.createdAt': -1 } }
+      ]).cursor();
+
     } else if (fetchType === 'paymentHistory') {
-      paymentHistory = await OrderPaymentHistory.aggregate([
+      cursor = OrderPaymentHistory.aggregate([
         {
           $match: {
             $expr: {
@@ -1605,21 +1590,32 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        {
-          $sort: {
-            createdAt: -1
-          }
-        }
-      ]);
-      paymentHistory = await OrderPaymentHistory.populate(paymentHistory, [{ path: "customer" }]);
+        { $sort: { createdAt: -1 } }
+      ]).cursor();
     }
 
-    res.status(200).json({ success: true, results: { receivedGoods, invoices, paymentHistory, paidDebts } });
+    let data = [];
+    await cursor.forEach(doc => {
+      data.push(doc);
+    });
+
+    // Populate references if needed
+    if (fetchType === 'receivedGoods') {
+      data = await Orders.populate(data, [{ path: "madeBy" }, { path: "user" }]);
+    } else if (fetchType === 'invoices') {
+      data = await Orders.populate(data, [{ path: "madeBy" }, { path: "user" }]);
+    } else if (fetchType === 'paidDebts') {
+      data = await Balances.populate(data, [{ path: "owner" }]);
+    } else if (fetchType === 'paymentHistory') {
+      data = await OrderPaymentHistory.populate(data, [{ path: "customer" }]);
+    }
+
+    res.status(200).json({ success: true, results: data });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));
   }
-}
+};
 
 const calculateTotalInvoice = (items) => {
   let total = 0;
