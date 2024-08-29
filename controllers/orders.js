@@ -1518,98 +1518,101 @@ module.exports.confirmItemsChanges = async (req, res, next) => {
 
 module.exports.getMonthReport = async (req, res, next) => {
   try {
-    const { date } = req.query;
+    const { date, fetchType } = req.query;
     const formatedDate = new Date(date);
     const year = formatedDate.getFullYear();
     const month = formatedDate.getMonth() + 1; // getMonth() returns 0-indexed month
+    let receivedGoods, invoices, paymentHistory, paidDebts;
 
-    let receivedGoods = await Orders.aggregate([
-      {
-        $unwind: '$paymentList'
-      },
-      {
-        $match: {
-          isCanceled: false,
-          unsureOrder: false,
-          'paymentList.deliveredPackages.deliveredInfo.deliveredDate': { $exists: true },
-          $expr: {
-            $and: [
-              { $eq: [{ $year: '$paymentList.deliveredPackages.deliveredInfo.deliveredDate' }, year] },
-              { $eq: [{ $month: '$paymentList.deliveredPackages.deliveredInfo.deliveredDate' }, month] }
-            ]
+    if (fetchType === 'receivedGoods') {
+      receivedGoods = await Orders.aggregate([
+        {
+          $unwind: '$paymentList'
+        },
+        {
+          $match: {
+            isCanceled: false,
+            unsureOrder: false,
+            'paymentList.deliveredPackages.deliveredInfo.deliveredDate': { $exists: true },
+            $expr: {
+              $and: [
+                { $eq: [{ $year: '$paymentList.deliveredPackages.deliveredInfo.deliveredDate' }, year] },
+                { $eq: [{ $month: '$paymentList.deliveredPackages.deliveredInfo.deliveredDate' }, month] }
+              ]
+            }
+          }
+        },
+        {
+          $sort: {
+            'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1
           }
         }
-      },
-      {
-        $sort: {
-          'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1
-        }
-      }
-    ]);
-    receivedGoods = await Orders.populate(receivedGoods, [{ path: "madeBy" }, { path: "user" }]);
-
-    let invoices = await Orders.aggregate([
-      {
-        $match: {
-          isCanceled: false,
-          unsureOrder: false,
-          isPayment: true,
-          $expr: {
-            $and: [
-              { $eq: [{ $year: '$createdAt' }, year] },
-              { $eq: [{ $month: '$createdAt' }, month] }
-            ]
+      ]);
+      receivedGoods = await Orders.populate(receivedGoods, [{ path: "madeBy" }, { path: "user" }]);
+    } else if (fetchType === 'invoices') {
+      invoices = await Orders.aggregate([
+        {
+          $match: {
+            isCanceled: false,
+            unsureOrder: false,
+            isPayment: true,
+            $expr: {
+              $and: [
+                { $eq: [{ $year: '$createdAt' }, year] },
+                { $eq: [{ $month: '$createdAt' }, month] }
+              ]
+            }
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
           }
         }
-      },
-      {
-        $sort: {
-          createdAt: -1
-        }
-      }
-    ]);
-    invoices = await Orders.populate(invoices, [{ path: "madeBy" }, { path: "user" }]);
-
-    let paymentHistory = await OrderPaymentHistory.aggregate([
-      {
-        $match: {
-          $expr: {
-            $and: [
-              { $eq: [{ $year: '$createdAt' }, year] },
-              { $eq: [{ $month: '$createdAt' }, month] }
-            ]
+      ]);
+      invoices = await Orders.populate(invoices, [{ path: "madeBy" }, { path: "user" }]);
+    } else if (fetchType === 'paidDebts') {
+      paidDebts = await Balances.aggregate([
+        {
+          $unwind: '$paymentHistory'
+        },
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: [{ $year: '$paymentHistory.createdAt' }, year] },
+                { $eq: [{ $month: '$paymentHistory.createdAt' }, month] }
+              ]
+            }
+          }
+        },
+        {
+          $sort: {
+            'paymentHistory.createdAt': -1
           }
         }
-      },
-      {
-        $sort: {
-          createdAt: -1
-        }
-      }
-    ]);
-    paymentHistory = await OrderPaymentHistory.populate(paymentHistory, [{ path: "customer" }]);
-
-    let paidDebts = await Balances.aggregate([
-      {
-        $unwind: '$paymentHistory'
-      },
-      {
-        $match: {
-          $expr: {
-            $and: [
-              { $eq: [{ $year: '$paymentHistory.createdAt' }, year] },
-              { $eq: [{ $month: '$paymentHistory.createdAt' }, month] }
-            ]
+      ]);
+      paidDebts = await Balances.populate(paidDebts, [{ path: "owner" }]);
+    } else if (fetchType === 'paymentHistory') {
+      paymentHistory = await OrderPaymentHistory.aggregate([
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: [{ $year: '$createdAt' }, year] },
+                { $eq: [{ $month: '$createdAt' }, month] }
+              ]
+            }
+          }
+        },
+        {
+          $sort: {
+            createdAt: -1
           }
         }
-      },
-      {
-        $sort: {
-          'paymentHistory.createdAt': -1
-        }
-      }
-    ]);
-    paidDebts = await Balances.populate(paidDebts, [{ path: "owner" }]);
+      ]);
+      paymentHistory = await OrderPaymentHistory.populate(paymentHistory, [{ path: "customer" }]);
+    }
 
     res.status(200).json({ success: true, results: { receivedGoods, invoices, paymentHistory, paidDebts } });
   } catch (error) {
