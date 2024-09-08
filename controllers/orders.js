@@ -1518,13 +1518,17 @@ module.exports.confirmItemsChanges = async (req, res, next) => {
 
 module.exports.getMonthReport = async (req, res, next) => {
   try {
-    const { date, fetchType } = req.query;
+    const { date, fetchType, skip, limit } = req.query;
     const formattedDate = new Date(date);
     const year = formattedDate.getFullYear();
     const month = formattedDate.getMonth() + 1;
 
     let cursor;
-    
+
+    // Define the skip and limit values, defaulting to null if not provided
+    const skipValue = skip ? parseInt(skip) : 0;
+    const limitValue = limit ? parseInt(limit) : 0; // You can decide to set a default like 100 if needed
+
     if (fetchType === 'receivedGoods') {
       cursor = Orders.aggregate([
         { $unwind: '$paymentList' },
@@ -1541,7 +1545,9 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        { $sort: { 'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1 } }
+        { $sort: { 'paymentList.deliveredPackages.deliveredInfo.deliveredDate': -1 } },
+        ...(skipValue ? [{ $skip: skipValue }] : []),  // Skip logic
+        ...(limitValue ? [{ $limit: limitValue }] : []) // Limit logic
       ]).cursor();
 
     } else if (fetchType === 'invoices') {
@@ -1559,7 +1565,9 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        { $sort: { createdAt: -1 } }
+        { $sort: { createdAt: -1 } },
+        ...(skipValue ? [{ $skip: skipValue }] : []),
+        ...(limitValue ? [{ $limit: limitValue }] : [])
       ]).cursor();
 
     } else if (fetchType === 'paidDebts') {
@@ -1575,7 +1583,9 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        { $sort: { 'paymentHistory.createdAt': -1 } }
+        { $sort: { 'paymentHistory.createdAt': -1 } },
+        ...(skipValue ? [{ $skip: skipValue }] : []),
+        ...(limitValue ? [{ $limit: limitValue }] : [])
       ]).cursor();
 
     } else if (fetchType === 'paymentHistory') {
@@ -1590,7 +1600,10 @@ module.exports.getMonthReport = async (req, res, next) => {
             }
           }
         },
-        { $sort: { createdAt: -1 } }
+        { $sort: { createdAt: -1 } },
+        { $project: { _id: 1, category: 1, currency: 1, receivedAmount: 1 } },
+        ...(skipValue ? [{ $skip: skipValue }] : []),
+        ...(limitValue ? [{ $limit: limitValue }] : [])
       ]).cursor();
     }
 
