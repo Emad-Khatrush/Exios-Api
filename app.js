@@ -28,6 +28,32 @@ const notifications = require('./routes/notifications');
 const balances = require('./routes/balance');
 const inventory = require('./routes/inventory');
 const wallet = require('./routes/wallet');
+const Redis = require('ioredis');
+
+let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+// Setup Redis connection using ioredis
+let redisClient;
+
+// Use TLS for secure Redis connection (Redis Cloud requires TLS)
+if (process.env.REDIS_HOST) {
+  redisClient = new Redis({
+    port: process.env.REDIS_PORT,
+    host: process.env.REDIS_HOST,
+    password: process.env.REDIS_PASS,
+  });
+} else {
+  // Fallback to default local Redis
+  redisClient = new Redis(REDIS_URL);
+}
+
+// Test Redis connection
+redisClient.on('connect', () => {
+  console.log('Connected to Redis Cloud!');
+});
+
+redisClient.on('error', (err) => {
+  console.error('Redis connection error:', err);
+});
 
 // Whatsup packages
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -37,16 +63,17 @@ const { isAdmin, protect } = require('./middleware/check-auth');
 let qrCodeData = null;
 let client;
 
-let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
-
 const app = express();
-const sendMessageQueue = new Queue('send-message', REDIS_URL, {
+
+// Initialize Bull queue with Redis client
+const sendMessageQueue = new Queue('send-message', {
+  redis: redisClient,
   limiter: {
     max: 1, // Number of concurrent jobs processed by queue
     duration: 1000, // Time in ms to check for jobs to process
   },
   attempts: 3, // Number of times to retry a job after it fails
-}); 
+});
 
 const connectionUrl = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
 mongoose.connect(connectionUrl, {
@@ -265,22 +292,6 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
   }
 });
 
-app.use(async (req, res) => {
-  try {
-    if (req.query.deletequeue === 'all') {
-      await sendMessageQueue.clean(0);
-      return res.status(404).send("Deleted all the queue jobs");
-    }
-    // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
-    const counts = await sendMessageQueue.getJobCounts();
-    console.log("Number of jobs in queue:", counts.waiting + counts.active);
-  } catch (error) {
-    console.log(error);
-  }
-
-  res.status(404).send("Page Not Found");
-});
-
 sendMessageQueue.process('resume-jobs', 1, async (job) => {
   // Resume the queue
   await sendMessageQueue.resume();
@@ -337,6 +348,25 @@ sendMessageQueue.process('send-message', 1, async (job) => {
   await job.delay(5000);
 
   return Promise.resolve();
+});
+
+app.use(async (req, res) => {
+  // try {
+  //   if (req.query.deleteMessages === 'all') {
+  //     await sendMessageQueue.clean(0);
+  //     return res.status(404).send("Deleted all the queue jobs");
+  //   }
+  //   // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
+  //   const counts = await sendMessageQueue.getJobCounts();
+  //   console.log("Number of jobs in queue:", counts.waiting + counts.active);
+  // } catch (error) {
+  //   console.log(error);
+  // }
+  if (req.query.deleteMessages === 'all') {
+    await sendMessageQueue.clean(0);
+  }
+
+  res.status(404).send("Page Not Found");
 });
 
 // Error Handler
