@@ -67,8 +67,11 @@ let client;
 const app = express();
 
 // Initialize Bull queue with Redis client
-const sendMessageQueue = new Queue('send-message', {
-  redis: redisClient,
+const sendMessageQueue = new Queue('send-message', redisClient, {
+  redis: {
+    tls: true, // Enables TLS for secure Redis connection
+    enableTLSForSentinelMode: false, // Make sure it's false, as you're not using Sentinel mode
+  },
   limiter: {
     max: 1, // Number of concurrent jobs processed by queue
     duration: 1000, // Time in ms to check for jobs to process
