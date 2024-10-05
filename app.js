@@ -40,6 +40,7 @@ if (process.env.REDIS_HOST) {
     port: process.env.REDIS_PORT,
     host: process.env.REDIS_HOST,
     password: process.env.REDIS_PASS,
+    maxRetriesPerRequest: null,
   });
 } else {
   // Fallback to default local Redis
@@ -73,6 +74,8 @@ const sendMessageQueue = new Queue('send-message', {
     duration: 1000, // Time in ms to check for jobs to process
   },
   attempts: 3, // Number of times to retry a job after it fails
+  tls: true, 
+  enableTLSForSentinelMode: false
 });
 
 const connectionUrl = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
