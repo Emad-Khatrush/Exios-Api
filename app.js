@@ -278,13 +278,17 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     let currentIndex = 0; // Initialize currentIndex outside the loop
 
     if (testBigData) {
-      const usersTest1 = {};
-      const usersTest2 = {};
+      const usersTest1 = [];
+      const usersTest2 = [];
       for (let index = 0; index < 50; index++) {
-        usersTest1[index].phone = `111011111${index}`;
+        usersTest1.push({
+          phone: `111011111${index}`
+        })
       }
       for (let index = 51; index < 100; index++) {
-        usersTest2[index].phone = `111011111${index}`;
+        usersTest2.push({
+          phone: `111011111${index}`
+        })
       }
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: index * 20000 });
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: index * 40000 });
