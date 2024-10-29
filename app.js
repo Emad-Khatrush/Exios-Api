@@ -290,8 +290,8 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
           phone: `111011111${index}`
         })
       }
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: 20000 });
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: 40000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: 2000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: 5000 });
       return res.status(200).json({ success: true, message: 'Messages sent successfully' });
     } 
 
@@ -327,7 +327,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
           const rtlContent = `\u202B${content}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent });
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1000 });
           index++;
         }
       }
