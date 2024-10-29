@@ -221,11 +221,10 @@ app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
 })
 
 app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
-  const { imgUrl, content, target, testMode } = req.body
+  const { imgUrl, content, target, testMode, testBigData } = req.body
   try {
-
     if (testMode) {
-      const target = await client.getContactById(validatePhoneNumber(`00905535728209@c.us`));
+      const target = await client.getContactById(validatePhoneNumber(`5535728209@c.us`));
       if (target) {
         const rtlContent = `\u202B${content}`;
         await sendMessageQueue.add('send-message', { target, index: 1, imgUrl, content: rtlContent }, { delay: 1 });
@@ -269,17 +268,34 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     } else {
       users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 });
     }
-    const splitCount = 30;
+
+    const splitCount = 50;
     const usersCount = users.length;
+    const rtlContent = `\u202B${content}`;
+
     const chunkSize = Math.ceil(usersCount / splitCount);
 
     let currentIndex = 0; // Initialize currentIndex outside the loop
 
+    if (testBigData) {
+      const usersTest1 = {};
+      const usersTest2 = {};
+      for (let index = 0; index < 50; index++) {
+        usersTest1[index].phone = `111011111${index}`;
+      }
+      for (let index = 51; index < 100; index++) {
+        usersTest2[index].phone = `111011111${index}`;
+      }
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: index * 20000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: index * 40000 });
+      return res.status(200).json({ success: true, message: 'Messages sent successfully' });
+    } 
+
     for (let index = 0; index < splitCount; index++) {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
-      const rtlContent = `\u202B${content}`;
+
       // Send message queue for each split, passing the index
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * 5000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * 20000 });
       
       currentIndex += chunkSize; // Update currentIndex for the next split
     }
@@ -307,7 +323,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
           const rtlContent = `\u202B${content}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 6000 });
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent });
           index++;
         }
       }
@@ -318,9 +334,6 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
     await sendMessageQueue.add('send-message', { target, index, imgUrl, content }, { delay: index * 30000 });
     return Promise.resolve();
   }
-
-  // Introduce a delay of 3 seconds before processing the next job
-  await job.delay(5000);
 
   return Promise.resolve();
 });
@@ -335,6 +348,7 @@ sendMessageQueue.process('send-message', 1, async (job) => {
     }
     await client.sendMessage(target.id._serialized, content);
     console.log("Message Sent " + index + ' !');
+    await sendMessageQueue.clean(0);
 
   } catch (error) {
     console.log(`Error processing job, attempt ${index}: ${error?.message}`);
@@ -361,8 +375,16 @@ app.use(async (req, res) => {
   // } catch (error) {
   //   console.log(error);
   // }
+  
   if (req.query.deleteMessages === 'all') {
     await sendMessageQueue.clean(0);
+    await sendMessageQueue.clean(0, 'active');
+    await sendMessageQueue.clean(0, 'failed');
+    await sendMessageQueue.clean(0, 'delayed');
+    await sendMessageQueue.clean(0, 'paused');
+    await sendMessageQueue.clean(0, 'wait');
+    const counts = await sendMessageQueue.getJobCounts();
+    console.log("Number of jobs in queue:", counts.waiting + counts.active);
   }
 
   res.status(404).send("Page Not Found");
