@@ -299,7 +299,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
 
       // Send message queue for each split, passing the index
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * 20000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * 10000 });
       
       currentIndex += chunkSize; // Update currentIndex for the next split
     }
@@ -327,7 +327,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
           const rtlContent = `\u202B${content}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1000 });
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1500 });
           index++;
         }
       }
