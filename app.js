@@ -290,8 +290,8 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
           phone: `111011111${index}`
         })
       }
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: index * 20000 });
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: index * 40000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: 20000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: 40000 });
       return res.status(200).json({ success: true, message: 'Messages sent successfully' });
     } 
 
