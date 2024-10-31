@@ -221,7 +221,8 @@ app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
 })
 
 app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
-  const { imgUrl, content, target, testMode, testBigData } = req.body
+  const { imgUrl, content, target, testMode, testBigData, skip, limit } = req.body
+
   try {
     if (testMode) {
       const target = await client.getContactById(validatePhoneNumber(`5535728209@c.us`));
@@ -263,10 +264,16 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
           $sort: {
             createdAt: -1
           }
+        },
+        {
+          $skip: Number(skip) || 0
+        },
+        {
+          $limit: Number(limit)
         }
       ])
     } else {
-      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 });
+      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 }).skip(skip).limit(limit);
     }
 
     const splitCount = 50;
@@ -327,7 +334,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
           const rtlContent = `\u202B${content}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1500 });
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1000 });
           index++;
         }
       }
