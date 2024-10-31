@@ -276,7 +276,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
       users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 }).skip(skip).limit(limit);
     }
 
-    const splitCount = 50;
+    const splitCount = 2;
     const usersCount = users.length;
     const rtlContent = `\u202B${content}`;
 
