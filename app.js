@@ -95,6 +95,35 @@ app.use((req, res, next) => {
 })
 app.use(cors());
 
+// "--disable-accelerated-2d-canvas",
+//       "--disable-background-timer-throttling",
+//       "--disable-backgrounding-occluded-windows",
+//       "--disable-breakpad",
+//       "--disable-cache",
+//       "--disable-component-extensions-with-background-pages",
+//       "--disable-crash-reporter",
+//       "--disable-dev-shm-usage",
+//       "--disable-extensions",
+//       "--disable-gpu",
+//       "--disable-hang-monitor",
+//       "--disable-ipc-flooding-protection",
+//       "--disable-mojo-local-storage",
+//       "--disable-notifications",
+//       "--disable-popup-blocking",
+//       "--disable-print-preview",
+//       "--disable-prompt-on-repost",
+//       "--disable-renderer-backgrounding",
+//       "--disable-software-rasterizer",
+//       "--ignore-certificate-errors",
+//       "--log-level=3",
+//       "--no-default-browser-check",
+//       "--no-first-run",
+//       "--no-sandbox",
+//       "--no-zygote",
+//       "--renderer-process-limit=100",
+//       "--enable-gpu-rasterization",
+//       "--enable-zero-copy",
+
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
 db.once("open", () => {
@@ -398,7 +427,7 @@ app.use(async (req, res) => {
     console.log("Number of jobs in queue:", counts.waiting + counts.active);
   }
 
-  res.status(404).send("Page Not Found");
+  res.status(404).send("Page Not Found 2");
 });
 
 // Error Handler

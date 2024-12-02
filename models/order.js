@@ -231,6 +231,8 @@ const orderSchema = new Schema({
     images: [{
       filename: String,
       path: String,
+      folder: String,
+      bytes: String,
       fileType: String,
       description: String
     }],
