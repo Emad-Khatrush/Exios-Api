@@ -22,4 +22,4 @@ jobs:
 
     - name: Deploy to EC2
       run: |
-        ssh ubuntu@ec2-13-49-241-71.eu-north-1.compute.amazonaws.com 'cd Exios-Api && deploy.sh'
+        ssh ubuntu@ec2-13-49-241-71.eu-north-1.compute.amazonaws.com 'cd /home/ubuntu/Exios && ./deploy.sh'
