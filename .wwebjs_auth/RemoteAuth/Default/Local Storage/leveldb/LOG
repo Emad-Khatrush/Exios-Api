@@ -1,2 +1,3 @@
-2024/12/07-16:43:58.267 4314 Creating DB C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\RemoteAuth\Default\Local Storage\leveldb since it was missing.
-2024/12/07-16:43:58.275 4314 Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\RemoteAuth\Default\Local Storage\leveldb/MANIFEST-000001
+2024/12/22-19:19:38.418 457c Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\RemoteAuth\Default\Local Storage\leveldb/MANIFEST-000002
+2024/12/22-19:19:38.418 457c Recovering log #3
+2024/12/22-19:19:38.419 457c Reusing old log C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\RemoteAuth\Default\Local Storage\leveldb/000003.log 
