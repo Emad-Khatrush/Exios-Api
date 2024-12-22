@@ -171,6 +171,14 @@ db.once("open", () => {
   client.on('remote_session_saved', () => {
     console.log('Remote Session Saved');
   });
+
+  client.on('disconnected', (reason) => {
+    console.log('Client disconnected:', reason);
+  
+    // Reinitialize the client
+    client.destroy();
+    client.initialize();
+  });
 })
 
 // render routes
