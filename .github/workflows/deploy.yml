@@ -1,0 +1,25 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ec2-13-49-241-71.eu-north-1.compute.amazonaws.com >> ~/.ssh/known_hosts
+
+    - name: Deploy to EC2
+      run: |
+        ssh ubuntu@ec2-13-49-241-71.eu-north-1.compute.amazonaws.com 'cd /home/ubuntu/Exios-Api && ./deploy.sh'
