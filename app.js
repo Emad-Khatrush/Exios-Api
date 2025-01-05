@@ -132,7 +132,6 @@ db.once("open", () => {
   const WhatsAppConfig = RemoteAuth;
   client = new Client({
     authStrategy: new WhatsAppConfig({
-      clientId: "client-one",
       store,
       backupSyncIntervalMs: 300000
     }),
