@@ -141,13 +141,6 @@ db.once("open", () => {
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--disable-gpu",
-        "--no-zygote",
-        "--single-process",
-        "--disable-background-timer-throttling",
-        "--disable-renderer-backgrounding"
       ]
     }
   });
@@ -175,10 +168,6 @@ db.once("open", () => {
 
   client.on('disconnected', (reason) => {
     console.log('Client disconnected:', reason);
-  
-    // Reinitialize the client
-    client.destroy();
-    client.initialize();
   });
 })
 
