@@ -62,4 +62,24 @@ const inventorySchema = new Schema({
   timestamps: true
 })
 
+// Create compound indexes
+inventorySchema.index(
+  { inventoryType: 1, status: 1, shippingType: 1, createdAt: -1 },
+  { name: 'compound_inventory_index' }
+);
+
+// Create a text index for full-text search
+inventorySchema.index(
+  {
+    voyage: 'text',
+    shippingType: 'text',
+    inventoryPlace: 'text',
+    shippedCountry: 'text',
+    'orders.orderId': 'text',
+    'orders.paymentList.deliveredPackages.trackingNumber': 'text'
+  },
+  { name: 'text_search_index' }
+);
+
+
 module.exports = mongoose.model("Inventory", inventorySchema);

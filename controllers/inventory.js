@@ -14,6 +14,7 @@ module.exports.getInventory = async (req, res, next) => {
   try {
     const { limit, skip, searchValue, searchType } = req.query;
 
+    // Base query pipeline
     let query = [
       {
         $match: {
@@ -22,17 +23,17 @@ module.exports.getInventory = async (req, res, next) => {
         }
       },
       {
-        $sort: {
-          createdAt: -1
-        }
+        $sort: { createdAt: -1 } // Sort by creation date in descending order
       },
       {
-        $skip: Number(skip) || 0
+        $skip: Number(skip) || 0 // Skip documents for pagination
       },
       {
-        $limit: Number(limit)
+        $limit: Number(limit) || 10 // Limit the number of results (default to 20 if not provided)
       }
     ];
+
+    // Adjust query based on searchType
     if (searchType && searchType !== 'all') {
       if (searchType === 'finished') {
         query[0].$match.status = searchType;
@@ -41,34 +42,69 @@ module.exports.getInventory = async (req, res, next) => {
         query[0]['$match']['status'] = { $ne: 'finished' };
       }
     }
+
+    // Handle searchValue with text search
     if (searchValue) {
       query = [
         {
           $match: {
             inventoryType: 'inventoryGoods',
-            $or: [
-              { 'voyage': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-              { 'shippingType': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-              { 'inventoryPlace': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-              { 'shippedCountry': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-              { '_id': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-              { 'orders.orderId': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-              { 'orders.paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } },
-            ]
+            $text: { $search: searchValue.trim().toLowerCase() } // Use text index for faster search
           }
         },
         {
-          $sort: {
-            createdAt: -1
-          }
+          $sort: { createdAt: -1 }
+        },
+        {
+          $skip: Number(skip) || 0
+        },
+        {
+          $limit: Number(limit) || 20
         }
-      ]
+      ];
     }
 
-    let inventory = await Inventory.aggregate(query);
-    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    inventory = await Inventory.populate(inventory, [{ path: "createdBy" }, { path: "orders" }]);
+    // Aggregation pipeline
+    const inventoryPipeline = [...query];
 
+    // Add $lookup stages for populating createdBy and orders
+    inventoryPipeline.push(
+      {
+        $lookup: {
+          from: "users", // Replace with the actual collection name for createdBy
+          localField: "createdBy",
+          foreignField: "_id",
+          as: "createdBy",
+          pipeline: [
+            { $project: { username: 1, email: 1 } } // Fetch only necessary fields
+          ]
+        }
+      },
+      {
+        $unwind: "$createdBy" // Flatten the array created by $lookup
+      },
+      {
+        $lookup: {
+          from: "orders", // Replace with the actual collection name for orders
+          localField: "orders",
+          foreignField: "_id",
+          as: "orders",
+          pipeline: [
+            { $project: { orderId: 1, paymentList: 1 } } // Fetch only necessary fields
+          ]
+        }
+      }
+    );
+
+    // Execute the aggregation query
+    let inventory = await Inventory.aggregate(inventoryPipeline);
+
+    // If no inventory found, return an error
+    if (!inventory) {
+      return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    }
+
+    // Count aggregation pipeline
     let counts = { all: inventory?.length };
     if (!searchValue) {
       counts = (await Inventory.aggregate([
@@ -131,45 +167,18 @@ module.exports.getInventory = async (req, res, next) => {
       ]))[0];
     }
 
-    // Extract order IDs from each inventory item
-    const orderIds = inventory.map(item => item.orders.map(order => order._id));
-
-    // Flatten the array of arrays of order IDs
-    const flattenedOrderIds = orderIds.flat();
-
-    // Perform aggregation to get orders using the extracted order IDs
-    const orders = await Orders.aggregate([
-        { 
-          $unwind: {
-            path: '$paymentList', 
-            preserveNullAndEmptyArrays: true
-          }
-        },
-        { $match: { _id: { $in: flattenedOrderIds } } }
-    ]);
-
-    // Create a map of order IDs to orders for efficient lookup
-    const orderMap = orders.reduce((acc, order) => {
-        acc[order._id.toString()] = order;
-        return acc;
-    }, {});
-
-    // Replace inventory.orders with corresponding orders
-    const updatedInventory = inventory.map(item => ({
-        ...item,
-        orders: item.orders.map(order => orderMap[order._id.toString()])
-    }));
+    // Return the response
     res.status(200).json({
-      results: updatedInventory,
-      total: 0,
+      results: inventory,
+      total: counts.all,
       countList: counts,
-      limit,
-      skip
+      limit: Number(limit),
+      skip: Number(skip)
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(500, error.message));
   }
-}
+};
 
 module.exports.createInventory = async (req, res, next) => {
   try {
