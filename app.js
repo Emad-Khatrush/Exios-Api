@@ -209,6 +209,28 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
     return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
   }
 });
+
+app.post('/api/sendWhatsupImages', async (req, res) => {
+  const { imgUrls, phoneNumber } = req.body
+  try {
+    const target = await client.getContactById(validatePhoneNumber(phoneNumber));
+    if (target) {
+      if (imgUrls && imgUrls.length > 0) {
+        for (const imgUrl of imgUrls) {
+          const media = new MessageMedia('image/png', await imageToBase64(imgUrl))
+          await client.sendMessage(target.id._serialized, media);
+        }
+      }
+      return res.status(200).json({ success: true, message: 'Images sent successfully' });
+    } else {
+      return res.status(400).json({ success: false, message: 'Contact not found' });
+    }
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
+  }
+});
+
 app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
   try {
     const { data } = req.body;
