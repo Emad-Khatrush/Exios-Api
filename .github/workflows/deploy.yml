@@ -16,8 +16,8 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ec2-13-49-241-71.eu-north-1.compute.amazonaws.com >> ~/.ssh/known_hosts
+        ssh-keyscan -H ec2-16-171-31-85.eu-north-1.compute.amazonaws.com >> ~/.ssh/known_hosts
 
     - name: Deploy to EC2
       run: |
-        ssh ubuntu@ec2-13-49-241-71.eu-north-1.compute.amazonaws.com 'cd /home/ubuntu/Exios-Api && ./deploy.sh'
+        ssh ubuntu@ec2-16-171-31-85.eu-north-1.compute.amazonaws.com 'cd /home/ubuntu/Exios-Api && ./deploy.sh'
