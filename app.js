@@ -95,6 +95,8 @@ app.use((req, res, next) => {
 })
 app.use(cors());
 
+// "whatsapp-web.js": "^1.26.1-alpha.3",
+
 // "--disable-accelerated-2d-canvas",
 //       "--disable-background-timer-throttling",
 //       "--disable-backgrounding-occluded-windows",
@@ -133,7 +135,7 @@ db.once("open", () => {
   client = new Client({
     authStrategy: new WhatsAppConfig({
       store,
-      backupSyncIntervalMs: 300000
+      backupSyncIntervalMs: 600000
     }),
     puppeteer: {
       headless: true,
