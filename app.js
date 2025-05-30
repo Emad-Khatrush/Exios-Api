@@ -128,7 +128,7 @@ app.use(cors());
 
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
-db.once("open", () => {
+db.once("open", async () => {
   console.log('MongoDB connected');
   const store = new MongoStore({ mongoose: mongoose });
   const WhatsAppConfig = RemoteAuth;
@@ -193,8 +193,17 @@ db.once("open", () => {
     console.log('Remote Session Saved');
   });
 
-  client.on('disconnected', (reason) => {
-    console.log('Client disconnected:', reason);
+  client.on('disconnected', async (reason) => {
+    try {
+      if (await store.sessionExists({session: 'RemoteAuth'})) {
+        console.log('Deleting session from store');
+        await store.delete({ session: 'RemoteAuth' });
+      }
+      console.log('Client disconnected:', reason);
+      
+    } catch (error) {
+      console.log('Client disconnected:', reason);
+    }
   });
 })
 
