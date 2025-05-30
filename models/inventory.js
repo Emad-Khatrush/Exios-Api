@@ -30,10 +30,12 @@ const inventorySchema = new Schema({
     type: Date,
     required: true
   },
-  voyageAmount: {
-    type: Number,
+  departureDate: {
+    type: Date,
     required: true
   },
+  voyageAmount: Number,
+  costPrice: Number,
   voyageCurrency: {
     type: String,
     required: true,

@@ -182,7 +182,7 @@ module.exports.getInventory = async (req, res, next) => {
 
 module.exports.createInventory = async (req, res, next) => {
   try {
-    const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note } = req.body;
+    const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note, costPrice } = req.body;
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -208,7 +208,8 @@ module.exports.createInventory = async (req, res, next) => {
       voyageCurrency,
       inventoryType,
       shippingType,
-      note
+      note,
+      costPrice,
     })
 
     res.status(200).json(inventory);

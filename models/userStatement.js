@@ -20,6 +20,14 @@ const userStatementSchema = new Schema({
     receivedDate: Date,
     isAdminConfirmed: Boolean
   },
+  attachments: [{
+    filename: String,
+    path: String,
+    folder: String,
+    bytes: String,
+    fileType: String,
+    description: String
+  }],
 }, 
 {
   timestamps: true

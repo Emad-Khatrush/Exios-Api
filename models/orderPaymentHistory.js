@@ -31,6 +31,10 @@ const orderPaymentHistorySchema = new Schema({
     enum: ['invoice', 'receivedGoods'],
     default: 'invoice'
   },
+  rate: {
+    type: Number,
+    default: 0
+  },
   paymentType: {
     type: String,
     required: true,

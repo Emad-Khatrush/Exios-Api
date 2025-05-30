@@ -283,17 +283,23 @@ module.exports.getOrdersTab = async (req, res, next) => {
 }
 
 module.exports.getOrdersBySearch = async (req, res, next) => {
-  let { tabType, startDate, endDate, searchValue, searchType } = req.query;
+  let { tabType, startDate, endDate, searchValue, searchType, hideFinishedOrdersCheck } = req.query;
   startDate = startDate && new Date(startDate) || null;
   endDate = endDate && new Date(endDate) || null;
 
   let query = [{ $match: { $or: [{orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') }}, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }] } }];
+  if (hideFinishedOrdersCheck === 'true') {
+    query.push({ $match: { isFinished: false } });
+  }
   const totalOrders = await Orders.countDocuments();
   if (searchType === 'trackingNumber') {
     query = [
       { $unwind: '$paymentList' },
-      { $match: { $or: [ { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } } ] } }
+      { $match: { $or: [ { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } } ] } }, 
     ]
+    if (hideFinishedOrdersCheck == 'true') {
+      query.push({ $match: { isFinished: false } });
+    }    
   } else if (searchType === 'phoneNumber') {
     query = [
       { $match: { $or: [ { 'customerInfo.phone': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } } ] } }
@@ -1379,9 +1385,20 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
       query.category = req.query.category;
     }
     const payments = await OrderPaymentHistory.find(query).sort({ createdAt: -1 }).populate(['order', 'createdBy', 'customer']);
+    
+    const updatedPaymentList = await Promise.all(payments.map(async (data) => {
+      for (const d of data.list) {
+        const inventory = await Inventory.findOne({ 'orders.paymentList._id': new ObjectId(d._id), inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select(['-orders']).lean();
+        if (inventory) {
+          // If inventory is found, add the flight property to the payment data
+          d.flight = inventory;
+        }
+      }
+      return data; // Return the updated payment data
+    }));
 
     res.status(200).json({
-      results: payments
+      results: updatedPaymentList
     });
   } catch (error) {
     console.log(error);
@@ -1392,7 +1409,7 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
 module.exports.addPaymentToOrder = async (req, res, next) => {
   try {
     const id = req.params.id;
-    const { receivedAmount, currency, createdAt, paymentType, customerId, category, list } = req.body;
+    const { receivedAmount, currency, createdAt, paymentType, customerId, category, list, rate } = req.body;
     const newList = JSON.parse(list);
 
     const files = [];
@@ -1416,6 +1433,7 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       attachments: files,
       paymentType,
       receivedAmount,
+      rate: Number(rate),
       currency,
       createdAt,
     };
@@ -1605,7 +1623,27 @@ module.exports.getMonthReport = async (req, res, next) => {
         ...(skipValue ? [{ $skip: skipValue }] : []),
         ...(limitValue ? [{ $limit: limitValue }] : [])
       ]).cursor();
+    } else if (fetchType === 'inventory') {
+      cursor = Inventory.aggregate([
+        {
+          $match: {
+            inventoryType: 'inventoryGoods',
+            shippingType: { $ne: 'domestic' },
+            'inventoryFinishedDate': { $exists: true },
+            $expr: {
+              $and: [
+                { $eq: [{ $year: '$inventoryFinishedDate' }, year] },
+                { $eq: [{ $month: '$inventoryFinishedDate' }, month] }
+              ]
+            }
+          }
+        },
+        { $sort: { 'shippingType': -1 } },
+        ...(skipValue ? [{ $skip: skipValue }] : []),
+        ...(limitValue ? [{ $limit: limitValue }] : [])
+      ]).cursor();
     }
+
 
     let data = [];
     await cursor.forEach(doc => {
@@ -1621,6 +1659,8 @@ module.exports.getMonthReport = async (req, res, next) => {
       data = await Balances.populate(data, [{ path: "owner" }]);
     } else if (fetchType === 'paymentHistory') {
       data = await OrderPaymentHistory.populate(data, [{ path: "customer" }]);
+    } else if (fetchType === 'inventory') {
+      data = await Inventory.populate(data, [{ path: "createdBy" }]);
     }
 
     res.status(200).json({ success: true, results: data });
