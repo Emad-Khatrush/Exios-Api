@@ -173,7 +173,7 @@ db.once("open", async () => {
   });
   client.initialize();
 
-  client.on('qr', async (qr) => {
+  client.on('qr', (qr) => {
     console.log(qr);
     qrCodeData = qr;
     qrcode.generate(qr, { small: true });
