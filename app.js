@@ -177,10 +177,6 @@ db.once("open", async () => {
     console.log(qr);
     qrCodeData = qr;
     qrcode.generate(qr, { small: true });
-    if (!!(await store.sessionExists({session: 'RemoteAuth'}))) {
-      console.log('Deleting session from store');
-      await store.delete({ session: 'RemoteAuth' });
-    }
   })
 
   client.on('ready', () => {
