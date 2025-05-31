@@ -256,7 +256,7 @@ module.exports.getAllWallets = async (req, res, next) => {
 module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { createdAt, amount, currency, description, note, orderId, category, list, rate } = req.body;
+    const { createdAt, amount, currency, description, note, orderId, category, rate } = req.body;
 
     const wallet = await Wallet.findOne({
       user: id,
@@ -267,6 +267,8 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     if (wallet.balance < amount) {
       throw next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
     }
+
+    const list = JSON.parse(req.body.list) || [];
 
     const files = [];
     if (req.files) {
