@@ -268,8 +268,10 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       throw next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
     }
 
-    const list = JSON.parse(req.body.list) || [];
-
+    let list =  [];
+    if (req.body.list && typeof req.body.list === 'string') {
+      list = JSON.parse(req.body.list);
+    }
     const files = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
