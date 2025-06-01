@@ -28,11 +28,9 @@ const inventorySchema = new Schema({
   },
   inventoryFinishedDate: {
     type: Date,
-    required: true
   },
   departureDate: {
     type: Date,
-    required: true
   },
   voyageAmount: Number,
   costPrice: Number,
