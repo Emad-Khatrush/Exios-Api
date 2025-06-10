@@ -1,6 +1,9 @@
 const Balance = require('../models/balance');
 const Orders = require('../models/order');
 const Users = require('../models/user');
+const Wallets = require('../models/wallet');
+const UserStatement = require('../models/userStatement');
+const OrderPaymentHistory = require('../models/orderPaymentHistory');
 
 const ErrorHandler = require('../utils/errorHandler');
 const { errorMessages } = require('../constants/errorTypes');
@@ -125,7 +128,7 @@ module.exports.getBalances = async (req, res, next) => {
 
 module.exports.createBalance = async (req, res, next) => {
   try {
-    const { balanceType, amount, currency, orderId, customerId, notes, createdOffice } = req.body;
+    const { balanceType, amount, currency, orderId, customerId, notes, createdOffice, debtType } = req.body;
     if (!balanceType || !amount || !currency || !customerId || !notes || !createdOffice) {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
@@ -148,6 +151,7 @@ module.exports.createBalance = async (req, res, next) => {
       owner: user,
       createdBy: req.user,
       initialAmount: amount,
+      debtType
     })
     
     res.status(200).json(balance);
@@ -165,7 +169,8 @@ module.exports.createPaymentHistory = async (req, res, next) => {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
     // Get the existing balance document from the database
-    const existingBalance = await Balance.findOne({ _id: id });
+    const existingBalance = await Balance.findOne({ _id: id }).populate(['owner', 'order']);
+
     if (existingBalance.currency === 'LYD' && currency === 'USD') {
       return next(new ErrorHandler(400, errorMessages.BALANCE_CURRENCY_NOT_ACCEPTED));
     }
@@ -189,8 +194,17 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         });
       }
     }
-
     req.body.attachments = files;
+
+    const wallet = await Wallets.findOne({
+      user: existingBalance.owner._id,
+      currency,
+    });
+    if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
+    if (wallet.balance < amount) {
+      throw next(new ErrorHandler(404, 'Insufficient wallet balance'));
+    }
+
     let updatedAmount = amount;
 
     if (sameCurrency === 'false') {
@@ -231,6 +245,54 @@ module.exports.createPaymentHistory = async (req, res, next) => {
 
     const balance = await Balance.findByIdAndUpdate({ _id: id }, updateQuery, { safe: true, upsert: true, new: true });
     if (!balance) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
+
+    // Update the wallet balance
+    await Wallets.findOneAndUpdate(
+      {
+        user: existingBalance.owner._id,
+        currency,
+      },
+      {
+        $inc: { balance: -amount }
+      },
+      {
+        new: true, // Return the updated document
+      }
+    );
+    
+    const lastUserStatement = await UserStatement.find({ user: existingBalance.owner._id, currency }).sort({ _id: -1 }).limit(1);
+    const total = (lastUserStatement[0]?.total || 0) - Number(amount);
+    const debtMessage = (req.body?.debtType || existingBalance?.debtType) === 'invoice' ? 'فاتورة' : (req.body?.debtType || existingBalance?.debtType) === 'receivedGoods' ? 'بضاعة مستلمة' : 'دين عام';
+
+    await UserStatement.create({
+      user: existingBalance.owner._id,
+      createdBy: req.user,
+      calculationType: '-',
+      paymentType: 'wallet',
+      createdAt,
+      description:  `${existingBalance?.order ? existingBalance?.order.orderId : ''}دفع دين  لسداد قيمة (${debtMessage})`,
+      amount,
+      currency,
+      total,
+      note: `Payment for ${existingBalance?.debtType || ''} debt ${existingBalance?.order ? existingBalance?.order?.orderId : ''} #${balance.notes}`,
+      attachments: files,
+    });
+
+    if (existingBalance.order && existingBalance.debtType !== 'general') {
+      const data = {
+        createdBy: req.user,
+        customer: existingBalance.owner._id,
+        order: existingBalance.order._id,
+        paymentType: 'wallet',
+        receivedAmount: amount,
+        currency,
+        createdAt,
+        rate: rate || 0,
+        note: `(Wallet was ${lastUserStatement[0]?.total} ${lastUserStatement[0]?.currency})`,
+        category: existingBalance.debtType,
+      };
+      await OrderPaymentHistory.create(data);
+    }
 
     res.status(200).json(balance);
   } catch (error) {

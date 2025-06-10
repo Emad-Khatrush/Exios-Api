@@ -38,6 +38,10 @@ const balanceSchema = new mongoose.Schema({
     enum: ['LYD', 'USD'],
     required: true,
   },
+  debtType: {
+    type: String,
+    enum: ['invoice', 'receivedGoods', 'general'],
+  },
   status: {
     type: String,
     enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost'],

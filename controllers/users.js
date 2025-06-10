@@ -115,7 +115,7 @@ module.exports.getEmployees = async (req, res, next) => {
 module.exports.getClients = async (req, res, next) => {
   try {
     const { searchValue, limit, skip } = req.query;
-    let query = [{ $match: { isCanceled: false, 'roles.isClient': true } }, { $sort: { createdAt: -1 } }, { $skip: Number(skip) || 0 }, { $limit: Number(limit) || 10 }];
+    let query = [{ $match: { isCanceled: false } }, { $sort: { createdAt: -1 } }, { $skip: Number(skip) || 0 }, { $limit: Number(limit) || 10 }];
     
     if (searchValue) {
       query = [
@@ -253,7 +253,7 @@ module.exports.getClients = async (req, res, next) => {
       }
     ]))[0];
         
-    const userCounts = await User.countDocuments({ isCanceled: false, 'roles.isClient': true });
+    const userCounts = await User.countDocuments({ isCanceled: false });
     res.status(200).json({
       results: clients, 
       meta: {
