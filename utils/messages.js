@@ -74,5 +74,22 @@ const getRandomChars = (length) => {
   return result;
 }
 
+const replaceWords = (text, replacements) => {
+  // Regular expression to match |word|
+  const regex = /\|(\w+)\|/g;
+  
+  // Replace each match with corresponding value from replacements object
+  const replacedText = text.replace(regex, (match, word) => {
+      // Check if replacements object has the key
+      if (replacements.hasOwnProperty(word)) {
+          return replacements[word];
+      } else {
+          // If replacement not found, return original match
+          return match;
+      }
+  });
+  
+  return replacedText;
+}
 
-module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64, getRandomChars };
+module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64, getRandomChars, replaceWords };

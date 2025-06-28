@@ -7,7 +7,7 @@ const morgan = require('morgan');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
-const { validatePhoneNumber, imageToBase64 } = require('./utils/messages');
+const { validatePhoneNumber, imageToBase64, replaceWords } = require('./utils/messages');
 const Queue = require('bull');
 
 // DB Collections
@@ -295,7 +295,12 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     if (testMode) {
       const target = await client.getContactById(validatePhoneNumber(`5535728209@c.us`));
       if (target) {
-        const rtlContent = `\u202B${content}`;
+        const generetedContent = replaceWords(content, {
+          fullName: `Emad Khatrush`,
+          customerId: 'A200',
+          phone: '+905535728209',
+        });
+        const rtlContent = `\u202B${generetedContent}`;
         await sendMessageQueue.add('send-message', { target, index: 1, imgUrl, content: rtlContent }, { delay: 1 });
         return res.status(200).json({ success: true, message: 'Message sent successfully' });
       }
@@ -394,14 +399,20 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
 
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users } = job.data;
-
+  
   try {
+    
     let index = job.data.index || 0; // Retrieve index from job data or default to 0
     for (const user of users) {
       if (user.phone && `${user.phone}`.length >= 5) {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
         if (target) {
-          const rtlContent = `\u202B${content}`;
+          const generetedContent = replaceWords(content, {
+            fullName: `${user?.firstName} ${user?.lastName}`,
+            customerId: user?.customerId,
+            phone: user?.phone,
+          });
+          const rtlContent = `\u202B${generetedContent}`;
           await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1000 });
           index++;
         }
