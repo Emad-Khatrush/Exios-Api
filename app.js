@@ -346,7 +346,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
         }
       ])
     } else {
-      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1 }).sort({ createdAt: -1 }).skip(skip).limit(limit);
+      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1, firstName: 1, lastName: 1, customerId: 1 }).sort({ createdAt: -1 }).skip(skip).limit(limit);
     }
 
     const splitCount = 2;
