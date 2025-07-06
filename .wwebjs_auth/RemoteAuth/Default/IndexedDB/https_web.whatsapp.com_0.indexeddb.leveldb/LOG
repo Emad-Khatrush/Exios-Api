@@ -1,0 +1,41 @@
+2025/07/06-23:26:31.318 1c9c Reusing MANIFEST C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\RemoteAuth\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/07/06-23:26:31.319 1c9c Recovering log #391
+2025/07/06-23:26:31.422 1c9c Reusing old log C:\Users\Emad\Desktop\Exios\exios-api\.wwebjs_auth\RemoteAuth\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000391.log 
+2025/07/06-23:26:32.439 8adc Level-0 table #408: started
+2025/07/06-23:26:32.451 8adc Level-0 table #408: 505391 bytes OK
+2025/07/06-23:26:32.452 8adc Delete type=0 #391
+2025/07/06-23:26:32.453 8adc Manual compaction at level-0 from '\x00\x1b\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1c\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1b\x00\x00\x05' @ 1865923 : 1
+2025/07/06-23:26:32.453 8adc Compacting 1@0 + 2@1 files
+2025/07/06-23:26:32.475 8adc Generated table #409@0: 11304 keys, 241428 bytes
+2025/07/06-23:26:32.477 8adc Generated table #410@0: 234 keys, 5009 bytes
+2025/07/06-23:26:32.477 8adc Compacted 1@0 + 2@1 files => 246437 bytes
+2025/07/06-23:26:32.477 8adc compacted to: files[ 0 2 13 0 0 0 0 ]
+2025/07/06-23:26:32.478 8adc Delete type=2 #408
+2025/07/06-23:26:32.478 8adc Manual compaction at level-0 from '\x00\x1b\x00\x00\x05' @ 1865923 : 1 .. '\x00\x1c\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/07/06-23:26:34.942 8adc Compacting 1@1 + 10@2 files
+2025/07/06-23:26:35.037 8adc Generated table #411@1: 51623 keys, 2217588 bytes
+2025/07/06-23:26:35.111 8adc Generated table #412@1: 20907 keys, 2176813 bytes
+2025/07/06-23:26:35.149 8adc Generated table #413@1: 2753 keys, 2147229 bytes
+2025/07/06-23:26:35.185 8adc Generated table #414@1: 2483 keys, 2143890 bytes
+2025/07/06-23:26:35.217 8adc Generated table #415@1: 2407 keys, 2141749 bytes
+2025/07/06-23:26:35.279 8adc Generated table #416@1: 22089 keys, 2200936 bytes
+2025/07/06-23:26:35.362 8adc Generated table #417@1: 32234 keys, 2243621 bytes
+2025/07/06-23:26:35.416 8adc Generated table #418@1: 6208 keys, 2126131 bytes
+2025/07/06-23:26:35.529 8adc Generated table #419@1: 87999 keys, 2234110 bytes
+2025/07/06-23:26:35.650 8adc Generated table #420@1: 91810 keys, 2239524 bytes
+2025/07/06-23:26:35.657 8adc Generated table #421@1: 4102 keys, 101392 bytes
+2025/07/06-23:26:35.657 8adc Compacted 1@1 + 10@2 files => 21972983 bytes
+2025/07/06-23:26:35.659 8adc compacted to: files[ 0 1 14 0 0 0 0 ]
+2025/07/06-23:26:35.659 8adc Delete type=2 #302
+2025/07/06-23:26:35.659 8adc Delete type=2 #394
+2025/07/06-23:26:35.659 8adc Delete type=2 #395
+2025/07/06-23:26:35.659 8adc Delete type=2 #396
+2025/07/06-23:26:35.659 8adc Delete type=2 #397
+2025/07/06-23:26:35.659 8adc Delete type=2 #398
+2025/07/06-23:26:35.659 8adc Delete type=2 #399
+2025/07/06-23:26:35.659 8adc Delete type=2 #400
+2025/07/06-23:26:35.659 8adc Delete type=2 #401
+2025/07/06-23:26:35.659 8adc Delete type=2 #402
+2025/07/06-23:26:35.660 8adc Delete type=2 #403
+2025/07/06-23:26:35.660 8adc Delete type=2 #404
+2025/07/06-23:26:35.660 8adc Delete type=2 #409
