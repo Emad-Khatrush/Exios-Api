@@ -174,6 +174,7 @@ db.once("open", async () => {
   client.initialize();
 
   client.on('qr', (qr) => {
+
     console.log(qr);
     qrCodeData = qr;
     qrcode.generate(qr, { small: true });
@@ -182,6 +183,15 @@ db.once("open", async () => {
   client.on('ready', () => {
     console.log('WhatsApp client is ready!');
   });
+
+  client.on('loading_screen', (percent, message) => {
+    console.log('LOADING SCREEN', percent, message);
+  });
+
+  client.on('auth_failure', msg => {
+    // Fired if session restore was unsuccessful
+    console.error('AUTHENTICATION FAILURE', msg);
+});
   
   client.on('authenticated', (session) => {    
     // Save the session object however you prefer.

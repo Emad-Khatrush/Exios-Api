@@ -39,7 +39,7 @@
     "puppeteer": "^23.11.1",
     "util": "^0.12.5",
     "uuid": "^10.0.0",
-    "whatsapp-web.js": "https://github.com/Emad-Khatrush/whatsapp-web.js.git",
+    "whatsapp-web.js": "github:Emad-Khatrush/whatsapp-web.js",
     "wwebjs-mongo": "^1.1.0"
   },
   "devDependencies": {
