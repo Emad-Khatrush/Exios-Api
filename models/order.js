@@ -96,6 +96,7 @@ const orderSchema = new Schema({
     method: {
       type: String,
       required: true,
+      enum: ['air', 'sea', 'unknown']
     },
     estimatedDelivery: Date,
     exiosShipmentPrice: Number,
@@ -279,7 +280,10 @@ const orderSchema = new Schema({
         type: Number,
         default: 0
       },
-      shipmentMethod: String,
+      shipmentMethod: {
+        type: String,
+        enum: ['air', 'sea', 'unknown'],
+      },
       containerInfo: {
         billOfLading: {
           type: String,
