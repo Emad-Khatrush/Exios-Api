@@ -191,7 +191,7 @@ db.once("open", async () => {
   client.on('auth_failure', msg => {
     // Fired if session restore was unsuccessful
     console.error('AUTHENTICATION FAILURE', msg);
-});
+  });
   
   client.on('authenticated', (session) => {    
     // Save the session object however you prefer.
