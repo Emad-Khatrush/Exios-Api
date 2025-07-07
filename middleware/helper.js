@@ -74,11 +74,13 @@ exports.getTapTypeQuery = (tapType) => {
                 $or: [
                 {
                     isPayment: true,
+                    unsureOrder: false,
                     orderStatus: { $in: [2, 3] },
                     isCanceled: false
                 },
                 {
                     isPayment: false,
+                    unsureOrder: false,
                     orderStatus: { $in: [1, 2] },
                     isCanceled: false
                 }
