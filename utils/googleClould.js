@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { getRandomChars } = require('./messages')
 
 let projectId =  process.env.GOOGLE_PROJECT_NUMBER;
-let keyFilename = "sonic-shuttle-310011-b426b461aa9e.json";
+let keyFilename = "sonic-shuttle-310011-a67d5340fcd3.json";
 const storage = new Storage({
   projectId,
   keyFilename,
