@@ -12,7 +12,7 @@
 
 # production
 /build
-
+sonic-shuttle-310011-f23676884491.json
 # misc
 .DS_Store
 .env.local

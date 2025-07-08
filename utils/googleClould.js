@@ -4,10 +4,22 @@ const { v4: uuidv4 } = require('uuid');
 const { getRandomChars } = require('./messages')
 
 let projectId =  process.env.GOOGLE_PROJECT_NUMBER;
-let keyFilename = "sonic-shuttle-310011-a67d5340fcd3.json";
+
 const storage = new Storage({
   projectId,
-  keyFilename,
+  credentials: {
+  "type": "service_account",
+  "project_id": "sonic-shuttle-310011",
+  "private_key_id": process.env.GOOGLE_SECRET_KEY_ID,
+  "private_key": process.env.GOOGLE_SECRET_KEY.replace(/\\n/g, '\n'),
+  "client_email": "exios-641@sonic-shuttle-310011.iam.gserviceaccount.com",
+  "client_id": "115109869051641604976",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/exios-641%40sonic-shuttle-310011.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+  },
 });
 
 const bucket = storage.bucket(process.env.GOOGLE_BUCKET_ID);
