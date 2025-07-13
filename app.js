@@ -388,7 +388,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 
     for (let index = 0; index < splitCount; index++) {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
-
+      const delay = getRandomStep(2000, 10000, 1000);
       // Send message queue for each split, passing the index
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * delay });
       
