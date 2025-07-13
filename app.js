@@ -7,7 +7,7 @@ const morgan = require('morgan');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
-const { validatePhoneNumber, imageToBase64, replaceWords } = require('./utils/messages');
+const { validatePhoneNumber, imageToBase64, replaceWords, getRandomStep } = require('./utils/messages');
 const Queue = require('bull');
 
 // DB Collections
@@ -380,8 +380,9 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
           phone: `111011111${index}`
         })
       }
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: 2000 });
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: 5000 });
+      const delay = getRandomStep(2000, 10000, 1000);
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: index * delay });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: index * delay });
       return res.status(200).json({ success: true, message: 'Messages sent successfully' });
     } 
 
@@ -389,7 +390,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
 
       // Send message queue for each split, passing the index
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * 10000 });
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * delay });
       
       currentIndex += chunkSize; // Update currentIndex for the next split
     }
@@ -422,8 +423,9 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
             customerId: user?.customerId,
             phone: user?.phone,
           });
+          const delay = getRandomStep(2000, 6000, 1000);
           const rtlContent = `\u202B${generetedContent}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * 1000 });
+          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * delay });
           index++;
         }
       }

@@ -74,6 +74,17 @@ const getRandomChars = (length) => {
   return result;
 }
 
+function getRandomStep(min, max, step) {
+    // Calculate how many steps are possible
+    const numSteps = Math.floor((max - min) / step) + 1;
+
+    // Generate a random index within the number of steps
+    const randomIndex = Math.floor(Math.random() * numSteps);
+
+    // Return the value at that step
+    return min + (randomIndex * step);
+}
+
 const replaceWords = (text, replacements) => {
   // Regular expression to match |word|
   const regex = /\|(\w+)\|/g;
@@ -92,4 +103,4 @@ const replaceWords = (text, replacements) => {
   return replacedText;
 }
 
-module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64, getRandomChars, replaceWords };
+module.exports = { formatPhoneNumber, validatePhoneNumber, checkIfPhoneValid, imageToBase64, getRandomChars, replaceWords, getRandomStep };
