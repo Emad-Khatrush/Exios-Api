@@ -258,6 +258,8 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate } = req.body;
 
+    const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
+
     const wallet = await Wallet.findOne({
       user: id,
       currency,
@@ -265,13 +267,14 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
 
     if (wallet.balance < amount) {
-      throw next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
+      throw next(new ErrorHandler(400, 'Insufficient wallet balance'));
     }
 
-    let list =  [];
+    let list = [];
     if (req.body.list && typeof req.body.list === 'string') {
       list = JSON.parse(req.body.list);
     }
+
     const files = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -286,22 +289,29 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       }
     }
 
+    // Calculate new wallet balance with truncation to 2 decimals
+    const newBalance = truncateToTwo(wallet.balance - Number(amount));
+
+    // Update wallet with new balance
     await Wallet.findOneAndUpdate(
       {
         user: id,
         currency,
       },
       {
-        $inc: { balance: -amount }
+        balance: newBalance
       },
       {
-        new: true, // Return the updated document
+        new: true,
       }
     );
 
     const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
-    const total = (lastUserStatement[0]?.total || 0) - Number(amount);
-    
+    const previousTotal = Number(lastUserStatement[0]?.total || 0);
+
+    // Calculate total with truncation to two decimals
+    const total = truncateToTwo(previousTotal - Number(amount));
+
     const userStatement = await UserStatement.create({
       user: id,
       createdBy: req.user,
@@ -309,7 +319,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       paymentType: 'wallet',
       createdAt,
       description,
-      amount,
+      amount: truncateToTwo(Number(amount)),
       currency,
       total,
       note,
@@ -323,29 +333,20 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
         customer: order.user._id,
         order: order._id,
         paymentType: 'wallet',
-        receivedAmount: amount,
+        receivedAmount: truncateToTwo(Number(amount)),
         currency,
         createdAt,
         rate: Number(rate) || 0,
-        note: `(Wallet was ${lastUserStatement[0]?.total} ${lastUserStatement[0]?.currency})`
+        note: `(Wallet was ${truncateToTwo(previousTotal)} ${currency})`
       };
 
       if (category) {
         data.category = category;
         if (category === 'receivedGoods') {
           data.list = list || [];
-          
-          // To Check received status for the selected packages
-          // const ids = list.map(data => new ObjectId(data._id));
-          // for (const id of ids) {
-          //   await Order.updateOne(
-          //     { "paymentList._id": id },
-          //     { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
-          //   );
-          // }
         }
       }
-      
+
       await OrderPaymentHistory.create(data);
     }
 
@@ -353,7 +354,8 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       createdAt: userStatement.createdAt
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(500, error.message));
   }
-}
+};
+
 
