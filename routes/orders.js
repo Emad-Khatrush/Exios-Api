@@ -79,6 +79,15 @@ router.route('/orders/:id/items')
 router.route('/orders/:id/confirmItemsChanges')
       .put(protect, allowAdminsAndEmployee, orders.confirmItemsChanges)
 
+router.route('/user/:id/packages')
+      .get(protect, allowAdminsAndEmployee, orders.getUserPackagesOfOrdersAdmin)
+
+router.route('/user/:id/markAsDelivered')
+      .post(protect, allowAdminsAndEmployee, orders.markPackagesAsDelivered)
+
+router.route('/invoices/customer/:id')
+      .get(protect, allowAdminsAndEmployee, orders.getInvoicesByCustomer);
+
 router.route('/monthReport')
       .get(protect, isAdmin, orders.getMonthReport)
       

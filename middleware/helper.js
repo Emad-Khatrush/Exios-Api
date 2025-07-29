@@ -93,7 +93,7 @@ exports.getTapTypeQuery = (tapType) => {
             return { unsureOrder: false,  orderStatus: 0, isPayment: true, isCanceled: false }
 
         case 'finished':
-            return { isFinished: true, isCanceled: false }
+            return { isFinished: true, isCanceled: false, unsureOrder: false }
 
         case 'unsure':
             return { unsureOrder: true, isCanceled: false }

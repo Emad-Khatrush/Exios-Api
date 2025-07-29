@@ -14,6 +14,9 @@ const OrderRating = require('../models/orderRating');
 const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
+const Wallet = require('../models/wallet');
+const { useBalanceOfWallet } = require('./wallet');
+const Invoices = require('../models/invoice');
 
 const { ObjectId } = mongodb;
 
@@ -110,6 +113,83 @@ module.exports.getInvoices = async (req, res, next) => {
       countList: ordersCountList,
       limit,
       skip
+    });
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
+  try {
+    const { limit, skip, tabType } = req.query;
+    const { id } = req.params;
+    
+    const tabTypeQuery = getTapTypeQuery(tabType);
+    tabTypeQuery.isCanceled = false;
+    let orders;
+    if (tabType === 'readyForPickup') {
+      orders = await Orders.aggregate([
+        { $match: { ...tabTypeQuery, user: new ObjectId(id) } },
+        {
+          $project: {
+            // Include all fields
+            _id: 1,
+            user: 1,
+            madeBy: 1,
+            orderId: 1,
+            customerInfo: 1,
+            receivedUSD: 1,
+            receivedLYD: 1,
+            receivedShipmentLYD: 1,
+            receivedShipmentUSD: 1,
+            paymentExistNote: 1,
+            placedAt: 1,
+            totalInvoice: 1,
+            invoiceConfirmed: 1,
+            requestedEditDetails: 1,
+            editedAmounts: 1,
+            shipment: 1,
+            productName: 1,
+            quantity: 1,
+            isShipment: 1,
+            isPayment: 1,
+            unsureOrder: 1,
+            hasRemainingPayment: 1,
+            hasProblem: 1,
+            orderStatus: 1,
+            isFinished: 1,
+            activity: 1,
+            netIncome: 1,
+            orderNote: 1,
+            isCanceled: 1,
+            cancelation: 1,
+            images: 1,
+            debt: 1,
+            credit: 1,
+            items: 1,
+
+            // Filter the paymentList array
+            paymentList: {
+              $filter: {
+                input: "$paymentList",
+                as: "payment",
+                cond: {
+                  $and: [
+                    { $eq: ["$$payment.status.arrivedLibya", true] },
+                    { $eq: ["$$payment.status.received", false] }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]);
+    } else {
+      orders = await Orders.find({ ...tabTypeQuery, user: id }).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit);
+    }
+
+    res.status(200).json({
+      results: orders,
     });
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -1304,6 +1384,336 @@ module.exports.createTrackingNumbersForClient = async (req, res, next) => {
       paymentList: trackingArray
     });
     res.status(200).json(order);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+module.exports.markPackagesAsDelivered = async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const { selectedPackages, payment, totalCost } = req.body;
+
+    const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
+
+    if (!selectedPackages || !Array.isArray(selectedPackages) || selectedPackages.length === 0) {
+      return next(new ErrorHandler(400, 'No packages selected'));
+    }
+
+    const wallets = await Wallet.find({ user: id });
+    const walletMap = {};
+    wallets.forEach(wallet => {
+      walletMap[wallet.currency] = wallet.balance;
+    });
+
+    const hasUSD = walletMap['USD'] >= (payment.amountUSD || 0);
+    const hasLYD = walletMap['LYD'] >= (payment.amountLYD || 0);
+
+    if ((payment.amountLYD || 0) === 0 && (payment.amountUSD || 0) === 0) {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_FOUND));
+    }
+    if (!hasUSD && payment.amountUSD > 0) {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_ENOUGH));
+    }
+    if (!hasLYD && payment.amountLYD > 0) {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_ENOUGH));
+    }
+
+    const convertedLYDToUSD = payment.amountLYD ? truncateToTwo(payment.amountLYD / payment.rate) : 0;
+    const totalAvailableUSD = truncateToTwo(payment.amountUSD + convertedLYDToUSD);
+    if (totalAvailableUSD < (totalCost - 2)) {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_ENOUGH));
+    }
+
+    let lydBalance = payment.amountLYD || 0;
+    let usdBalance = payment.amountUSD || 0;
+
+    for (let i = 0; i < selectedPackages.length; i++) {
+      const pkg = selectedPackages[i];
+      const costPackage = pkg.cost || 0;
+      const isLast = i === selectedPackages.length - 1;
+
+      let usdToUse = 0;
+      let lydToUse = 0;
+
+      if (isLast) {
+        // Use all remaining balance on the last package
+        usdToUse = usdBalance;
+        lydToUse = lydBalance;
+        usdBalance = 0;
+        lydBalance = 0;
+
+        if (usdToUse > 0) {
+          await useBalanceOfWallet({
+            ...req,
+            params: { id },
+            body: {
+              createdAt: new Date(),
+              amount: truncateToTwo(usdToUse),
+              currency: 'USD',
+              description: `تم دفع قيمة الشحن ${pkg.trackingNumber} ${pkg.orderId}`,
+              note: `${pkg.weight} ${pkg.measureUnit} ${pkg.trackingNumber} ${pkg.orderId}`,
+              orderId: pkg.orderId,
+              category: 'receivedGoods',
+              rate: 0,
+              list: JSON.stringify([{
+                ...pkg,
+                deliveredPackages: {
+                  trackingNumber: pkg.trackingNumber,
+                  weight: {
+                    total: pkg.weight,
+                    measureUnit: pkg.measureUnit
+                  }
+                }
+              }])
+            }
+          }, res, next);
+        }
+
+        if (lydToUse > 0) {
+          await useBalanceOfWallet({
+            ...req,
+            params: { id },
+            body: {
+              createdAt: new Date(),
+              amount: truncateToTwo(lydToUse),
+              currency: 'LYD',
+              description: `تم دفع قيمة الشحن ${pkg.trackingNumber} ${pkg.orderId}`,
+              note: `${pkg.weight} ${pkg.measureUnit} ${pkg.trackingNumber} ${pkg.orderId}`,
+              orderId: pkg.orderId,
+              category: 'receivedGoods',
+              rate: payment.rate,
+              list: JSON.stringify([{
+                ...pkg,
+                deliveredPackages: {
+                  trackingNumber: pkg.trackingNumber,
+                  weight: {
+                    total: pkg.weight,
+                    measureUnit: pkg.measureUnit
+                  }
+                }
+              }])
+            }
+          }, res, next);
+        }
+
+      } else {
+        // Normal logic for previous packages
+        if (usdBalance >= costPackage) {
+          usdToUse = truncateToTwo(costPackage);
+          usdBalance -= usdToUse;
+
+          await useBalanceOfWallet({
+            ...req,
+            params: { id },
+            body: {
+              createdAt: new Date(),
+              amount: usdToUse,
+              currency: 'USD',
+              description: `تم دفع قيمة الشحن ${pkg.trackingNumber} ${pkg.orderId}`,
+              note: `${pkg.weight} ${pkg.measureUnit} ${pkg.trackingNumber} ${pkg.orderId}`,
+              orderId: pkg.orderId,
+              category: 'receivedGoods',
+              rate: 0,
+              list: JSON.stringify([{
+                ...pkg,
+                deliveredPackages: {
+                  trackingNumber: pkg.trackingNumber,
+                  weight: {
+                    total: pkg.weight,
+                    measureUnit: pkg.measureUnit
+                  }
+                }
+              }])
+            }
+          }, res, next);
+        } else {
+          // Use remaining USD, then cover rest with LYD
+          usdToUse = truncateToTwo(usdBalance);
+          const remainingUSD = costPackage - usdBalance;
+          usdBalance = 0;
+          lydToUse = truncateToTwo(remainingUSD * payment.rate);
+          lydBalance -= lydToUse;
+
+          if (usdToUse > 0) {
+            await useBalanceOfWallet({
+              ...req,
+              params: { id },
+              body: {
+                createdAt: new Date(),
+                amount: usdToUse,
+                currency: 'USD',
+                description: `تم دفع قيمة الشحن ${pkg.trackingNumber} ${pkg.orderId}`,
+                note: `${pkg.weight} ${pkg.measureUnit} ${pkg.trackingNumber} ${pkg.orderId}`,
+                orderId: pkg.orderId,
+                category: 'receivedGoods',
+                rate: 0,
+                list: JSON.stringify([{
+                  ...pkg,
+                  deliveredPackages: {
+                    trackingNumber: pkg.trackingNumber,
+                    weight: {
+                      total: pkg.weight,
+                      measureUnit: pkg.measureUnit
+                    }
+                  }
+                }])
+              }
+            }, res, next);
+          }
+
+          if (lydToUse > 0) {
+            await useBalanceOfWallet({
+              ...req,
+              params: { id },
+              body: {
+                createdAt: new Date(),
+                amount: lydToUse,
+                currency: 'LYD',
+                description: `تم دفع قيمة الشحن ${pkg.trackingNumber} ${pkg.orderId}`,
+                note: `${pkg.weight} ${pkg.measureUnit} ${pkg.trackingNumber} ${pkg.orderId}`,
+                orderId: pkg.orderId,
+                category: 'receivedGoods',
+                rate: payment.rate,
+                list: JSON.stringify([{
+                  ...pkg,
+                  deliveredPackages: {
+                    trackingNumber: pkg.trackingNumber,
+                    weight: {
+                      total: pkg.weight,
+                      measureUnit: pkg.measureUnit
+                    }
+                  }
+                }])
+              }
+            }, res, next);
+          }
+        }
+      }
+    }
+    
+    // Loop through each item and update status.received
+    let updated = false;
+    let hasPackageNotReceivedYet = false;
+    let hasPackageOnTheWay = false;
+    for (const package of selectedPackages) {
+      // Update order status to 'delivered'
+      const order = await Orders.findOne({ orderId: package.orderId });
+      const item = order.paymentList.id(package.id);
+      
+      if (item) {
+        item.status.received = true;
+        updated = true;
+      }
+      // If any updates were made, set orderStatus to 6
+      if (updated) {
+        const activities = order.activity || [];
+        activities.push({
+          country: order.placedAt === 'tripoli' ? 'مكتب طرابلس' : 'مكتب بنغازي',
+          createdAt: new Date(),
+          description: `تم استلام العميل الطرد ${item.deliveredPackages.trackingNumber} بنجاح`,
+        })
+        order.activity = activities;
+        for (const pkg of order.paymentList) {
+          if (!pkg.status.received && pkg.status.arrivedLibya) {
+            hasPackageNotReceivedYet = true;
+            break;
+          } else if (!pkg.status.arrivedLibya && !pkg.status.received && pkg.status.arrived) {
+            hasPackageOnTheWay = true;
+            break;
+          }
+        }
+
+        if (hasPackageNotReceivedYet) {
+          if (order.isPayment) {
+            order.orderStatus = 4;
+          } else {
+            order.orderStatus = 3;
+          }
+        } else if (hasPackageOnTheWay) {
+          if (order.isPayment) {
+            order.orderStatus = 3; // Set to 'on the way' status
+          } else {
+            order.orderStatus = 2; // Set to 'on the way' status
+          }
+        } else {
+          if (order.isPayment) {
+            order.orderStatus = 5;
+          } else {
+            order.orderStatus = 4; // Set to 'delivered' status
+          }
+          order.isFinished = true;
+        }
+        await order.save();
+      }
+    }
+
+    // Get latest invoice to determine the next referenceId
+    const latestInvoice = await Invoices.findOne({})
+      .sort({ referenceId: -1 })
+      .select('referenceId')
+      .lean();
+
+    const nextReferenceId = latestInvoice?.referenceId ? latestInvoice.referenceId + 1 : 1;
+
+    // Add invoice history
+    const invoiceHistory = {
+      referenceId: nextReferenceId,
+      createdBy: req.user,
+      customer: id,
+      attachments: [],
+      paymentType: 'shipment',
+      total: totalCost,
+      currency: 'USD',
+      amountUSD: payment.amountUSD || 0,
+      amountLYD: payment.amountLYD || 0,
+      rate: payment.rate || 0,
+      list: selectedPackages.map(pkg => ({
+        packageId: pkg.id,
+        trackingNumber: pkg.trackingNumber,
+        weight: {
+          total: pkg.weight,
+          measureUnit: pkg.measureUnit
+        },
+        cost: pkg.cost || 0,
+        exiosPrice: pkg.exiosPrice || 0,
+        orderId: pkg.orderId,
+      }))
+    }
+    await Invoices.create(invoiceHistory);
+
+    await Inventory.updateMany(
+      { inventoryType: 'warehouseInventory' },
+      {
+        $pull: { 
+          orders: { 
+            $or: [
+              { "paymentList._id": { $in: selectedPackages.map(orderPackage => orderPackage.id) } },
+              { "paymentList._id": { $in: selectedPackages.map(orderPackage => new ObjectId(orderPackage.id)) } }
+            ]
+          } 
+        }
+      },
+      { safe: true, upsert: true, new: true }
+    )
+  
+    return res.status(200).json({ done: new Date() });
+
+  } catch (error) {
+    console.error(error);
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
+module.exports.getInvoicesByCustomer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const invoices = await Invoices.find({ customer: id }).populate('customer').sort({ createdAt: -1 });
+
+    res.status(200).json({
+      results: invoices
+    });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));
