@@ -59,6 +59,8 @@ redisClient.on('error', (err) => {
 const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
 const { isAdmin, protect } = require('./middleware/check-auth');
+const { generatePDF } = require('./utils/sender');
+const Orders = require('./models/order');
 
 let qrCodeData = null;
 let client;
@@ -380,7 +382,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
           phone: `111011111${index}`
         })
       }
-      const delay = getRandomStep(2000, 10000, 1000);
+      const delay = getRandomStep(2000, 5000, 1000);
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: index * delay });
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: index * delay });
       return res.status(200).json({ success: true, message: 'Messages sent successfully' });
@@ -388,7 +390,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 
     for (let index = 0; index < splitCount; index++) {
       const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
-      const delay = getRandomStep(2000, 10000, 1000);
+      const delay = getRandomStep(2000, 5000, 1000);
       // Send message queue for each split, passing the index
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * delay });
       
@@ -423,7 +425,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
             customerId: user?.customerId,
             phone: user?.phone,
           });
-          const delay = getRandomStep(2000, 6000, 1000);
+          const delay = getRandomStep(2000, 5000, 1000);
           const rtlContent = `\u202B${generetedContent}`;
           await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * delay });
           index++;
@@ -466,18 +468,6 @@ sendMessageQueue.process('send-message', 1, async (job) => {
 });
 
 app.use(async (req, res) => {
-  // try {
-  //   if (req.query.deleteMessages === 'all') {
-  //     await sendMessageQueue.clean(0);
-  //     return res.status(404).send("Deleted all the queue jobs");
-  //   }
-  //   // Inside your function or somewhere in your code where you want to log the number of jobs in the queue
-  //   const counts = await sendMessageQueue.getJobCounts();
-  //   console.log("Number of jobs in queue:", counts.waiting + counts.active);
-  // } catch (error) {
-  //   console.log(error);
-  // }
-  
   if (req.query.deleteMessages === 'all') {
     await sendMessageQueue.clean(0);
     await sendMessageQueue.clean(0, 'active');
@@ -488,6 +478,72 @@ app.use(async (req, res) => {
     const counts = await sendMessageQueue.getJobCounts();
     console.log("Number of jobs in queue:", counts.waiting + counts.active);
   }
+
+  // const newClients = await Users.aggregate([
+  //   {
+  //     $match: {
+  //       'roles.isClient': true
+  //     }
+  //   },
+  //   {
+  //     $lookup: {
+  //       from: 'orders',
+  //       localField: '_id',
+  //       foreignField: 'user',
+  //       as: 'orders'
+  //     }
+  //   },
+  //   // {
+  //   //   $match: {
+  //   //     orders: { $size: 0 }
+  //   //   }
+  //   // },
+  //   {
+  //     $sort: {
+  //       createdAt: -1
+  //     }
+  //   }
+  // ])
+
+  // let orders = await Orders.aggregate([
+  //   {
+  //     $match: {
+  //       paymentList: {
+  //         $elemMatch: {
+  //           $or: [
+  //             {
+  //               'deliveredPackages.weight.total': { $gte: 40 },
+  //               'deliveredPackages.weight.measureUnit': 'KG'
+  //             },
+  //             {
+  //               'deliveredPackages.weight.total': { $gte: 3 },
+  //               'deliveredPackages.weight.measureUnit': 'CBM'
+  //             }
+  //           ]
+  //         }
+  //       }
+  //     }
+  //   },
+  //   {
+  //     $sort: { createdAt: -1 } // Optional: get most recent order per user
+  //   },
+  //   {
+  //     $group: {
+  //       _id: '$user', // group by user
+  //       order: { $first: '$$ROOT' } // take the first order per user
+  //     }
+  //   },
+  //   {
+  //     $replaceRoot: { newRoot: '$order' } // flatten structure
+  //   }
+  // ]);
+
+  // orders = await Orders.populate(orders, [{ path: "user" }]);
+  // const users = orders.map(order => order.user);
+  
+  // generatePDF(users, 'Valued Customers').catch((error) => {
+  //   console.error(error);
+  // });
 
   res.status(404).send("Page Not Found 140");
 });
