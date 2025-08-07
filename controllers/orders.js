@@ -1432,6 +1432,38 @@ module.exports.getInvoicesByCustomer = async (req, res, next) => {
   }
 }
 
+module.exports.getAllIssuedInvoices = async (req, res, next) => {
+  try {
+    const { date, from, to } = req.query;
+    let filter = {};
+
+    if (date) {
+      // Filter by single date (start & end of that day)
+      const selectedDate = new Date(date);
+      const start = new Date(selectedDate.setHours(0, 0, 0, 0));
+      const end = new Date(selectedDate.setHours(23, 59, 59, 999));
+      filter.createdAt = { $gte: start, $lte: end };
+    } else if (from && to) {
+      // Filter by date range
+      const start = new Date(new Date(from).setHours(0, 0, 0, 0));
+      const end = new Date(new Date(to).setHours(23, 59, 59, 999));
+      filter.createdAt = { $gte: start, $lte: end };
+    }
+    // else no filter, get all invoices
+
+    const invoices = await Invoices.find(filter)
+      .populate('customer')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      results: invoices,
+    });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+};
+
 module.exports.getClientOrder = async (req, res, next) => {
   const id = req.params.id;
   if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));

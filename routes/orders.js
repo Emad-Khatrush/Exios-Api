@@ -88,6 +88,9 @@ router.route('/user/:id/markAsDelivered')
 router.route('/invoices/customer/:id')
       .get(protect, allowAdminsAndEmployee, orders.getInvoicesByCustomer);
 
+router.route('/invoices/issued')
+      .get(protect, allowAdminsAndEmployee, orders.getAllIssuedInvoices);
+
 router.route('/monthReport')
       .get(protect, isAdmin, orders.getMonthReport)
       
