@@ -50,12 +50,32 @@ const inventorySchema = new Schema({
     required: true,
     enum: ['air', 'sea', 'domestic'],
   },
+  isCaclulationDone: {
+    type: Boolean,
+    default: false
+  },
   status: {
     type: String,
     required: true,
     default: 'processing',
     enum: ['processing', 'finished'],
   },
+  expenses: [{
+    description: String,
+    amount: Number,
+    currency: {
+      type: String,
+      enum: ['USD', 'LYD']
+    },
+    rate: {
+      type: Number,
+      default: 0
+    },
+    date: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   note: String
 },
 {

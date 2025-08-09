@@ -180,6 +180,34 @@ module.exports.getInventory = async (req, res, next) => {
   }
 };
 
+module.exports.getInventoriesNotFinishCalculation = async (req, res, next) => {
+  try {
+    const skip = parseInt(req.query.skip) || 0;
+    const limit = parseInt(req.query.limit) || 10;
+    const shippingType = req.query.shippingType;
+
+    const query = {
+      $or: [
+        { isCaclulationDone: { $exists: false } },
+        { isCaclulationDone: false },
+        { isCaclulationDone: null }
+      ],
+      inventoryType: 'inventoryGoods',
+      shippingType: shippingType || { $ne: 'domestic' }
+    };
+
+    const inventories = await Inventory.find(query)
+      .populate('createdBy')
+      .sort({ createdAt: -1 }) // newest first
+      .skip(skip)
+      .limit(limit);
+
+    res.status(200).json({ results: inventories });
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+};
+
 module.exports.createInventory = async (req, res, next) => {
   try {
     const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note, costPrice } = req.body;
@@ -251,6 +279,120 @@ module.exports.getSingleInventory = async (req, res, next) => {
     return next(new ErrorHandler(404, error.message));
   }
 }
+
+module.exports.addExpenseToInventory = async (req, res, next) => {
+  try {
+    const { inventoryId } = req.params; // e.g. /inventory/:inventoryId/expenses
+    const { description, amount, currency, rate, date } = req.body;
+
+    // 1️⃣ Find the inventory document
+    const inventory = await Inventory.findById(inventoryId);
+    if (!inventory) {
+      return res.status(404).json({ message: 'Inventory not found' });
+    }
+
+    // 2️⃣ Create the expense object
+    const expense = {
+      description,
+      amount,
+      currency,
+      rate: rate || 0,
+      date: date || new Date()
+    };
+
+    // 3️⃣ Push the expense to the expenses array
+    inventory.expenses.push(expense);
+
+    // 4️⃣ Save the document
+    await inventory.save();
+
+    // 5️⃣ Return updated inventory or expenses list
+    res.status(200).json({
+      message: 'Expense added successfully',
+      expenses: inventory.expenses
+    });
+
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
+module.exports.deleteExpenseOfInventory = async (req, res, next) => {
+  try {
+    const { inventoryId } = req.params;  // from URL
+    const { expenseId } = req.body;      // from request body
+
+    // 1. Find inventory by ID
+    const inventory = await Inventory.findById(inventoryId);
+    if (!inventory) {
+      return next(new ErrorHandler(404, 'Inventory not found'));
+    }
+
+    // 2. Remove expense from expenses array
+    const initialLength = inventory.expenses.length;
+    inventory.expenses = inventory.expenses.filter(exp => exp._id.toString() !== expenseId);
+
+    if (inventory.expenses.length === initialLength) {
+      return next(new ErrorHandler(404, 'Expense not found in this inventory'));
+    }
+
+    // 3. Save updated inventory
+    await inventory.save();
+
+    // 4. Return updated expenses list
+    res.status(200).json({
+      message: 'Expense deleted successfully',
+      expenses: inventory.expenses
+    });
+
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
+module.exports.updateExpenseOfInventory = async (req, res, next) => {
+  try {
+    const { inventoryId } = req.params; // from URL, e.g. /inventory/:inventoryId/expenses
+    const { editingId, description, amount, currency, date, rate } = req.body;
+
+    if (!editingId) {
+      return next(new ErrorHandler(400, 'editingId (expense id) is required'));
+    }
+
+    // Find the inventory by id
+    const inventory = await Inventory.findById(inventoryId);
+    if (!inventory) {
+      return next(new ErrorHandler(404, 'Inventory not found'));
+    }
+
+    // Find the expense by editingId inside expenses array
+    const expenseIndex = inventory.expenses.findIndex(exp => exp._id.toString() === editingId);
+    if (expenseIndex === -1) {
+      return next(new ErrorHandler(404, 'Expense not found'));
+    }
+
+    // Update the expense fields
+    inventory.expenses[expenseIndex] = {
+      ...inventory.expenses[expenseIndex]._doc, // preserve other fields
+      description,
+      amount,
+      currency,
+      date,
+      rate
+    };
+
+    // Save updated inventory
+    await inventory.save();
+
+    res.status(200).json({
+      message: 'Expense updated successfully',
+      expense: inventory.expenses[expenseIndex]
+    });
+
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
 
 module.exports.getInventoryOrders = async (req, res, next) => {
   try {
