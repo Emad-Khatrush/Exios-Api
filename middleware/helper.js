@@ -61,7 +61,15 @@ exports.addChangedField = (fieldName, newData, oldData, labels) => {
 exports.getTapTypeQuery = (tapType) => {
     switch (tapType) {
         case 'active':
-            return { isFinished: false,  unsureOrder: false, isCanceled: false }
+            return {
+                isFinished: false,
+                unsureOrder: false,
+                isCanceled: false,
+                $or: [
+                    { isPayment: true, isShipment: true },       // both true
+                    { isShipment: true, isPayment: false }       // shipment true & payment false
+                ]
+            }
         
         case 'shipment':
             return { isShipment: true,  unsureOrder: false, isPayment: false,  isFinished: false, isCanceled: false }
@@ -71,24 +79,49 @@ exports.getTapTypeQuery = (tapType) => {
 
         case 'arrivedWarehouse':
             return {
-                $or: [
+                unsureOrder: false,
+                isCanceled: false,
+                $and: [
                 {
-                    isPayment: true,
-                    unsureOrder: false,
-                    orderStatus: { $in: [2, 3] },
-                    isCanceled: false
+                    $or: [
+                    {
+                        isPayment: true,
+                        orderStatus: { $in: [2, 3] }   // paid & arrived
+                    },
+                    {
+                        isPayment: false,
+                        orderStatus: { $in: [1, 2] }   // unpaid but partially arrived
+                    }
+                    ]
                 },
                 {
-                    isPayment: false,
-                    unsureOrder: false,
-                    orderStatus: { $in: [1, 2] },
-                    isCanceled: false
+                    $or: [
+                    { isPayment: true, isShipment: true },   // both true
+                    { isShipment: true, isPayment: false }   // shipment true & payment false
+                    ]
                 }
                 ]
             }
 
         case 'readyForPickup':
-            return { unsureOrder: false, $or: [{isPayment: true,  orderStatus: 4, isCanceled: false }, {isPayment: false,  orderStatus: 3, isCanceled: false }] }
+            return {
+                unsureOrder: false,
+                isCanceled: false,
+                $and: [
+                    {
+                    $or: [
+                        { isPayment: true, orderStatus: 4 },   // ✅ paid & ready
+                        { isPayment: false, orderStatus: 3 }   // ✅ unpaid & ready
+                    ]
+                    },
+                    {
+                    $or: [
+                        { isPayment: true, isShipment: true },   // both true
+                        { isShipment: true, isPayment: false }   // shipment true & payment false
+                    ]
+                    }
+                ]
+            }
         case 'unpaid':
             return { unsureOrder: false,  orderStatus: 0, isPayment: true, isCanceled: false }
 
@@ -106,6 +139,9 @@ exports.getTapTypeQuery = (tapType) => {
 
         case 'canceled':
             return { isCanceled: true };
+
+        case 'invoiceOrders':
+            return { unsureOrder: false, isPayment: true, isShipment: false };
     
         default:
             return { isFinished: false,  unsureOrder: false }

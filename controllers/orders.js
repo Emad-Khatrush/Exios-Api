@@ -1238,7 +1238,19 @@ module.exports.getOrdersForUser = async (req, res, next) => {
           activeOrders: {
             $sum: {
               $cond: [
-                { $and: [{ $eq: ["$isFinished", false] }, { $eq: ["$unsureOrder", false] }] },
+                {
+                  $and: [
+                    { $eq: ["$isFinished", false] },
+                    { $eq: ["$unsureOrder", false] },
+                    { $eq: ["$isCanceled", false] },
+                    {
+                      $or: [
+                        { $and: [{ $eq: ["$isPayment", true] }, { $eq: ["$isShipment", true] }] },
+                        { $and: [{ $eq: ["$isShipment", true] }, { $eq: ["$isPayment", false] }] }
+                      ]
+                    }
+                  ]
+                },
                 1,
                 0
               ]
@@ -1256,7 +1268,34 @@ module.exports.getOrdersForUser = async (req, res, next) => {
           warehouseArrived: {
             $sum: {
               $cond: [
-                { $and: [ { $or: [{ $and: [{ $eq: ["$isPayment", true] }, { $or: [{ $eq: ["$orderStatus", 2] }, { $eq: ["$orderStatus", 3] }] }] }, { $and: [{ $eq: ["$isPayment", false] }, { $or: [{ $eq: ["$orderStatus", 1] }, { $eq: ["$orderStatus", 2] }] }] }] } ,{ $eq: ["$unsureOrder", false] }] },
+                {
+                  $and: [
+                    { $eq: ["$unsureOrder", false] },
+                    { $eq: ["$isCanceled", false] },
+                    {
+                      $or: [
+                        {
+                          $and: [
+                            { $eq: ["$isPayment", true] },
+                            { $or: [{ $eq: ["$orderStatus", 2] }, { $eq: ["$orderStatus", 3] }] }
+                          ]
+                        },
+                        {
+                          $and: [
+                            { $eq: ["$isPayment", false] },
+                            { $or: [{ $eq: ["$orderStatus", 1] }, { $eq: ["$orderStatus", 2] }] }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      $or: [
+                        { $and: [{ $eq: ["$isPayment", true] }, { $eq: ["$isShipment", true] }] },
+                        { $and: [{ $eq: ["$isShipment", true] }, { $eq: ["$isPayment", false] }] }
+                      ]
+                    }
+                  ]
+                },
                 1,
                 0
               ]
@@ -1265,7 +1304,43 @@ module.exports.getOrdersForUser = async (req, res, next) => {
           readyForReceivement: {
             $sum: {
               $cond: [
-                { $and: [ { $or: [{ $and: [{ $eq: ["$isPayment", true] }, { $eq: ["$orderStatus", 4] }] }, { $and: [{ $eq: ["$isPayment", false] }, { $eq: ["$orderStatus", 3] }] }] } ,{ $eq: ["$unsureOrder", false] }] },
+                {
+                  $and: [
+                    { $eq: ["$unsureOrder", false] },
+                    { $eq: ["$isCanceled", false] },
+                    {
+                      $or: [
+                        {
+                          $and: [
+                            { $eq: ["$isPayment", true] },
+                            { $eq: ["$orderStatus", 4] }
+                          ]
+                        },
+                        {
+                          $and: [
+                            { $eq: ["$isPayment", false] },
+                            { $eq: ["$orderStatus", 3] }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      $or: [
+                        { $and: [{ $eq: ["$isPayment", true] }, { $eq: ["$isShipment", true] }] },
+                        { $and: [{ $eq: ["$isShipment", true] }, { $eq: ["$isPayment", false] }] }
+                      ]
+                    }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
+          invoiceOrders: {
+            $sum: {
+              $cond: [
+                { $and: [{ $eq: ["$isShipment", false] }, { $eq: ["$isPayment", true] }, { $eq: ["$unsureOrder", false] }] },
                 1,
                 0
               ]
@@ -1286,7 +1361,8 @@ module.exports.getOrdersForUser = async (req, res, next) => {
         activeOrders: 0,
         unsureOrders: 0,
         warehouseArrived: 0,
-        readyForReceivement: 0
+        readyForReceivement: 0,
+        invoiceOrders: 0
       }
     }
 

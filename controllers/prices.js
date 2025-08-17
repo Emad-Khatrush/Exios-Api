@@ -56,12 +56,39 @@ module.exports.updatePrices = async (req, res, next) => {
     if (!data) return res.status(200).json({ updatedAt: new Date() });
 
     for (const key in data) {
+      const [country, shippingType] = key.split('-');
+
+      const { sellingPrice, priceDescription } = data[key];
+
+      await ShipmentPrices.updateOne(
+        { country, shippingType },
+        {
+          $set: {
+            ...(sellingPrice !== undefined && { sellingPrice: Number(sellingPrice) }),
+            ...(priceDescription !== undefined && { priceDescription })
+          }
+        }
+      );
+    }
+
+    res.status(200).json({ updatedAt: new Date() });
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+};
+
+module.exports.updatePricesDescription = async (req, res, next) => {
+  try {
+    const data = req.body;
+    if (!data) return res.status(200).json({ updatedAt: new Date() });
+
+    for (const key in data) {
       const splitedKeys = key.split('-');
       const country = splitedKeys[0];
       const shippingType = splitedKeys[1];
       await ShipmentPrices.updateOne({ country, shippingType }, {
         $set: {
-          sellingPrice: Number(data[key])
+          priceDescription: data[key]
         }
       });
     }
@@ -76,7 +103,7 @@ module.exports.getExchangeRate = async (req, res, next) => {
     let rate = await ExchangeRate.findOne({ fromCurrency: 'usd' });
     if (!rate) {
       await ExchangeRate.create({
-        rate: 5.2
+        rate: 7.2
       })
       rate = await ExchangeRate.findOne({ fromCurrency: 'usd' });
     }

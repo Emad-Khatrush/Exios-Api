@@ -11,6 +11,7 @@ const shipmentPricesSchema = new Schema({
     type: Number,
     required: true
   },
+  priceDescription: String,
   country: {
     type: String,
     required: true,
