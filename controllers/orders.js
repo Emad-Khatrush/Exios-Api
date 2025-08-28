@@ -1474,7 +1474,6 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
     validatePayment(payment);
 
     const walletMap = await getUserWalletMap(id);
-    console.log(walletMap);
 
     checkSufficientFunds(walletMap, payment, totalCost);
 

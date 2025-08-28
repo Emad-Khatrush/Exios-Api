@@ -132,7 +132,7 @@ async function updateOrderStatuses(selectedPackages) {
     activities.push({
       country: order.placedAt === 'tripoli' ? 'مكتب طرابلس' : 'مكتب بنغازي',
       createdAt: new Date(),
-      description: `تم استلام العميل الطرد ${item.deliveredPackages.trackingNumber} بنجاح`,
+      description: `تم استلام العميل الطرد ${item?.deliveredPackages?.trackingNumber} بنجاح`,
     });
     order.activity = activities;
 
@@ -179,15 +179,15 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
     amountLYD: payment.amountLYD || 0,
     rate: payment.rate || 0,
     list: selectedPackages.map(pkg => ({
-      packageId: pkg.id,
-      trackingNumber: pkg.trackingNumber,
+      packageId: pkg?.id,
+      trackingNumber: pkg?.trackingNumber,
       weight: {
-        total: pkg.weight,
-        measureUnit: pkg.measureUnit
+        total: pkg?.weight,
+        measureUnit: pkg?.measureUnit
       },
-      cost: pkg.cost || 0,
-      exiosPrice: pkg.exiosPrice || 0,
-      orderId: pkg.orderId,
+      cost: pkg?.cost || 0,
+      exiosPrice: pkg?.exiosPrice || 0,
+      orderId: pkg?.orderId,
     }))
   };
 
