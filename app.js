@@ -97,6 +97,7 @@ app.use((req, res, next) => {
 })
 app.use(cors());
 
+//   "whatsapp-web.js": "github:Emad-Khatrush/whatsapp-web.js"
 // "whatsapp-web.js": "^1.26.1-alpha.3",
 
 // "--disable-accelerated-2d-canvas",
