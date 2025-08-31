@@ -97,18 +97,18 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       createdAt: new Date(),
       amount: truncateToTwo(amount),
       currency,
-      description: `تم دفع قيمة الشحن ${pkg.trackingNumber} ${pkg.orderId}`,
-      note: `${pkg.weight} ${pkg.measureUnit} ${pkg.trackingNumber} ${pkg.orderId}`,
+      description: `تم دفع قيمة الشحن ${pkg?.trackingNumber} ${pkg?.orderId}`,
+      note: `${pkg?.weight} ${pkg?.measureUnit} ${pkg?.trackingNumber} ${pkg?.orderId}`,
       orderId: pkg.orderId,
       category: 'receivedGoods',
       rate,
       list: JSON.stringify([{
         ...pkg,
         deliveredPackages: {
-          trackingNumber: pkg.trackingNumber,
+          trackingNumber: pkg?.trackingNumber,
           weight: {
-            total: pkg.weight,
-            measureUnit: pkg.measureUnit
+            total: pkg?.weight,
+            measureUnit: pkg?.measureUnit
           }
         }
       }])
@@ -211,4 +211,28 @@ async function cleanUpInventory(selectedPackages) {
   );
 }
 
-module.exports = { cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };
+async function isNewCustomer(userId) {
+  try {
+    // Count orders that match your condition
+    const count = await Orders.countDocuments({
+      user: userId,
+      isShipment: true,
+      isPayment: false,
+      unsureOrder: false
+    });
+
+    // No orders at all OR only one matching order => new customer
+    if (count <= 1) {
+      return true;
+    }
+
+    // More than one matching order => not a new customer
+    return false;
+
+  } catch (error) {
+    console.error("Error checking customer:", error);
+    throw error;
+  }
+}
+
+module.exports = { cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };
