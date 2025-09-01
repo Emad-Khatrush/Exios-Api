@@ -53,39 +53,62 @@ function checkSufficientFunds(walletMap, payment, totalCost) {
 }
 
 async function processPackagesPayment(req, res, next, id, selectedPackages, payment) {
-  let lydBalance = payment.amountLYD || 0;
-  let usdBalance = payment.amountUSD || 0;
+  let lydBalance = +(payment.amountLYD || 0);
+  let usdBalance = +(payment.amountUSD || 0);
+  const rate = +(payment.rate || 0);
+
+  if (lydBalance > 0 && rate <= 0) {
+    throw new ErrorHandler(400, 'Invalid exchange rate for LYD payments');
+  }
+
+  const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+  // Total cost in USD of all packages
+  const totalCostUSD = round2(
+    selectedPackages.reduce((s, p) => s + +(p.cost || 0), 0)
+  );
+
+  let paidSoFarUSD = 0;
 
   for (let i = 0; i < selectedPackages.length; i++) {
     const pkg = selectedPackages[i];
-    const costPackage = pkg.cost || 0;
+    const pkgCost = round2(+(pkg.cost || 0));
     const isLast = i === selectedPackages.length - 1;
 
-    let usdToUse = 0;
-    let lydToUse = 0;
+    // For the last package → whatever remains to finish the batch
+    const remainingForBatch = round2(totalCostUSD - paidSoFarUSD);
+    const targetCost = isLast ? remainingForBatch : pkgCost;
 
-    if (isLast) {
-      usdToUse = usdBalance;
-      lydToUse = lydBalance;
-      usdBalance = 0;
-      lydBalance = 0;
-    } else if (usdBalance >= costPackage) {
-      usdToUse = truncateToTwo(costPackage);
-      usdBalance -= usdToUse;
-    } else {
-      usdToUse = truncateToTwo(usdBalance);
-      const remainingUSD = costPackage - usdBalance;
-      usdBalance = 0;
-      lydToUse = truncateToTwo(remainingUSD * payment.rate);
-      lydBalance -= lydToUse;
+    if (targetCost <= 0) continue;
+
+    // Use USD first
+    const usdFromUSD = Math.min(usdBalance, targetCost);
+    const remainingAfterUSD = round2(targetCost - usdFromUSD);
+
+    // Then LYD if needed
+    let lydFromLYD = 0;
+    if (remainingAfterUSD > 0 && rate > 0) {
+      const lydNeeded = round2(remainingAfterUSD * rate);
+      lydFromLYD = Math.min(lydBalance, lydNeeded);
     }
 
-    if (usdToUse > 0) {
-      await useWalletBalance(req, res, next, id, pkg, usdToUse, 'USD', 0, payment.rate);
+    // Convert LYD spent to USD equivalent
+    const usdCoveredByLYD = rate > 0 ? round2(lydFromLYD / rate) : 0;
+    const usdPaidForThisPkg = round2(usdFromUSD + usdCoveredByLYD);
+
+    // Deduct balances
+    usdBalance = round2(usdBalance - usdFromUSD);
+    lydBalance = round2(lydBalance - lydFromLYD);
+
+    // Call wallet usage
+    if (usdFromUSD > 0) {
+      await useWalletBalance(req, res, next, id, pkg, usdFromUSD, 'USD', 0, rate);
     }
-    if (lydToUse > 0) {
-      await useWalletBalance(req, res, next, id, pkg, lydToUse, 'LYD', payment.rate, payment.rate);
+    if (lydFromLYD > 0) {
+      await useWalletBalance(req, res, next, id, pkg, lydFromLYD, 'LYD', rate, rate);
     }
+
+    paidSoFarUSD = round2(paidSoFarUSD + usdPaidForThisPkg);
   }
 }
 
