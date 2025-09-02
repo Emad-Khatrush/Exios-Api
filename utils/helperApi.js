@@ -4,8 +4,8 @@ const ErrorHandler = require('../utils/errorHandler');
 const { errorMessages } = require('../constants/errorTypes');
 const Inventory = require('../models/inventory');
 const Wallet = require('../models/wallet');
-const { useBalanceOfWallet } = require('../controllers/wallet');
 const Invoices = require('../models/invoice');
+const UserStatement = require('../models/userStatement');
 const mongodb = require('mongodb');
 
 const { ObjectId } = mongodb;
@@ -61,62 +61,67 @@ async function processPackagesPayment(req, res, next, id, selectedPackages, paym
     throw new ErrorHandler(400, 'Invalid exchange rate for LYD payments');
   }
 
-  const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
-
-  // Total cost in USD of all packages
-  const totalCostUSD = round2(
-    selectedPackages.reduce((s, p) => s + +(p.cost || 0), 0)
-  );
-
   let paidSoFarUSD = 0;
 
   for (let i = 0; i < selectedPackages.length; i++) {
     const pkg = selectedPackages[i];
-    const pkgCost = round2(+(pkg.cost || 0));
+    const pkgCost = +(pkg.cost || 0);
     const isLast = i === selectedPackages.length - 1;
 
-    // For the last package → whatever remains to finish the batch
-    const remainingForBatch = round2(totalCostUSD - paidSoFarUSD);
-    const targetCost = isLast ? remainingForBatch : pkgCost;
-
-    if (targetCost <= 0) continue;
-
-    // Use USD first
-    const usdFromUSD = Math.min(usdBalance, targetCost);
-    const remainingAfterUSD = round2(targetCost - usdFromUSD);
-
-    // Then LYD if needed
+    let usdFromUSD = 0;
     let lydFromLYD = 0;
-    if (remainingAfterUSD > 0 && rate > 0) {
-      const lydNeeded = round2(remainingAfterUSD * rate);
-      lydFromLYD = Math.min(lydBalance, lydNeeded);
+    let usdPaidForThisPkg = 0;
+
+    if (isLast) {
+      // 👉 Last package: use EXACTLY what's left
+      usdFromUSD = usdBalance;
+      lydFromLYD = lydBalance;
+
+      const usdCoveredByLYD = rate > 0 ? lydFromLYD / rate : 0;
+      usdPaidForThisPkg = usdFromUSD + usdCoveredByLYD;
+
+      // Force balances to zero
+      usdBalance = 0;
+      lydBalance = 0;
+    } else {
+      // Normal flow for earlier packages
+      const targetCost = pkgCost;
+
+      if (targetCost <= 0) continue;
+
+      // Use USD first
+      usdFromUSD = Math.min(usdBalance, targetCost);
+      const remainingAfterUSD = targetCost - usdFromUSD;
+
+      // Then LYD if needed
+      if (remainingAfterUSD > 0 && rate > 0) {
+        const lydNeeded = remainingAfterUSD * rate;
+        lydFromLYD = Math.min(lydBalance, lydNeeded);
+      }
+
+      const usdCoveredByLYD = rate > 0 ? lydFromLYD / rate : 0;
+      usdPaidForThisPkg = usdFromUSD + usdCoveredByLYD;
+
+      // Deduct balances
+      usdBalance = +(usdBalance - usdFromUSD).toFixed(2);
+      lydBalance = +(lydBalance - lydFromLYD).toFixed(2);
     }
 
-    // Convert LYD spent to USD equivalent
-    const usdCoveredByLYD = rate > 0 ? round2(lydFromLYD / rate) : 0;
-    const usdPaidForThisPkg = round2(usdFromUSD + usdCoveredByLYD);
-
-    // Deduct balances
-    usdBalance = round2(usdBalance - usdFromUSD);
-    lydBalance = round2(lydBalance - lydFromLYD);
-
-    // Call wallet usage
+    // Wallet deduction
     if (usdFromUSD > 0) {
-      await useWalletBalance(req, res, next, id, pkg, usdFromUSD, 'USD', 0, rate);
+      await useWalletBalance(req, res, next, id, pkg, +usdFromUSD.toFixed(2), 'USD', 0, rate, isLast);
     }
     if (lydFromLYD > 0) {
-      await useWalletBalance(req, res, next, id, pkg, lydFromLYD, 'LYD', rate, rate);
+      await useWalletBalance(req, res, next, id, pkg, +lydFromLYD.toFixed(2), 'LYD', rate, rate, isLast);
     }
 
-    paidSoFarUSD = round2(paidSoFarUSD + usdPaidForThisPkg);
+    paidSoFarUSD = +(paidSoFarUSD + usdPaidForThisPkg).toFixed(2);
   }
 }
 
-async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, paymentRate) {
-  return await useBalanceOfWallet({
-    ...req,
-    params: { id },
-    body: {
+async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, paymentRate, isLast) {
+  try {
+      const body = {
       createdAt: new Date(),
       amount: truncateToTwo(amount),
       currency,
@@ -124,19 +129,63 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       note: `${pkg?.weight} ${pkg?.measureUnit} ${pkg?.trackingNumber} ${pkg?.orderId}`,
       orderId: pkg.orderId,
       category: 'receivedGoods',
-      rate,
-      list: JSON.stringify([{
-        ...pkg,
-        deliveredPackages: {
-          trackingNumber: pkg?.trackingNumber,
-          weight: {
-            total: pkg?.weight,
-            measureUnit: pkg?.measureUnit
-          }
-        }
-      }])
     }
-  }, res, next);
+      const { createdAt, description, note } = body;
+  
+      let wallet = await Wallet.findOne({
+        user: id,
+        currency,
+      });
+      if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
+      if (isLast) {
+        // For the last package, allow using the remaining balance even if it's less than the amount
+        amount = Math.min(wallet.balance, amount);
+      } else if (wallet.balance < amount) {
+        throw next(new ErrorHandler(400, 'Insufficient wallet balance'));
+      }
+
+      // // Calculate new wallet balance with truncation to 2 decimals
+      const newBalance = truncateToTwo(wallet.balance - Number(amount));
+
+      // Update wallet with new balance
+      await Wallet.findOneAndUpdate(
+        {
+          user: id,
+          currency,
+        },
+        {
+          balance: newBalance
+        },
+        {
+          new: true,
+        }
+      );
+  
+      const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
+      const previousTotal = Number(lastUserStatement[0]?.total || 0);
+  
+      // Calculate total with truncation to two decimals
+      const total = truncateToTwo(previousTotal - Number(amount));
+  
+      const userStatement = await UserStatement.create({
+        user: id,
+        createdBy: req.user,
+        calculationType: '-',
+        paymentType: 'wallet',
+        createdAt,
+        description,
+        amount: truncateToTwo(Number(amount)),
+        currency,
+        total,
+        note,
+      });
+  
+      res.status(200).json({
+        createdAt: userStatement.createdAt
+      });
+    } catch (error) {
+      return next(new ErrorHandler(500, error.message));
+    }
 }
 
 async function updateOrderStatuses(selectedPackages) {
