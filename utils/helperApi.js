@@ -130,7 +130,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       note: `${pkg?.weight} ${pkg?.measureUnit} ${pkg?.trackingNumber} ${pkg?.orderId}`,
       orderId: pkg.orderId,
       category: 'receivedGoods',
-      list: JSON.stringify([{
+      list: [{
         ...pkg,
         deliveredPackages: {
           trackingNumber: pkg?.trackingNumber,
@@ -139,9 +139,9 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
             measureUnit: pkg?.measureUnit
           }
         }
-      }])
+      }]
     }
-      const { createdAt, description, note, orderId } = body;
+      const { createdAt, description, note, orderId, category } = body;
   
       let wallet = await Wallet.findOne({
         user: id,
@@ -191,12 +191,10 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
         note,
       });
 
-      let list = [];
-      if (body.list && typeof body.list === 'string') {
-        list = JSON.parse(req.body.list);
-      }
-
+      let list = body.list;
+      
       const order = await Orders.findOne({ orderId }).populate('user');
+
       if (order) {
         const data = {
           createdBy: req.user,
