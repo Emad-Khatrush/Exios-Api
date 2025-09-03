@@ -6,6 +6,7 @@ const Inventory = require('../models/inventory');
 const Wallet = require('../models/wallet');
 const Invoices = require('../models/invoice');
 const UserStatement = require('../models/userStatement');
+const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const mongodb = require('mongodb');
 
 const { ObjectId } = mongodb;
@@ -129,8 +130,18 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       note: `${pkg?.weight} ${pkg?.measureUnit} ${pkg?.trackingNumber} ${pkg?.orderId}`,
       orderId: pkg.orderId,
       category: 'receivedGoods',
+      list: JSON.stringify([{
+        ...pkg,
+        deliveredPackages: {
+          trackingNumber: pkg?.trackingNumber,
+          weight: {
+            total: pkg?.weight,
+            measureUnit: pkg?.measureUnit
+          }
+        }
+      }])
     }
-      const { createdAt, description, note } = body;
+      const { createdAt, description, note, orderId } = body;
   
       let wallet = await Wallet.findOne({
         user: id,
@@ -179,6 +190,35 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
         total,
         note,
       });
+
+      let list = [];
+      if (body.list && typeof body.list === 'string') {
+        list = JSON.parse(req.body.list);
+      }
+
+      const order = await Orders.findOne({ orderId }).populate('user');
+      if (order) {
+        const data = {
+          createdBy: req.user,
+          customer: order.user._id,
+          order: order._id,
+          paymentType: 'wallet',
+          receivedAmount: truncateToTwo(Number(amount)),
+          currency,
+          createdAt,
+          rate: Number(rate) || 0,
+          note: `(Wallet was ${truncateToTwo(previousTotal)} ${currency})`
+        };
+  
+        if (category) {
+          data.category = category;
+          if (category === 'receivedGoods') {
+            data.list = list || [];
+          }
+        }
+  
+        await OrderPaymentHistory.create(data);
+      }
   
       res.status(200).json({
         createdAt: userStatement.createdAt
