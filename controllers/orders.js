@@ -443,7 +443,7 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
   })
   
   try {
-    let orders = await Orders.aggregate(query);
+    let orders = await Orders.aggregate(query, { allowDiskUse: true });
     orders = await Orders.populate(orders, [{ path: "madeBy" }]);
 
     res.status(200).json({
@@ -624,6 +624,9 @@ module.exports.getOrder = async (req, res, next) => {
     }));
 
     order.paymentList = updatedPaymentList; // Assign the updated paymentList back to order
+
+    // const newCustomer = await isNewCustomer(order.user._id);
+    // order.isNewCustomer = newCustomer;
 
     res.status(200).json(order);
   } catch (error) {
