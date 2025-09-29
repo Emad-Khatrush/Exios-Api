@@ -366,53 +366,72 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
   startDate = startDate && new Date(startDate) || null;
   endDate = endDate && new Date(endDate) || null;
 
-  let query = [{ $match: { $or: [{orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') }}, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }] } }];
-  if (hideFinishedOrdersCheck === 'true') {
+  let query = [
+    {
+      $match: {
+        $or: [
+          { orderId: { $regex: new RegExp(searchValue.toLowerCase(), "i") } },
+          { "customerInfo.fullName": { $regex: new RegExp(searchValue.toLowerCase(), "i") } },
+          { "user.customerId": { $regex: new RegExp(searchValue.toLowerCase(), "i") } }
+        ]
+      }
+    }
+  ];
+
+  if (hideFinishedOrdersCheck === "true") {
     query.push({ $match: { isFinished: false } });
   }
+
   const totalOrders = await Orders.countDocuments();
-  if (searchType === 'trackingNumber') {
+
+  if (searchType === "trackingNumber") {
     query = [
-      { $unwind: '$paymentList' },
-      { $match: { $or: [ { 'paymentList.deliveredPackages.trackingNumber': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } }, { 'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') } } ] } }, 
-    ]
-    if (hideFinishedOrdersCheck == 'true') {
-      query.push({ $match: { isFinished: false } });
-    }    
-  } else if (searchType === 'phoneNumber') {
-    query = [
-      { $match: { $or: [ { 'customerInfo.phone': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } } ] } }
-    ]
-  } else if (searchType === 'receiptAndContainer') {
-    query = [
-      { $unwind: '$paymentList' },
-      { $match: { $or: [ { 'paymentList.deliveredPackages.receiptNo': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } }, { 'paymentList.deliveredPackages.containerInfo.billOfLading': { $regex: new RegExp(searchValue.trim().toLowerCase(), 'i') } } ] } }
-    ]
-  } else if (searchType === 'createdAtDate') {
-    const ObjectIdRegex = /^[0-9a-fA-F]{24}$/;
-    // Check if the value is _id
-    if (ObjectIdRegex.test(searchValue.toLowerCase())) {
-      query = [{
-        $match: {
-          _id: new ObjectId(searchValue.toLowerCase())
-        }
-      }];
-    } else {
-      query = [{
+      { $unwind: "$paymentList" },
+      {
         $match: {
           $or: [
-            {
-              orderId: { $regex: new RegExp(searchValue.toLowerCase(), 'i') }
-            },
-            {
-              'customerInfo.fullName': { $regex: new RegExp(searchValue.toLowerCase(), 'i') }
-            },
-            {
-              'user.customerId': { $regex: new RegExp(searchValue.toLowerCase(), 'i') }
-            }
+            { "paymentList.deliveredPackages.trackingNumber": { $regex: new RegExp(searchValue.trim().toLowerCase(), "i") } },
+            { "customerInfo.fullName": { $regex: new RegExp(searchValue.toLowerCase(), "i") } },
+            { "user.customerId": { $regex: new RegExp(searchValue.toLowerCase(), "i") } }
           ]
         }
-      }];
+      }
+    ];
+    if (hideFinishedOrdersCheck === "true") {
+      query.push({ $match: { isFinished: false } });
+    }
+  } else if (searchType === "phoneNumber") {
+    query = [
+      { $match: { "customerInfo.phone": { $regex: new RegExp(searchValue.trim().toLowerCase(), "i") } } }
+    ];
+  } else if (searchType === "receiptAndContainer") {
+    query = [
+      { $unwind: "$paymentList" },
+      {
+        $match: {
+          $or: [
+            { "paymentList.deliveredPackages.receiptNo": { $regex: new RegExp(searchValue.trim().toLowerCase(), "i") } },
+            { "paymentList.deliveredPackages.containerInfo.billOfLading": { $regex: new RegExp(searchValue.trim().toLowerCase(), "i") } }
+          ]
+        }
+      }
+    ];
+  } else if (searchType === "createdAtDate") {
+    const ObjectIdRegex = /^[0-9a-fA-F]{24}$/;
+    if (ObjectIdRegex.test(searchValue.toLowerCase())) {
+      query = [{ $match: { _id: new ObjectId(searchValue.toLowerCase()) } }];
+    } else {
+      query = [
+        {
+          $match: {
+            $or: [
+              { orderId: { $regex: new RegExp(searchValue.toLowerCase(), "i") } },
+              { "customerInfo.fullName": { $regex: new RegExp(searchValue.toLowerCase(), "i") } },
+              { "user.customerId": { $regex: new RegExp(searchValue.toLowerCase(), "i") } }
+            ]
+          }
+        }
+      ];
     }
     if (startDate && endDate) {
       query.push({
@@ -420,42 +439,41 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
           createdAt: { $gte: startDate, $lte: endDate },
           unsureOrder: false
         }
-      })
+      });
     }
   }
 
-  // populate user data
-  query.unshift({
-    $lookup: {
-      from: 'users',
-      localField: 'user',
-      foreignField: '_id',
-      as: 'user'
-    }
-  },
-  {
-    $unwind: '$user'
-  },
-  {
-    $sort: {
-      createdAt: -1
-    }
-  })
-  
+  // Lookup user first, then sort
+  query.unshift(
+    {
+      $lookup: {
+        from: "users",
+        localField: "user",
+        foreignField: "_id",
+        as: "user"
+      }
+    },
+    { $unwind: "$user" }
+  );
+
+  // Always keep $sort at the end
+  query.push({ $sort: { createdAt: -1 } });
+
   try {
-    let orders = await Orders.aggregate(query, { allowDiskUse: true });
-    orders = await Orders.populate(orders, [{ path: "madeBy" }]);
+    // ✅ allowDiskUse enables disk-based sorting
+    let orders = await Orders.aggregate(query).allowDiskUse(true);
+
+    orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
 
     res.status(200).json({
       orders,
-      tabType: tabType ? tabType : 'active',
-      total: searchType === 'createdAtDate' ? orders.length : totalOrders
-    })
+      tabType: tabType ? tabType : "active",
+      total: searchType === "createdAtDate" ? orders.length : totalOrders
+    });
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
-}
-
+};
 module.exports.createOrder = async (req, res, next) => {
   try {
     if (!req.body) {
