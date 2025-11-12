@@ -248,10 +248,18 @@ module.exports.createInventory = async (req, res, next) => {
 
 module.exports.getSingleInventory = async (req, res, next) => {
   try {
-    const inventory = await Inventory.findOne({ _id: req.params.id }).populate(['orders']);
+    const inventory = await Inventory.findOne({ _id: req.params.id }).select('-orders');
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
 
+    const ordersIds = await Inventory.findById(req.params.id)
+    .select("orders.paymentList._id")
+    .lean();
+    
+    const ids = (ordersIds?.orders || [])
+      .map(o => o?.paymentList?._id)
+      .filter(Boolean)
+      .map(id => new ObjectId(id));
+    
     let orders = await Orders.aggregate([
       {
         $unwind: {
