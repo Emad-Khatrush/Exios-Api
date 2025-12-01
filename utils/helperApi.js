@@ -45,10 +45,10 @@ function checkSufficientFunds(walletMap, payment, totalCost) {
     throw new ErrorHandler(400, 'Balance not enough for LYD payment');
   }
 
-  const convertedLYDToUSD = payment.amountLYD ? truncateToTwo(payment.amountLYD / payment.rate) : 0;
+  const convertedLYDToUSD = payment.amountLYD ? truncateToTwo(walletMap['LYD'] / payment.rate) : 0;
   const totalAvailableUSD = truncateToTwo(payment.amountUSD + convertedLYDToUSD);
 
-  if (totalAvailableUSD < (totalCost - 2)) {
+  if (totalAvailableUSD < (totalCost || 0)) {
     throw new ErrorHandler(400, 'Total available balance is not enough for the total cost');
   }
 }
