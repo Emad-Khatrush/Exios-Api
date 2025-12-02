@@ -48,7 +48,7 @@ function checkSufficientFunds(walletMap, payment, totalCost) {
   const convertedLYDToUSD = payment.amountLYD ? truncateToTwo(walletMap['LYD'] / payment.rate) : 0;
   const totalAvailableUSD = truncateToTwo(payment.amountUSD + convertedLYDToUSD);
 
-  if (totalAvailableUSD < (totalCost || 0)) {
+  if (totalAvailableUSD < (totalCost - 2)) {
     throw new ErrorHandler(400, 'Total available balance is not enough for the total cost');
   }
 }
