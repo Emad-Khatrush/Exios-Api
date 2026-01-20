@@ -142,7 +142,6 @@ db.once("open", async () => {
     }),
     puppeteer: {
       headless: "new",
-      executablePath: process.env.CHROME_BIN,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
