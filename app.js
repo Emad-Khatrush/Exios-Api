@@ -212,7 +212,7 @@ db.once("open", async () => {
         console.log('Deleting session from store');
         await store.delete({ session: 'RemoteAuth' });
       }
-      console.log('Client disconnected:', reason);
+      console.log('Client disconnected:', reason); 
       
     } catch (error) {
       console.log('Client disconnected:', reason);
