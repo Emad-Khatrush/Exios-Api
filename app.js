@@ -149,7 +149,7 @@ db.once("open", async () => {
       ]
     }
   });
-  client.initialize();
+  // client.initialize();
 
   client.on('qr', (qr) => {
 
