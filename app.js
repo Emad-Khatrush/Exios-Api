@@ -138,7 +138,7 @@ db.once("open", async () => {
   client = new Client({
     authStrategy: new WhatsAppConfig({
       store,
-      backupSyncIntervalMs: 600000
+      backupSyncIntervalMs: 600000 
     }),
     puppeteer: {
       headless: "new",
