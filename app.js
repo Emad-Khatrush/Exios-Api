@@ -146,7 +146,8 @@ db.once("open", async () => {
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage"
-      ]
+      ],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
     }
   });
   client.initialize();
