@@ -39,7 +39,7 @@
     "puppeteer": "^24.35.0",
     "util": "^0.12.5",
     "uuid": "^10.0.0",
-    "whatsapp-web.js": "github:DnTora/whatsapp-web.js#main-fork",
+    "whatsapp-web.js": "github:fm1randa/whatsapp-web.js#fix/sendseen-markedunread-error",
     "wwebjs-mongo": "^1.1.0"
   },
   "devDependencies": {
