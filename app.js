@@ -141,36 +141,12 @@ db.once("open", async () => {
       backupSyncIntervalMs: 600000
     }),
     puppeteer: {
-      headless: true,
+      headless: "new",
+      executablePath: process.env.CHROME_BIN,
       args: [
-        "--disable-accelerated-2d-canvas",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-breakpad",
-        "--disable-cache",
-        "--disable-component-extensions-with-background-pages",
-        "--disable-crash-reporter",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-gpu",
-        "--disable-hang-monitor",
-        "--disable-ipc-flooding-protection",
-        "--disable-mojo-local-storage",
-        "--disable-notifications",
-        "--disable-popup-blocking",
-        "--disable-print-preview",
-        "--disable-prompt-on-repost",
-        "--disable-renderer-backgrounding",
-        "--disable-software-rasterizer",
-        "--ignore-certificate-errors",
-        "--log-level=3",
-        "--no-default-browser-check",
-        "--no-first-run",
         "--no-sandbox",
-        "--no-zygote",
-        "--renderer-process-limit=100",
-        "--enable-gpu-rasterization",
-        "--enable-zero-copy",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage"
       ]
     }
   });
@@ -212,7 +188,7 @@ db.once("open", async () => {
         console.log('Deleting session from store');
         await store.delete({ session: 'RemoteAuth' });
       }
-      console.log('Client disconnected:', reason);
+      console.log('Client disconnected:', reason); 
       
     } catch (error) {
       console.log('Client disconnected:', reason);
