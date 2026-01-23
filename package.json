@@ -37,6 +37,7 @@
     "nodemailer": "^6.9.14",
     "order-id": "^2.1.2",
     "pdfkit": "^0.15.0",
+    "puppeteer": "^24.36.0",
     "puppeteer-core": "^24.36.0",
     "util": "^0.12.5",
     "uuid": "^10.0.0",
