@@ -145,7 +145,7 @@ db.once("open", async () => {
     }),
     puppeteer: {
       headless: true,
-      executablePath: '/app/.apt/usr/bin/google-chrome',
+      executablePath: '/usr/bin/google-chrome-stable',
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
