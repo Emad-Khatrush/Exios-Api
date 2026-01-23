@@ -145,7 +145,7 @@ db.once("open", async () => {
     }),
     puppeteer: {
       headless: true,
-      executablePath: '/usr/bin/google-chrome-stable',
+      executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
