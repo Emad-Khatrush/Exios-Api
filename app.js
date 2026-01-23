@@ -141,7 +141,7 @@ db.once("open", async () => {
       backupSyncIntervalMs: 600000
     }),
     puppeteer: {
-      headless: "new",
+      headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
