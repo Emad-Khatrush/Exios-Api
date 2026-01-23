@@ -12,6 +12,7 @@ const Queue = require('bull');
 const puppeteer = require('puppeteer-core');
 
 const executablePath = puppeteer.executablePath();
+console.log("executablePath: ", executablePath);
 
 // DB Collections
 const Users = require('./models/user');
