@@ -9,6 +9,9 @@ const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
 const { validatePhoneNumber, imageToBase64, replaceWords, getRandomStep } = require('./utils/messages');
 const Queue = require('bull');
+const puppeteer = require('puppeteer-core');
+
+const executablePath = puppeteer.executablePath();
 
 // DB Collections
 const Users = require('./models/user');
@@ -147,7 +150,7 @@ db.once("open", async () => {
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage"
       ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
+      executablePath
     }
   });
   client.initialize();
