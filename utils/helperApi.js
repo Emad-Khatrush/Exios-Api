@@ -61,8 +61,6 @@ async function processPackagesPayment(req, res, next, id, selectedPackages, paym
   if (remainingLYD > 0 && rate <= 0) {
     throw new ErrorHandler(400, 'Invalid exchange rate for LYD payments');
   }
-  console.log('Processing...');
-  
   for (let i = 0; i < selectedPackages.length; i++) {
     const pkg = selectedPackages[i];
     const pkgCost = +(pkg.cost || 0);
