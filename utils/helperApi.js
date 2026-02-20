@@ -54,69 +54,52 @@ function checkSufficientFunds(walletMap, payment, totalCost) {
 }
 
 async function processPackagesPayment(req, res, next, id, selectedPackages, payment) {
-  let lydBalance = +(payment.amountLYD || 0);
-  let usdBalance = +(payment.amountUSD || 0);
+  let remainingLYD = +(payment.amountLYD || 0);
+  let remainingUSD = +(payment.amountUSD || 0);
   const rate = +(payment.rate || 0);
 
-  if (lydBalance > 0 && rate <= 0) {
+  if (remainingLYD > 0 && rate <= 0) {
     throw new ErrorHandler(400, 'Invalid exchange rate for LYD payments');
   }
-
-  let paidSoFarUSD = 0;
 
   for (let i = 0; i < selectedPackages.length; i++) {
     const pkg = selectedPackages[i];
     const pkgCost = +(pkg.cost || 0);
     const isLast = i === selectedPackages.length - 1;
 
-    let usdFromUSD = 0;
-    let lydFromLYD = 0;
-    let usdPaidForThisPkg = 0;
+    let usdToDeduct = 0;
+    let lydToDeduct = 0;
 
     if (isLast) {
-      // 👉 Last package: use EXACTLY what's left
-      usdFromUSD = usdBalance;
-      lydFromLYD = lydBalance;
-
-      const usdCoveredByLYD = rate > 0 ? lydFromLYD / rate : 0;
-      usdPaidForThisPkg = usdFromUSD + usdCoveredByLYD;
-
-      // Force balances to zero
-      usdBalance = 0;
-      lydBalance = 0;
+      // Consume all remaining payment balance for the last item
+      usdToDeduct = remainingUSD;
+      lydToDeduct = remainingLYD;
     } else {
-      // Normal flow for earlier packages
-      const targetCost = pkgCost;
+      if (pkgCost <= 0) continue;
 
-      if (targetCost <= 0) continue;
+      // Calculate exact USD needed
+      usdToDeduct = Math.min(remainingUSD, pkgCost);
+      const stillOwedUSD = +(pkgCost - usdToDeduct).toFixed(2);
 
-      // Use USD first
-      usdFromUSD = Math.min(usdBalance, targetCost);
-      const remainingAfterUSD = targetCost - usdFromUSD;
-
-      // Then LYD if needed
-      if (remainingAfterUSD > 0 && rate > 0) {
-        const lydNeeded = remainingAfterUSD * rate;
-        lydFromLYD = Math.min(lydBalance, lydNeeded);
+      // Calculate exact LYD needed if USD didn't cover it
+      if (stillOwedUSD > 0 && rate > 0) {
+        const lydNeeded = +(stillOwedUSD * rate).toFixed(2);
+        lydToDeduct = Math.min(remainingLYD, lydNeeded);
       }
-
-      const usdCoveredByLYD = rate > 0 ? lydFromLYD / rate : 0;
-      usdPaidForThisPkg = usdFromUSD + usdCoveredByLYD;
-
-      // Deduct balances
-      usdBalance = +(usdBalance - usdFromUSD).toFixed(2);
-      lydBalance = +(lydBalance - lydFromLYD).toFixed(2);
     }
 
-    // Wallet deduction
-    if (usdFromUSD > 0) {
-      await useWalletBalance(req, res, next, id, pkg, +usdFromUSD.toFixed(2), 'USD', 0, rate, isLast);
+    // --- CRITICAL FIX: Sequential Await ---
+    // We MUST await here so the database balance is updated 
+    // before the next iteration of the loop starts.
+    if (usdToDeduct > 0) {
+      await useWalletBalance(req, res, next, id, pkg, +usdToDeduct.toFixed(2), 'USD', 0, rate, isLast);
+      remainingUSD = +(remainingUSD - usdToDeduct).toFixed(2);
     }
-    if (lydFromLYD > 0) {
-      await useWalletBalance(req, res, next, id, pkg, +lydFromLYD.toFixed(2), 'LYD', rate, rate, isLast);
+    
+    if (lydToDeduct > 0) {
+      await useWalletBalance(req, res, next, id, pkg, +lydToDeduct.toFixed(2), 'LYD', rate, rate, isLast);
+      remainingLYD = +(remainingLYD - lydToDeduct).toFixed(2);
     }
-
-    paidSoFarUSD = +(paidSoFarUSD + usdPaidForThisPkg).toFixed(2);
   }
 }
 
