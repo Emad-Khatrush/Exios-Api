@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "",
   "engines": {
-    "node": "18.2.0",
-    "npm": "6.14.9"
+    "node": "20.18.0",
+    "npm": "10.8.2"
   },
   "main": "index.js",
   "scripts": {
@@ -39,7 +39,7 @@
     "puppeteer": "^23.0.0",
     "util": "^0.12.5",
     "uuid": "^10.0.0",
-    "whatsapp-web.js": "github:DnTora/whatsapp-web.js#main-fork",
+    "whatsapp-web.js": "github:fm1randa/whatsapp-web.js#fix/sendseen-markedunread-error",
     "wwebjs-mongo": "^1.1.0"
   },
   "devDependencies": {
