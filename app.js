@@ -10,6 +10,9 @@ const errorHandler = require('./middleware/error');
 const { validatePhoneNumber, imageToBase64, replaceWords, getRandomStep } = require('./utils/messages');
 const Queue = require('bull');
 
+process.env.PUPPETEER_CACHE_DIR =
+  process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
+
 // DB Collections
 const Users = require('./models/user');
 
@@ -138,18 +141,19 @@ db.once("open", async () => {
   client = new Client({
     authStrategy: new WhatsAppConfig({
       store,
-      backupSyncIntervalMs: 600000 
+      backupSyncIntervalMs: 600000
     }),
     puppeteer: {
       headless: true,
+      executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage"
-      ]
+      ],
     }
   });
-  client.initialize();
+  client.initialize(); 
 
   client.on('qr', (qr) => {
 
