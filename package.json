@@ -10,7 +10,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node app.js",
-    "app": "nodemon app.js"
+    "app": "nodemon app.js",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "keywords": [],
   "author": "",
@@ -43,7 +44,8 @@
     "wwebjs-mongo": "^1.1.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4"
+    "nodemon": "^3.1.4",
+    "puppeteer": "^24.36.0"
   },
   "optionalDependencies": {
     "archiver": "^5.3.1",
