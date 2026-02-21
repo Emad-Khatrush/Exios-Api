@@ -58,11 +58,15 @@ async function processPackagesPayment(req, res, next, id, selectedPackages, paym
   let remainingUSD = +(payment.amountUSD || 0);
   const rate = +(payment.rate || 0);
 
+  // Stop immediately if LYD is needed but rate is 0
   if (remainingLYD > 0 && rate <= 0) {
-    throw new ErrorHandler(400, 'Invalid exchange rate for LYD payments');
+    throw new ErrorHandler(400, 'Exchange rate is required for LYD payments');
   }
+
   for (let i = 0; i < selectedPackages.length; i++) {
     const pkg = selectedPackages[i];
+    if (!pkg) continue;
+
     const pkgCost = +(pkg.cost || 0);
     const isLast = i === selectedPackages.length - 1;
 
@@ -70,142 +74,89 @@ async function processPackagesPayment(req, res, next, id, selectedPackages, paym
     let lydToDeduct = 0;
 
     if (isLast) {
-      // Consume all remaining payment balance for the last item
       usdToDeduct = remainingUSD;
       lydToDeduct = remainingLYD;
     } else {
       if (pkgCost <= 0) continue;
 
-      // Calculate exact USD needed
       usdToDeduct = Math.min(remainingUSD, pkgCost);
       const stillOwedUSD = +(pkgCost - usdToDeduct).toFixed(2);
 
-      // Calculate exact LYD needed if USD didn't cover it
+      // Only calculate LYD if there is a debt and a valid rate
       if (stillOwedUSD > 0 && rate > 0) {
         const lydNeeded = +(stillOwedUSD * rate).toFixed(2);
         lydToDeduct = Math.min(remainingLYD, lydNeeded);
       }
     }
 
-    // --- CRITICAL FIX: Sequential Await ---
-    // We MUST await here so the database balance is updated 
-    // before the next iteration of the loop starts.
     if (usdToDeduct > 0) {
-      await useWalletBalance(req, res, next, id, pkg, +usdToDeduct.toFixed(2), 'USD', 0, rate, isLast);
+      await useWalletBalance(req, res, next, id, pkg, +usdToDeduct.toFixed(2), 'USD', rate, isLast);
       remainingUSD = +(remainingUSD - usdToDeduct).toFixed(2);
     }
     
     if (lydToDeduct > 0) {
-      await useWalletBalance(req, res, next, id, pkg, +lydToDeduct.toFixed(2), 'LYD', rate, rate, isLast);
+      // Safeguard: Ensure rate is not 0 before calling LYD deduction
+      const currentRate = rate > 0 ? rate : 1; 
+      await useWalletBalance(req, res, next, id, pkg, +lydToDeduct.toFixed(2), 'LYD', currentRate, isLast);
       remainingLYD = +(remainingLYD - lydToDeduct).toFixed(2);
     }
   }
 }
 
-async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, paymentRate, isLast) {
+async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, isLast) {
   try {
-      const body = {
+    const amountToDeduct = truncateToTwo(amount);
+    
+    let wallet = await Wallet.findOne({ user: id, currency });
+    if (!wallet) throw new ErrorHandler(404, `Wallet for ${currency} not found`);
+
+    let newBalance = truncateToTwo(wallet.balance - amountToDeduct);
+    if (newBalance < 0) newBalance = 0;
+
+    await Wallet.findOneAndUpdate({ user: id, currency }, { balance: newBalance });
+
+    // FIX: Handle cases where there is no previous statement for this currency
+    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
+    
+    // SAFE ACCESS: If no statement exists, previousTotal is 0
+    const previousTotal = lastUserStatement.length > 0 ? Number(lastUserStatement[0].total || 0) : 0;
+    const statementTotal = truncateToTwo(previousTotal - amountToDeduct);
+
+    const userStatement = await UserStatement.create({
+      user: id,
+      createdBy: req.user,
+      calculationType: '-',
+      paymentType: 'wallet',
       createdAt: new Date(),
-      amount: truncateToTwo(amount),
+      description: `تم دفع قيمة الشحن ${pkg?.trackingNumber || ''}`,
+      amount: amountToDeduct,
       currency,
-      description: `تم دفع قيمة الشحن ${pkg?.trackingNumber} ${pkg?.orderId}`,
-      note: `${pkg?.weight} ${pkg?.measureUnit} ${pkg?.trackingNumber} ${pkg?.orderId}`,
-      orderId: pkg.orderId,
-      category: 'receivedGoods',
-      list: [{
-        ...pkg,
-        deliveredPackages: {
-          trackingNumber: pkg?.trackingNumber,
-          weight: {
-            total: pkg?.weight,
-            measureUnit: pkg?.measureUnit
-          }
-        }
-      }]
-    }
-      const { createdAt, description, note, orderId, category } = body;
-  
-      let wallet = await Wallet.findOne({
-        user: id,
-        currency,
-      });
-      if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
-      if (isLast) {
-        // For the last package, allow using the remaining balance even if it's less than the amount
-        amount = Math.min(wallet.balance, amount);
-      } else if (wallet.balance < amount) {
-        throw next(new ErrorHandler(400, 'Insufficient wallet balance'));
-      }
+      total: statementTotal,
+      note: `${pkg?.orderId || ''}`,
+    });
 
-      // // Calculate new wallet balance with truncation to 2 decimals
-      const newBalance = truncateToTwo(wallet.balance - Number(amount));
-
-      // Update wallet with new balance
-      await Wallet.findOneAndUpdate(
-        {
-          user: id,
-          currency,
-        },
-        {
-          balance: newBalance
-        },
-        {
-          new: true,
-        }
-      );
-  
-      const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
-      const previousTotal = Number(lastUserStatement[0]?.total || 0);
-  
-      // Calculate total with truncation to two decimals
-      const total = truncateToTwo(previousTotal - Number(amount));
-  
-      const userStatement = await UserStatement.create({
-        user: id,
+    const order = await Orders.findOne({ orderId: pkg.orderId }).populate('user');
+    if (order) {
+      await OrderPaymentHistory.create({
         createdBy: req.user,
-        calculationType: '-',
+        customer: order.user ? order.user._id : id,
+        order: order._id,
         paymentType: 'wallet',
-        createdAt,
-        description,
-        amount: truncateToTwo(Number(amount)),
+        receivedAmount: amountToDeduct,
         currency,
-        total,
-        note,
+        createdAt: new Date(),
+        rate: Number(rate) || 0,
+        category: 'receivedGoods',
+        list: [pkg],
+        note: `(Prev Balance: ${previousTotal} ${currency})`
       });
-
-      let list = body.list;
-      
-      const order = await Orders.findOne({ orderId }).populate('user');
-
-      if (order) {
-        const data = {
-          createdBy: req.user,
-          customer: order.user._id,
-          order: order._id,
-          paymentType: 'wallet',
-          receivedAmount: truncateToTwo(Number(amount)),
-          currency,
-          createdAt,
-          rate: Number(rate) || 0,
-          note: `(Wallet was ${truncateToTwo(previousTotal)} ${currency})`
-        };
-  
-        if (category) {
-          data.category = category;
-          if (category === 'receivedGoods') {
-            data.list = list || [];
-          }
-        }
-  
-        await OrderPaymentHistory.create(data);
-      }
-  
-      res.status(200).json({
-        createdAt: userStatement.createdAt
-      });
-    } catch (error) {
-      return next(new ErrorHandler(500, error.message));
     }
+
+    return userStatement;
+  } catch (error) {
+    console.error(`🔥 Currency Switch Error (${currency}):`, error.message);
+    throw error.statusCode ? error : new ErrorHandler(500, error.message);
+  }
 }
 
 async function updateOrderStatuses(selectedPackages) {
