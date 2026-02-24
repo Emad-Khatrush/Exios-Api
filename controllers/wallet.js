@@ -240,18 +240,47 @@ module.exports.getUnverifiedUsersStatement = async (req, res, next) => {
   }
 }
 
-module.exports.getAllWallets = async (req, res, next) => {
+module.exports.getAllActiveWallets = async (req, res, next) => {
   try {
-    const wallets = await Wallet.find({ balance: { $ne: 0 } }).sort({ user: -1 }).populate('user');
-    if (!wallets) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
+    const wallets = await Wallet.aggregate([
+      {
+        $group: {
+          _id: "$user",
+          // Sum up LYD specifically
+          lydBalance: {
+            $sum: { $cond: [{ $eq: ["$currency", "LYD"] }, "$balance", 0] }
+          },
+          // Sum up USD specifically
+          usdBalance: {
+            $sum: { $cond: [{ $eq: ["$currency", "USD"] }, "$balance", 0] }
+          }
+        }
+      },
+      // THIS IS THE FILTER YOU ASKED ABOUT:
+      {
+        $match: {
+          $or: [
+            { lydBalance: { $ne: 0 } },
+            { usdBalance: { $ne: 0 } }
+          ]
+        }
+      },
+      {
+        $lookup: {
+          from: "users", 
+          localField: "_id",
+          foreignField: "_id",
+          as: "user"
+        }
+      },
+      { $unwind: "$user" }
+    ]);
 
-    res.status(200).json({
-      results: wallets
-    });
+    res.status(200).json({ results: wallets });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    next(error);
   }
-}
+};
 
 module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {

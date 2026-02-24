@@ -17,7 +17,7 @@ router.route('/wallet/:id')
       .delete(protect, allowAdminsAndEmployee, wallet.cancelPayment);
 
 router.route('/wallets')
-      .get(protect, allowAdminsAndEmployee, wallet.getAllWallets)
+      .get(protect, allowAdminsAndEmployee, wallet.getAllActiveWallets)
 
 router.route('/wallet/:id/usebalance')
       .post(protect, allowAdminsAndEmployee, upload.array('files'), wallet.useBalanceOfWallet)
