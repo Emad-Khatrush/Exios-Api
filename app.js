@@ -325,7 +325,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     if (testBigData) {
       const usersTest = [];
       for (let i = 0; i < 100; i++) {
-        usersTest.push({ phone: `111011111${i}`, firstName: 'Test', lastName: i });
+        usersTest.push({ phone: `111011111${i}@c.us`, firstName: 'Test', lastName: i });
       }
       // Send to the worker we modified earlier
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest });
