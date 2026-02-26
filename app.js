@@ -382,11 +382,12 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
           });
 
           const rtlContent = `\u202B${generatedContent}`;
-          
+          const delay = getRandomStep(2000, 5000, 1000);
+
           // Add the individual message job
           await sendMessageQueue.add('send-message', 
             { target, index: index + 1, imgUrl, content: rtlContent }, 
-            { delay: 1000 } // Slight 1s delay between individual adds
+            { delay: index * delay } // Slight 1s delay between individual adds
           );
 
           index++;
