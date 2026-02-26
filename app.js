@@ -281,105 +281,74 @@ app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
 })
 
 app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
-  const { imgUrl, content, target, testMode, testBigData, skip, limit } = req.body
+  const { imgUrl, content, target, testMode, testBigData, skip, limit } = req.body;
 
   try {
+    // 1. Handle Test Mode (Single Message)
     if (testMode) {
-      const target = await client.getContactById(validatePhoneNumber(`5535728209@c.us`));
-      if (target) {
-        const generetedContent = replaceWords(content, {
+      const contact = await client.getContactById(validatePhoneNumber(`5535728209@c.us`));
+      if (contact) {
+        const generatedContent = replaceWords(content, {
           fullName: `Emad Khatrush`,
           customerId: 'A200',
           phone: '+905535728209',
         });
-        const rtlContent = `\u202B${generetedContent}`;
-        await sendMessageQueue.add('send-message', { target, index: 1, imgUrl, content: rtlContent }, { delay: 1 });
-        return res.status(200).json({ success: true, message: 'Message sent successfully' });
+        const rtlContent = `\u202B${generatedContent}`;
+        await sendMessageQueue.add('send-message', { target: contact, index: 1, imgUrl, content: rtlContent });
+        return res.status(200).json({ success: true, message: 'Test message queued' });
       }
     }
 
+    // 2. Fetch Users
     let users;
     if (target === 'onlyNewClients') {
       users = await Users.aggregate([
-        {
-          $match: {
-            'roles.isClient': true,
-            isCanceled: false
-          }
-        },
-        {
-          $lookup: {
-            from: 'orders',
-            localField: '_id',
-            foreignField: 'user',
-            as: 'orders'
-          }
-        },
-        {
-          $match: {
-            orders: { $size: 0 }
-          }
-        },
-        {
-          $project: {
-            phone: 1
-          }
-        },
-        {
-          $sort: {
-            createdAt: -1
-          }
-        },
-        {
-          $skip: Number(skip) || 0
-        },
-        {
-          $limit: Number(limit)
-        }
-      ])
+        { $match: { 'roles.isClient': true, isCanceled: false } },
+        { $lookup: { from: 'orders', localField: '_id', foreignField: 'user', as: 'orders' } },
+        { $match: { orders: { $size: 0 } } },
+        { $project: { phone: 1, firstName: 1, lastName: 1, customerId: 1 } },
+        { $sort: { createdAt: -1 } },
+        { $skip: Number(skip) || 0 },
+        { $limit: Number(limit) || 5000 }
+      ]);
     } else {
-      users = await Users.find({ isCanceled: false, 'roles.isClient': true }).select({ phone: 1, firstName: 1, lastName: 1, customerId: 1 }).sort({ createdAt: -1 }).skip(skip).limit(limit);
+      users = await Users.find({ isCanceled: false, 'roles.isClient': true })
+        .select({ phone: 1, firstName: 1, lastName: 1, customerId: 1 })
+        .sort({ createdAt: -1 })
+        .skip(Number(skip) || 0)
+        .limit(Number(limit) || 5000);
     }
 
-    const splitCount = 2;
-    const usersCount = users.length;
     const rtlContent = `\u202B${content}`;
 
-    const chunkSize = Math.ceil(usersCount / splitCount);
-
-    let currentIndex = 0; // Initialize currentIndex outside the loop
-
+    // 3. Handle Big Data Test (100 users)
     if (testBigData) {
-      const usersTest1 = [];
-      const usersTest2 = [];
-      for (let index = 0; index < 50; index++) {
-        usersTest1.push({
-          phone: `111011111${index}`
-        })
+      const usersTest = [];
+      for (let i = 0; i < 100; i++) {
+        usersTest.push({ phone: `111011111${i}`, firstName: 'Test', lastName: i });
       }
-      for (let index = 51; index < 100; index++) {
-        usersTest2.push({
-          phone: `111011111${index}`
-        })
-      }
-      const delay = getRandomStep(2000, 5000, 1000);
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest1, index: 1 }, { delay: index * delay });
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest2, index: 2 }, { delay: index * delay });
-      return res.status(200).json({ success: true, message: 'Messages sent successfully' });
-    } 
-
-    for (let index = 0; index < splitCount; index++) {
-      const usersToSend = users.slice(currentIndex, currentIndex + chunkSize);
-      const delay = getRandomStep(2000, 5000, 1000);
-      // Send message queue for each split, passing the index
-      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersToSend, index: currentIndex }, { delay: index * delay });
-      
-      currentIndex += chunkSize; // Update currentIndex for the next split
+      // Send to the worker we modified earlier
+      await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest });
+      return res.status(200).json({ success: true, message: 'Big data test started' });
     }
 
-    return res.status(200).json({ success: true, message: 'Messages sent successfully' });
+    // 4. Send the entire list to the worker
+    // We don't split it here anymore; we let the worker's "Batch & Rest" handle the flow
+    if (users.length > 0) {
+      await sendMessageQueue.add('send-large-messages', { 
+        imgUrl, 
+        content: rtlContent, 
+        users 
+      }, {
+        // Optional: remove the job from Redis after completion to save memory
+        removeOnComplete: true 
+      });
+    }
+
+    return res.status(200).json({ success: true, message: `Processing ${users.length} messages in background...` });
+
   } catch (error) {
-    console.error(error);
+    console.error("Route Error:", error);
     return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
   }
 });
@@ -390,33 +359,55 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
   console.log('Queue resumed.');
 })
 
+// Helper function for the rest period
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users } = job.data;
+  const BATCH_SIZE = 50; // Define how many messages per batch
   
   try {
-    
-    let index = job.data.index || 0; // Retrieve index from job data or default to 0
+    let index = job.data.index || 0;
+    let processedInCurrentBatch = 0;
+
     for (const user of users) {
       if (user.phone && `${user.phone}`.length >= 5) {
         const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+        
         if (target) {
-          const generetedContent = replaceWords(content, {
+          const generatedContent = replaceWords(content, {
             fullName: `${user?.firstName} ${user?.lastName}`,
             customerId: user?.customerId,
             phone: user?.phone,
           });
-          const delay = getRandomStep(2000, 5000, 1000);
-          const rtlContent = `\u202B${generetedContent}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, imgUrl, content: rtlContent }, { delay: index * delay });
+
+          const rtlContent = `\u202B${generatedContent}`;
+          
+          // Add the individual message job
+          await sendMessageQueue.add('send-message', 
+            { target, index: index + 1, imgUrl, content: rtlContent }, 
+            { delay: 1000 } // Slight 1s delay between individual adds
+          );
+
           index++;
+          processedInCurrentBatch++;
+
+          // --- THE REST LOGIC ---
+          if (processedInCurrentBatch >= BATCH_SIZE) {
+            // Calculate random rest between 30s (30000ms) and 2m (120000ms)
+            const restTime = Math.floor(Math.random() * (120000 - 30000 + 1) + 30000);
+            
+            console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
+            
+            await sleep(restTime);
+            processedInCurrentBatch = 0; // Reset counter for next batch
+          }
         }
       }
     }
   } catch (error) {
-    console.log(`Error processing job, attempt ${index}: ${error?.message}`);
-    // Retry the job after a delay of 10 seconds
-    await sendMessageQueue.add('send-message', { target, index, imgUrl, content }, { delay: index * 30000 });
-    return Promise.resolve();
+    console.log(`Error processing batch: ${error?.message}`);
+    return Promise.reject(error);
   }
 
   return Promise.resolve();
