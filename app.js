@@ -364,7 +364,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users } = job.data;
-  const BATCH_SIZE = 50; // Define how many messages per batch
+  const BATCH_SIZE = 10; // Define how many messages per batch
   
   try {
     let index = job.data.index || 0;
@@ -382,12 +382,12 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
           });
 
           const rtlContent = `\u202B${generatedContent}`;
-          const delay = getRandomStep(2000, 5000, 1000);
+          const delay = getRandomStep(1000, 3000, 1000);
 
           // Add the individual message job
           await sendMessageQueue.add('send-message', 
             { target, index: index + 1, imgUrl, content: rtlContent }, 
-            { delay: index * delay } // Slight 1s delay between individual adds
+            { delay: delay } // Slight 1s delay between individual adds
           );
 
           index++;
@@ -395,8 +395,8 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
           // --- THE REST LOGIC ---
           if (processedInCurrentBatch >= BATCH_SIZE) {
-            // Calculate random rest between 30s (30000ms) and 2m (120000ms)
-            const restTime = Math.floor(Math.random() * (120000 - 30000 + 1) + 30000);
+            // Calculate random rest between 30s (30000ms) and 1m (60000ms)
+            const restTime = Math.floor(Math.random() * (60000 - 30000 + 1) + 30000);
             
             console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
             
