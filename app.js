@@ -382,7 +382,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
           });
 
           const rtlContent = `\u202B${generatedContent}`;
-          const delay = getRandomStep(1000, 3000, 1000);
+          const delay = getRandomStep(2000, 3000, 1000);
 
           // Add the individual message job
           await sendMessageQueue.add('send-message', 
@@ -396,7 +396,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
           // --- THE REST LOGIC ---
           if (processedInCurrentBatch >= BATCH_SIZE) {
             // Calculate random rest between 30s (30000ms) and 1m (60000ms)
-            const restTime = Math.floor(Math.random() * (60000 - 30000 + 1) + 30000);
+            const restTime = Math.floor(Math.random() * (90000 - 60000 + 1) + 30000);
             
             console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
             
