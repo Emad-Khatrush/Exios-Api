@@ -372,7 +372,28 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
     for (const user of users) {
       if (user.phone && `${user.phone}`.length >= 5) {
-        const target = await client.getContactById(validatePhoneNumber(`${user.phone}@c.us`));
+
+        const phoneNumber = validatePhoneNumber(`${user.phone}@c.us`);
+        const isRegistered = await client.isRegisteredUser(phoneNumber);
+        if (!isRegistered) {
+          console.log(`User ${user.phone} is not registered.`);
+          index++;
+          processedInCurrentBatch++;
+
+          // --- THE REST LOGIC ---
+          if (processedInCurrentBatch >= BATCH_SIZE) {
+            // Calculate random rest between 60s (60000ms) and 1.5m (90000ms)
+            const restTime = Math.floor(Math.random() * (90000 - 60000 + 1) + 30000);
+            
+            console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
+            
+            await sleep(restTime);
+            processedInCurrentBatch = 0; // Reset counter for next batch
+          }
+          continue;
+        }
+
+        const target = await client.getContactById(phoneNumber);
         
         if (target) {
           const generatedContent = replaceWords(content, {
