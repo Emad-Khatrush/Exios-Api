@@ -408,7 +408,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
           // Add the individual message job
           await sendMessageQueue.add('send-message', 
             { target, index: index + 1, imgUrl, content: rtlContent }, 
-            { delay: delay } // Slight 1s delay between individual adds
+            { delay: delay * index } // Slight 1s delay between individual adds
           );
 
           index++;
