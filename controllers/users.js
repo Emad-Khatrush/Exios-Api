@@ -144,7 +144,6 @@ module.exports.getClients = async (req, res, next) => {
         },
         { 
           $match: {
-            isCanceled: false, 
             'roles.isClient': true,
             $or: [
               { fullName: { $regex: new RegExp(searchValue.trim(), 'i') } },
@@ -160,7 +159,7 @@ module.exports.getClients = async (req, res, next) => {
         }
       ]
     }
-    const clients = await User.aggregate(query);
+    const clients = await User.aggregate(query).allowDiskUse(true);
 
     const verifyStatementCounts = (await UserStatement.aggregate([
       {
