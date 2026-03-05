@@ -30,5 +30,8 @@ router.route('/unverifiedUsersStatement')
 
 router.route('/user/:id/statement/:statementId')
       .post(protect, isAdmin, wallet.verifyStatement)
+
+router.route('/statements/latest')
+      .get(protect, isAdmin, wallet.getLatestStatements)
       
 module.exports = router;

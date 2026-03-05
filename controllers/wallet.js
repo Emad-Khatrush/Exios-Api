@@ -23,6 +23,37 @@ module.exports.getUserWallet = async (req, res, next) => {
   }
 }
 
+module.exports.getLatestStatements = async (req, res, next) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 15;
+    const skip = (page - 1) * limit;
+
+    // 1. Fetch paginated records and populate both 'user' and 'createdBy'
+    const statements = await UserStatement.find({})
+      .sort({ createdAt: -1 }) // Newest first
+      .skip(skip)
+      .limit(limit)
+      .populate('user', 'firstName lastName customerId') // <-- Added this
+      .populate('createdBy', 'firstName lastName')
+      .exec();
+
+    // 2. Check if there are more records beyond this page
+    const totalCount = await UserStatement.countDocuments({});
+    const hasMore = skip + statements.length < totalCount;
+
+    // 3. Send response
+    res.status(200).json({
+      statements,
+      hasMore
+    });
+
+  } catch (error) {
+    console.error("Error fetching statements:", error);
+    res.status(500).json({ error: 'Internal Server Error fetching statements' });
+  }
+}
+
 module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
