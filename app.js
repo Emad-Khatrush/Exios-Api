@@ -364,7 +364,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users } = job.data;
-  const BATCH_SIZE = 10; // Define how many messages per batch
+  const BATCH_SIZE = 5; // Define how many messages per batch
   
   try {
     let index = job.data.index || 0;
