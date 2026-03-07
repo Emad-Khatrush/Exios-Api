@@ -382,8 +382,8 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
           // --- THE REST LOGIC ---
           if (processedInCurrentBatch >= BATCH_SIZE) {
-            // Calculate random rest between 60s (60000ms) and 1.5m (90000ms)
-            const restTime = Math.floor(Math.random() * (90000 - 60000 + 1) + 30000);
+            // Calculate random rest between 30s (100000ms) and 1m (90000ms)
+            const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
             
             console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
             
@@ -416,8 +416,8 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
           // --- THE REST LOGIC ---
           if (processedInCurrentBatch >= BATCH_SIZE) {
-            // Calculate random rest between 30s (30000ms) and 1m (60000ms)
-            const restTime = Math.floor(Math.random() * (90000 - 60000 + 1) + 30000);
+            // Calculate random rest between 30s (100000ms) and 1m (90000ms)
+            const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
             
             console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
             
