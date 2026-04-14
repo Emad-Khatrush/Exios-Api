@@ -93,6 +93,28 @@ module.exports.updateUser = async (req, res, next) => {
 //   }
 // }
 
+module.exports.updateCustomerId = async (req, res, next) => {
+  const { id } = req.params;
+  const { customerId } = req.body;
+
+  try {
+    const user = await User.findById(id);
+    
+    const customerIdExist = await User.findOne({ customerId });
+    if (customerIdExist) return next(new ErrorHandler(400, 'Customer ID already exists'));
+
+    const validCode = validateFormat(customerId);
+    if (!validCode) return next(new ErrorHandler(400, 'Customer ID format is invalid. It should start with a letter followed by three digits (e.g., A123)'));
+
+    user.customerId = customerId;
+    await user.save();
+    res.status(200).json(user);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
 module.exports.getEmployees = async (req, res, next) => {
   try {
     let query = [{ $match: {
@@ -439,3 +461,12 @@ module.exports.getHomeData = async (req, res, next) => {
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
   }
 }
+
+const validateFormat = (str) => {
+  // ^      : Start of string
+  // [a-zA-Z] : Exactly one letter (upper or lowercase)
+  // \d{3}  : Exactly three digits
+  // $      : End of string
+  const regex = /^[a-zA-Z]\d{3}$/;
+  return regex.test(str);
+};

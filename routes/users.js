@@ -25,6 +25,9 @@ router.post('/account/create', users.createUser);
 router.route('/account/update')
       .put(protect, isClient, users.updateUser);
 
+router.route('/customerId/:id/update')
+      .put(protect, allowAdminsAndEmployee, users.updateCustomerId);
+
 router.post('/verifyToken', users.verifyToken);
 
 router.post('/login', users.login);
