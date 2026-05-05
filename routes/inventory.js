@@ -27,9 +27,9 @@ router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
 
 router.route('/inventory/:inventoryId/expenses')
-    .post(protect, isAdmin, inventory.addExpenseToInventory)
-    .put(protect, isAdmin, inventory.updateExpenseOfInventory)
-    .delete(protect, isAdmin, inventory.deleteExpenseOfInventory)
+    .post(protect, allowAdminsAndEmployee, inventory.addExpenseToInventory)
+    .put(protect, allowAdminsAndEmployee, inventory.updateExpenseOfInventory)
+    .delete(protect, allowAdminsAndEmployee, inventory.deleteExpenseOfInventory)
 
 router.route('/warehouse/:office/goods')
     .get(protect, allowAdminsAndEmployee, inventory.getWarehouseInventory)
