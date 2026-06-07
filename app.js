@@ -9,6 +9,8 @@ const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
 const { validatePhoneNumber, imageToBase64, replaceWords, getRandomStep } = require('./utils/messages');
 const Queue = require('bull');
+const path = require('path');
+const os = require('os');
 
 process.env.PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
@@ -144,8 +146,10 @@ db.once("open", async () => {
       backupSyncIntervalMs: 60000, // Optional: set backup sync interval to 1 minute
     }),
     puppeteer: {
-      executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
-      args: [
+        executablePath: process.env.NODE_ENV === 'production'
+            ? '/app/.chrome-for-testing/chrome-linux64/chrome' // Heroku Linux production path
+            : path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-148.0.7778.97', 'chrome-win64', 'chrome.exe'), // Your exact local Windows path      
+        args: [
         "--disable-accelerated-2d-canvas",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
