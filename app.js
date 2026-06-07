@@ -141,7 +141,7 @@ db.once("open", async () => {
   client = new Client({
     authStrategy: new WhatsAppConfig({
       store,
-      backupSyncIntervalMs: 600000
+      backupSyncIntervalMs: 60000
     }),
     puppeteer: {
       executablePath: '/usr/bin/google-chrome',
