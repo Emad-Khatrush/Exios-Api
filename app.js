@@ -145,9 +145,7 @@ db.once("open", async () => {
     }),
     puppeteer: {
       headless: true,
-      executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
       args: [
-        "headless: true",
         "--disable-accelerated-2d-canvas",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
@@ -175,7 +173,8 @@ db.once("open", async () => {
         "--no-zygote",
         "--renderer-process-limit=100",
         "--enable-gpu-rasterization",
-        "--enable-zero-copy",       "--disable-backgrounding-occluded-windows",
+        "--enable-zero-copy",       
+        "--disable-backgrounding-occluded-windows",
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage"
