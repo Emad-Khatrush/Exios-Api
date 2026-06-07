@@ -145,6 +145,7 @@ db.once("open", async () => {
     }),
     puppeteer: {
       headless: true,
+      executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
       args: [
         "--disable-accelerated-2d-canvas",
         "--disable-background-timer-throttling",
