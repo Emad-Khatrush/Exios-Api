@@ -144,8 +144,7 @@ db.once("open", async () => {
       backupSyncIntervalMs: 600000
     }),
     puppeteer: {
-      headless: true,
-      executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
+      executablePath: '/usr/bin/google-chrome',
       args: [
         "--disable-accelerated-2d-canvas",
         "--disable-background-timer-throttling",
