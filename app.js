@@ -139,7 +139,7 @@ db.on("error", console.error.bind(console, "connection error:"));
 db.once("open", async () => {
   console.log('MongoDB connected');
   const store = new MongoStore({ mongoose: mongoose });
-  const WhatsAppConfig = RemoteAuth;
+  const WhatsAppConfig = LocalAuth; // Use LocalAuth for local session storage
   client = new Client({
     authStrategy: new WhatsAppConfig({
       store,
