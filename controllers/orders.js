@@ -184,8 +184,27 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
         }
       ]);
     } else {
-      orders = await Orders.find({ ...tabTypeQuery, user: id }).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit);
+      orders = await Orders.find({ ...tabTypeQuery, user: id }).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
     }
+    
+    for (const order of (orders || [])) {
+      const paymentList = order.paymentList || [];
+
+      // Loop through each package sequentially
+      for (const pkg of paymentList) {
+        const inventory = await Inventory.findOne({ 
+          'orders.paymentList._id': pkg._id, 
+          inventoryType: 'inventoryGoods', 
+          shippingType: { $ne: 'domestic' } 
+        });
+
+        if (inventory) {
+          // If inventory is found, add the flight property
+          pkg.flight = inventory;
+        }
+      }
+    }
+    console.log(orders[5]?.paymentList);
 
     res.status(200).json({
       results: orders,
