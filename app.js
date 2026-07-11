@@ -139,7 +139,7 @@ db.on("error", console.error.bind(console, "connection error:"));
 db.once("open", async () => {
   console.log('MongoDB connected');
   const store = new MongoStore({ mongoose: mongoose });
-  const WhatsAppConfig = LocalAuth; // Use LocalAuth for local session storage
+  const WhatsAppConfig = RemoteAuth; // Use LocalAuth for local session storage
   client = new Client({
     authStrategy: new WhatsAppConfig({
       store,
@@ -179,9 +179,8 @@ db.once("open", async () => {
         "--enable-gpu-rasterization",
         "--enable-zero-copy",       
         "--disable-backgrounding-occluded-windows",
-        "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
+        "--js-flags=\"--max-old-space-size=250\"", // Limits JS heap to ~250MB
       ],
     }
   });
@@ -223,9 +222,11 @@ db.once("open", async () => {
         console.log('Deleting session from store');
         await store.delete({ session: 'RemoteAuth' });
       }
+      client.destroy()
       console.log('Client disconnected:', reason); 
       
     } catch (error) {
+      client.destroy()
       console.log('Client disconnected:', reason);
     }
   });
