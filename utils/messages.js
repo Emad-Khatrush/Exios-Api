@@ -1,27 +1,40 @@
 const axios = require('axios');
 
 const validatePhoneNumber = (phone) => {
-  let generatePhone = phone.trim();
-  if (generatePhone === '5535728209@c.us') {
-    return '90' + generatePhone;
+  let cleanPhone = `${phone}`.trim();
+
+  // 1. Handle your specific hardcoded case safely for Baileys
+  if (cleanPhone.includes('5535728209')) {
+      return '905535728209@s.whatsapp.net';
   }
-  // if phone number is starts with +
-  if (generatePhone.startsWith('+')) {
-    generatePhone =  generatePhone.substring(1);
+
+  // 2. Strip any existing WhatsApp domain suffixes if passed in
+  cleanPhone = cleanPhone.split('@')[0];
+
+  // 3. Strip international indicators (+ or 00)
+  if (cleanPhone.startsWith('+')) {
+      cleanPhone = cleanPhone.substring(1);
+  } else if (cleanPhone.startsWith('00')) {
+      cleanPhone = cleanPhone.substring(2);
   }
-  // if phone number is starts with 00
-  if (generatePhone.startsWith('00')) {
-    generatePhone = generatePhone.substring(2);
+
+  // 4. Define specific Libyan mobile patterns (Carrier prefixes: 91, 92, 93, 94, 95)
+  const isLibyanLocalWithZero = /^09[1-5]\d{7}$/.test(cleanPhone);  // Matches: 091XXXXXXX (10 digits)
+  const isLibyanLocalNoZero   = /^9[1-5]\d{7}$/.test(cleanPhone);    // Matches: 91XXXXXXX (9 digits)
+  const isAlreadyLibyanIntl   = /^2189[1-5]\d{7}$/.test(cleanPhone); // Matches: 21891XXXXXXX (12 digits)
+
+  // 5. Apply formatting logic based on the match
+  if (isLibyanLocalWithZero) {
+      // Remove the leading '0' and prepend Libyan country code '218'
+      cleanPhone = '218' + cleanPhone.substring(1);
+  } 
+  else if (isLibyanLocalNoZero) {
+      // Prepend '218' directly
+      cleanPhone = '218' + cleanPhone;
   }
-  // if phone number is starts with 0
-  if (generatePhone.startsWith('0')) {
-    generatePhone = '218' + generatePhone.substring(1);
-  }
-  // if phone number is starts with 9
-  if (generatePhone.startsWith('9')) {
-    generatePhone = '218' + generatePhone;
-  }
-  return generatePhone;
+
+  // 6. Return the clean string formatted as a Baileys JID
+  return `${cleanPhone}@s.whatsapp.net`;
 };
 
 const formatPhoneNumber = (phone) => {

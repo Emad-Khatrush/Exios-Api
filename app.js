@@ -11,6 +11,16 @@ const { validatePhoneNumber, imageToBase64, replaceWords, getRandomStep } = requ
 const Queue = require('bull');
 const path = require('path');
 const os = require('os');
+const qrcode = require('qrcode-terminal');
+const fs = require('fs');
+
+const { 
+    default: makeWASocket, 
+    DisconnectReason, 
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
 
 process.env.PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
@@ -69,6 +79,10 @@ const Orders = require('./models/order');
 
 let qrCodeData = null;
 let client;
+let globalSock; // Global variable to hold the WhatsApp socket instance
+// Track connection attempts globally
+let retryCount = 0;
+const MAX_RETRIES = 3; // Change this to how many times you want to retry
 
 const app = express();
 
@@ -184,7 +198,7 @@ db.once("open", async () => {
       ],
     }
   });
-  client.initialize(); 
+  // client.initialize(); 
 
   client.on('qr', (qr) => {
 
@@ -259,13 +273,16 @@ app.get('/api/get-qr-code', (req, res) => {
 app.post('/api/sendWhatsupMessage', async (req, res) => {
   const { phoneNumber, message } = req.body
   try {
-    const target = await client.getContactById(validatePhoneNumber(phoneNumber));
-    if (target) {
-      await client.sendMessage(target.id._serialized, message);
+      await sendMessage(globalSock, validatePhoneNumber(phoneNumber), message);
       return res.status(200).json({ success: true, message: 'Message sent successfully' });
-    } else {
-      return res.status(400).json({ success: false, message: 'Contact not found' });
-    }
+
+    // const target = await client.getContactById(validatePhoneNumber(phoneNumber));
+    // if (target) {
+    //   await client.sendMessage(target.id._serialized, message);
+    //   return res.status(200).json({ success: true, message: 'Message sent successfully' });
+    // } else {
+    //   return res.status(400).json({ success: false, message: 'Contact not found' });
+    // }
   } catch (error) {
     console.error(error);
     return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
@@ -275,18 +292,25 @@ app.post('/api/sendWhatsupMessage', async (req, res) => {
 app.post('/api/sendWhatsupImages', async (req, res) => {
   const { imgUrls, phoneNumber } = req.body
   try {
-    const target = await client.getContactById(validatePhoneNumber(phoneNumber));
-    if (target) {
       if (imgUrls && imgUrls.length > 0) {
         for (const imgUrl of imgUrls) {
-          const media = new MessageMedia('image/png', await imageToBase64(imgUrl))
-          await client.sendMessage(target.id._serialized, media);
+          await sendPhoto(globalSock, validatePhoneNumber(phoneNumber), imgUrl);
         }
       }
-      return res.status(200).json({ success: true, message: 'Images sent successfully' });
-    } else {
-      return res.status(400).json({ success: false, message: 'Contact not found' });
-    }
+
+    // const target = await client.getContactById(validatePhoneNumber(phoneNumber));
+    // if (target) {
+    //   if (imgUrls && imgUrls.length > 0) {
+    //     for (const imgUrl of imgUrls) {
+
+    //       // const media = new MessageMedia('image/png', await imageToBase64(imgUrl))
+    //       // await client.sendMessage(target.id._serialized, media);
+    //     }
+    //   }
+    //   return res.status(200).json({ success: true, message: 'Images sent successfully' });
+    // } else {
+    //   return res.status(400).json({ success: false, message: 'Contact not found' });
+    // }
   } catch (error) {
     console.error(error);
     return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
@@ -299,12 +323,16 @@ app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
     let index = 0;
     for (const user of data) {
       if (user.phoneNumber && `${user.phoneNumber}`.length >= 5) {
-        const target = await client.getContactById(validatePhoneNumber(`${user.phoneNumber}@c.us`));
-        if (target) {
-          const rtlContent = `\u202B${user.message}`;
-          await sendMessageQueue.add('send-message', { target, index: index + 1, content: rtlContent }, { delay: index * 10000 });
-          index++;
-        }
+        const rtlContent = `\u202B${user.message}`;
+        await sendMessageQueue.add('send-message', { index: index + 1, content: rtlContent, phone: user.phoneNumber }, { delay: index * 10000 });
+        index++;
+
+        // const target = await client.getContactById(validatePhoneNumber(`${user.phoneNumber}@s.whatsapp.net`));
+        // if (target) {
+        //   const rtlContent = `\u202B${user.message}`;
+        //   await sendMessageQueue.add('send-message', { target, index: index + 1, content: rtlContent }, { delay: index * 10000 });
+        //   index++;
+        // }
       }
     }
     return res.status(200).json({ success: true, message: 'Messages sent successfully' });
@@ -319,17 +347,24 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
   try {
     // 1. Handle Test Mode (Single Message)
     if (testMode) {
-      const contact = await client.getContactById(validatePhoneNumber(`5535728209@c.us`));
-      if (contact) {
-        const generatedContent = replaceWords(content, {
-          fullName: `Emad Khatrush`,
-          customerId: 'A200',
-          phone: '+905535728209',
-        });
-        const rtlContent = `\u202B${generatedContent}`;
-        await sendMessageQueue.add('send-message', { target: contact, index: 1, imgUrl, content: rtlContent });
-        return res.status(200).json({ success: true, message: 'Test message queued' });
-      }
+      const generatedContent = replaceWords(content, {
+        fullName: `Emad Khatrush`,
+        customerId: 'A200',
+        phone: '+905535728209',
+      });
+      const rtlContent = `\u202B${generatedContent}`;
+      await sendMessageQueue.add('send-message', { index: 1, imgUrl, content: rtlContent, phone: `5535728209` });
+      // const contact = await client.getContactById(validatePhoneNumber(`5535728209`));
+      // if (contact) {
+      //   const generatedContent = replaceWords(content, {
+      //     fullName: `Emad Khatrush`,
+      //     customerId: 'A200',
+      //     phone: '+905535728209',
+      //   });
+      //   const rtlContent = `\u202B${generatedContent}`;
+      //   await sendMessageQueue.add('send-message', { target: contact, index: 1, imgUrl, content: rtlContent });
+      //   return res.status(200).json({ success: true, message: 'Test message queued' });
+      // }
     }
 
     // 2. Fetch Users
@@ -358,7 +393,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     if (testBigData) {
       const usersTest = [];
       for (let i = 0; i < 100; i++) {
-        usersTest.push({ phone: `111011111${i}@c.us`, firstName: 'Test', lastName: i });
+        usersTest.push({ phone: `111011111${i}@s.whatsapp.net`, firstName: 'Test', lastName: i });
       }
       // Send to the worker we modified earlier
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest });
@@ -406,58 +441,88 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
     for (const user of users) {
       if (user.phone && `${user.phone}`.length >= 5) {
 
-        const phoneNumber = validatePhoneNumber(`${user.phone}@c.us`);
-        const isRegistered = await client.isRegisteredUser(phoneNumber);
-        if (!isRegistered) {
-          console.log(`User ${user.phone} is not registered.`);
-          index++;
-          processedInCurrentBatch++;
+        const phoneNumber = `${user.phone}@s.whatsapp.net`;
+        const generatedContent = replaceWords(content, {
+          fullName: `${user?.firstName} ${user?.lastName}`,
+          customerId: user?.customerId,
+          phone: user?.phone,
+        });
 
-          // --- THE REST LOGIC ---
-          if (processedInCurrentBatch >= BATCH_SIZE) {
-            // Calculate random rest between 30s (100000ms) and 1m (90000ms)
-            const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
-            
-            console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
-            
-            await sleep(restTime);
-            processedInCurrentBatch = 0; // Reset counter for next batch
-          }
-          continue;
+        const rtlContent = `\u202B${generatedContent}`;
+        const delay = getRandomStep(2000, 3000, 1000);
+
+        // Add the individual message job
+        await sendMessageQueue.add('send-message', 
+          { index: index + 1, imgUrl, content: rtlContent, phone: phoneNumber }, 
+          { delay: delay * index } // Slight 1s delay between individual adds
+        );
+
+        index++;
+        processedInCurrentBatch++;
+
+        //   // --- THE REST LOGIC ---
+        if (processedInCurrentBatch >= BATCH_SIZE) {
+          // Calculate random rest between 30s (100000ms) and 1m (90000ms)
+          const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
+          
+          console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
+          
+          await sleep(restTime);
+          processedInCurrentBatch = 0; // Reset counter for next batch
         }
 
-        const target = await client.getContactById(phoneNumber);
+
+        // const isRegistered = await client.isRegisteredUser(phoneNumber);
+        // if (!isRegistered) {
+        //   console.log(`User ${user.phone} is not registered.`);
+        //   index++;
+        //   processedInCurrentBatch++;
+
+        //   // --- THE REST LOGIC ---
+        //   if (processedInCurrentBatch >= BATCH_SIZE) {
+        //     // Calculate random rest between 30s (100000ms) and 1m (90000ms)
+        //     const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
+            
+        //     console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
+            
+        //     await sleep(restTime);
+        //     processedInCurrentBatch = 0; // Reset counter for next batch
+        //   }
+        //   continue;
+        // }
+
+        // const target = await client.getContactById(phoneNumber);
         
-        if (target) {
-          const generatedContent = replaceWords(content, {
-            fullName: `${user?.firstName} ${user?.lastName}`,
-            customerId: user?.customerId,
-            phone: user?.phone,
-          });
+        // if (target) {
+        //   const generatedContent = replaceWords(content, {
+        //     fullName: `${user?.firstName} ${user?.lastName}`,
+        //     customerId: user?.customerId,
+        //     phone: user?.phone,
+        //   });
 
-          const rtlContent = `\u202B${generatedContent}`;
-          const delay = getRandomStep(2000, 3000, 1000);
+        //   const rtlContent = `\u202B${generatedContent}`;
+        //   const delay = getRandomStep(2000, 3000, 1000);
 
-          // Add the individual message job
-          await sendMessageQueue.add('send-message', 
-            { target, index: index + 1, imgUrl, content: rtlContent }, 
-            { delay: delay * index } // Slight 1s delay between individual adds
-          );
+        //   // Add the individual message job
+        //   await sendMessageQueue.add('send-message', 
+        //     { target, index: index + 1, imgUrl, content: rtlContent }, 
+        //     { delay: delay * index } // Slight 1s delay between individual adds
+        //   );
 
-          index++;
-          processedInCurrentBatch++;
+        //   index++;
+        //   processedInCurrentBatch++;
 
-          // --- THE REST LOGIC ---
-          if (processedInCurrentBatch >= BATCH_SIZE) {
-            // Calculate random rest between 30s (100000ms) and 1m (90000ms)
-            const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
+        //   // --- THE REST LOGIC ---
+        //   if (processedInCurrentBatch >= BATCH_SIZE) {
+        //     // Calculate random rest between 30s (100000ms) and 1m (90000ms)
+        //     const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
             
-            console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
+        //     console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
             
-            await sleep(restTime);
-            processedInCurrentBatch = 0; // Reset counter for next batch
-          }
-        }
+        //     await sleep(restTime);
+        //     processedInCurrentBatch = 0; // Reset counter for next batch
+        //   }
+        // }
       }
     }
   } catch (error) {
@@ -469,21 +534,27 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 });
 
 sendMessageQueue.process('send-message', 1, async (job) => {
-  const { target, index, imgUrl, content } = job.data;
+  const { index, imgUrl, content, phone } = job.data;
 
   try {
     if (imgUrl) {
-      const media = new MessageMedia('image/png', await imageToBase64(imgUrl))
-      await client.sendMessage(target.id._serialized, media);
+      await sendPhoto(globalSock, validatePhoneNumber(phone), imgUrl);
     }
-    await client.sendMessage(target.id._serialized, content);
+
+    // By using Baileys, we can send messages directly through the socket
+    // const targetJid = '905535728209@s.whatsapp.net'; 
+    await sendMessage(globalSock, validatePhoneNumber(phone), content);
+
+    // By using whatsapp-web.js, we can send messages directly through the client
+    // await client.sendMessage(target.id._serialized, content);
+
     console.log("Message Sent " + index + ' !');
     await sendMessageQueue.clean(0);
 
   } catch (error) {
     console.log(`Error processing job, attempt ${index}: ${error?.message}`);
     // Retry the job after a delay of 10 seconds
-    await sendMessageQueue.add('send-message', { target, index, imgUrl, content }, { delay: index * 30000 });
+    await sendMessageQueue.add('send-message', { index, imgUrl, content, phone }, { delay: index * 30000 });
     return Promise.resolve();
   }
 
@@ -573,6 +644,112 @@ app.use(async (req, res) => {
 
   res.status(404).send("Page Not Found 140");
 });
+
+
+// Try new whatsup 
+async function connectToWhatsApp() {
+    // 1. Configure the folder where session credentials will be saved
+    // On Heroku, this directory will be created in your app root.
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    
+    // Fetch latest WhatsApp Web version to avoid version mismatch errors
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`Using WA Web v${version.join('.')}, isLatest: ${isLatest}`);
+
+    // 2. Initialize the WhatsApp socket connection
+    const sock = makeWASocket({
+        version,
+        auth: state,
+        printQRInTerminal: false, // We will handle printing manually below
+        logger: pino({ level: 'silent' }), // Suppress heavy internal logs
+    });
+
+    // 3. Listen for connection updates (QR code, Connecting, Opened, Closed)
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        // If a new QR code is generated, display it in the terminal
+        if (qr) {
+            console.log('Scan the QR code below to connect your WhatsApp:');
+            console.log(qr);
+            qrCodeData = qr;
+            qrcode.generate(qr, { small: true });
+        }
+
+        // Handle connection states
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting: ', shouldReconnect);
+            
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`Connection closed. Status Code: ${statusCode}`);
+
+            // If we haven't hit the retry limit yet, try to reconnect
+            if (retryCount < MAX_RETRIES) {
+                retryCount++;
+                console.log(`[Retry ${retryCount}/${MAX_RETRIES}] Connection lost. Reconnecting in 5 seconds...`);
+                
+                // Add a small delay so it doesn't spam the WhatsApp servers instantly
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 5000); 
+
+            } else {
+                // If it fails after MAX_RETRIES, destroy the session completely
+                console.error(`CRITICAL: Could not reconnect after ${MAX_RETRIES} attempts. Wiping session...`);
+                
+                try {
+                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+                    console.log('Old session folder successfully destroyed.');
+                } catch (err) {
+                    console.error('Failed to delete session folder:', err);
+                }
+
+                // Reset the retry counter for the next fresh cycle
+                retryCount = 0; 
+                console.log('Starting fresh instance... Waiting for a new QR code.');
+                connectToWhatsApp();
+            }
+        } else if (connection === 'open') {
+            console.log('WhatsApp client is ready!');
+            // CRITICAL: Reset the counter back to 0 when the connection is successful!
+            retryCount = 0;
+        }
+    });
+
+    // 4. Critical step: Save credentials automatically whenever they update
+    sock.ev.on('creds.update', saveCreds);
+
+    globalSock = sock; // Store the socket instance globally for use in other functions
+}
+
+/**
+ * Helper function to send text messages
+ * @param {import('@whiskeysockets/baileys').WASocket} sock 
+ * @param {string} jid - Target WhatsApp ID (phone_number@s.whatsapp.net)
+ * @param {string} text - The message body
+ */
+async function sendMessage(sock, jid, text) {
+    try {
+        await sock.sendMessage(jid, { text: text });
+        console.log(`Message successfully sent to ${jid}`);
+    } catch (error) {
+        console.error('Failed to send message:', error);
+    }
+}
+
+async function sendPhoto(sock, jid, imgUrl) {
+    try {
+        await sock.sendMessage(jid, { image: { url: imgUrl }, });
+        console.log(`Photo successfully sent to ${jid}`);
+    } catch (error) {
+        console.error('Failed to send photo:', error);
+    }
+}
+
+
+// Start the application
+connectToWhatsApp();
 
 // Error Handler
 app.use(errorHandler);
