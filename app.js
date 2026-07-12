@@ -354,6 +354,8 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
       });
       const rtlContent = `\u202B${generatedContent}`;
       await sendMessageQueue.add('send-message', { index: 1, imgUrl, content: rtlContent, phone: `5535728209` });
+      return res.status(200).json({ success: true, message: 'Test message queued' });
+      
       // const contact = await client.getContactById(validatePhoneNumber(`5535728209`));
       // if (contact) {
       //   const generatedContent = replaceWords(content, {
