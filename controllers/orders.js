@@ -120,54 +120,19 @@ module.exports.getInvoices = async (req, res, next) => {
 
 module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
   try {
-    const { limit, skip, tabType } = req.query;
+    const { tabType } = req.query; // Removed skip and limit
     const { id } = req.params;
     
     const tabTypeQuery = getTapTypeQuery(tabType);
     tabTypeQuery.isCanceled = false;
     let orders;
+
+    // --- 1. FETCH ALL ORDERS EFFICIENTLY ---
     if (tabType === 'readyForPickup') {
       orders = await Orders.aggregate([
         { $match: { ...tabTypeQuery, user: new ObjectId(id) } },
         {
-          $project: {
-            // Include all fields
-            _id: 1,
-            user: 1,
-            madeBy: 1,
-            orderId: 1,
-            customerInfo: 1,
-            receivedUSD: 1,
-            receivedLYD: 1,
-            receivedShipmentLYD: 1,
-            receivedShipmentUSD: 1,
-            paymentExistNote: 1,
-            placedAt: 1,
-            totalInvoice: 1,
-            invoiceConfirmed: 1,
-            requestedEditDetails: 1,
-            editedAmounts: 1,
-            shipment: 1,
-            productName: 1,
-            quantity: 1,
-            isShipment: 1,
-            isPayment: 1,
-            unsureOrder: 1,
-            hasRemainingPayment: 1,
-            hasProblem: 1,
-            orderStatus: 1,
-            isFinished: 1,
-            activity: 1,
-            netIncome: 1,
-            orderNote: 1,
-            isCanceled: 1,
-            cancelation: 1,
-            images: 1,
-            debt: 1,
-            credit: 1,
-            items: 1,
-
-            // Filter the paymentList array
+          $addFields: {
             paymentList: {
               $filter: {
                 input: "$paymentList",
@@ -181,30 +146,84 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
               }
             }
           }
+        },
+        { $sort: { createdAt: -1 } },
+        // Lookup user to match the populate('user') behavior
+        {
+          $lookup: {
+            from: 'users', // Replace with your exact users collection name if different
+            localField: 'user',
+            foreignField: '_id',
+            as: 'user'
+          }
+        },
+        {
+          $unwind: {
+            path: '$user',
+            preserveNullAndEmptyArrays: true
+          }
         }
       ]);
     } else {
-      orders = await Orders.find({ ...tabTypeQuery, user: id }).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+      orders = await Orders.find({ ...tabTypeQuery, user: id })
+        .populate('user')
+        .sort({ createdAt: -1 })
+        .lean(); // .lean() is CRITICAL here for memory performance on large datasets
     }
     
+    // --- 2. GATHER ALL PACKAGE IDS ---
+    const packageIds = [];
     for (const order of (orders || [])) {
-      const paymentList = order.paymentList || [];
-
-      // Loop through each package sequentially
-      for (const pkg of paymentList) {
-        const inventory = await Inventory.findOne({ 
-          'orders.paymentList._id': pkg._id, 
-          inventoryType: 'inventoryGoods', 
-          shippingType: { $ne: 'domestic' } 
-        });
-
-        if (inventory) {
-          // If inventory is found, add the flight property
-          pkg.flight = inventory;
+      if (order.paymentList && order.paymentList.length > 0) {
+        for (const pkg of order.paymentList) {
+          packageIds.push(pkg._id);
         }
       }
     }
-    console.log(orders[5]?.paymentList);
+
+    // --- 3. BULK FETCH INVENTORY ONCE ---
+    if (packageIds.length > 0) {
+      // Using .lean() here saves massive amounts of RAM when fetching all inventory
+      const inventories = await Inventory.find({ 
+        'orders.paymentList._id': { $in: packageIds }, 
+        inventoryType: 'inventoryGoods', 
+        shippingType: { $ne: 'domestic' } 
+      }).lean();
+
+      // --- 4. MAP INVENTORY IN MEMORY (CRASH-PROOF) ---
+      const inventoryMap = {};
+      for (const inv of inventories) {
+        if (Array.isArray(inv.orders)) {
+          for (const invOrder of inv.orders) {
+            
+            // Safely handle paymentList if it's not an array in the DB
+            const pList = Array.isArray(invOrder.paymentList) 
+              ? invOrder.paymentList 
+              : (invOrder.paymentList ? [invOrder.paymentList] : []);
+
+            for (const invPkg of pList) {
+              if (invPkg && invPkg._id) {
+                inventoryMap[invPkg._id.toString()] = inv;
+              }
+            }
+          }
+        }
+      }
+
+      // --- 5. ATTACH FLIGHT DATA O(1) SPEED ---
+      for (const order of orders) {
+        if (order.paymentList) {
+          for (const pkg of order.paymentList) {
+            if (pkg && pkg._id) {
+              const matchedFlight = inventoryMap[pkg._id.toString()];
+              if (matchedFlight) {
+                pkg.flight = matchedFlight;
+              }
+            }
+          }
+        }
+      }
+    }
 
     res.status(200).json({
       results: orders,
