@@ -16,6 +16,7 @@ const inventorySchema = new Schema({
     type: String,
     required: true
   },
+  odoReferenceCode: String,
   shippedCountry: {
     type: String,
     required: true,

@@ -93,6 +93,9 @@ router.route('/invoices/issued')
 
 router.route('/monthReport')
       .get(protect, isAdmin, orders.getMonthReport)
+
+router.route('/odoReport')
+      .get(protect, isAdmin, orders.odoReport)
       
 // Client Routes
 

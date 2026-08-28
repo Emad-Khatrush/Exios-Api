@@ -250,6 +250,7 @@ const orderSchema = new Schema({
         note: String
       },
       locationPlace: String,
+      boxesCount: String,
       trackingNumber: {
         type: String,
         default: ''

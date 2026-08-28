@@ -228,6 +228,7 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
         total: pkg?.weight,
         measureUnit: pkg?.measureUnit
       },
+      boxesCount: pkg?.boxesCount || '-',
       cost: pkg?.cost || 0,
       exiosPrice: pkg?.exiosPrice || 0,
       orderId: pkg?.orderId,
@@ -278,4 +279,47 @@ async function isNewCustomer(userId) {
   }
 }
 
-module.exports = { cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };
+// --- Helper to format dates to DD/MM/YYYY ---
+const formatDate = (dateStr, createdAt) => {
+  const rawDate = dateStr ? new Date(dateStr) : new Date(createdAt);
+  if (!isNaN(rawDate.getTime())) {
+    return rawDate.toISOString().split('T')[0].split('-').reverse().join('/');
+  }
+  return dateStr || '';
+};
+
+// 1. Invoices Fetcher
+const getInvoicesQuery = async (dateFilter) => {
+  try {
+    console.log('Fetching invoices with date filter:', dateFilter);
+    const query = { isCanceled: { $ne: true }, unsureOrder: { $ne: true }, isShipment: false, isPayment: true, ...dateFilter };
+    const orders = await Orders.find(query).populate('user').lean();
+    console.log(orders, 'orders fetched for invoices');
+    const rows = [];
+  
+    for (const order of orders) {
+      const invoiceDate = formatDate(order.createdAt, order.createdAt);
+  
+      rows.push({
+        'id': order.orderId,
+        'partner_id/id': order.user?.customerId || 'A000',
+        'invoice_date': invoiceDate,
+        'invoice_date_due': invoiceDate,
+        'invoice_line_ids/product_id': 'شراء من المواقع',
+        'invoice_line_ids/price_unit': order.totalInvoice || 0,
+        'currency_id': 'USD',
+        'currency_rate': 1,
+        'invoice_line_ids/tax_ids': '0% EX',
+        'invoice_line_ids/quantity': 1,
+        'ref': order.orderId,
+      });
+    }
+    return rows;
+
+  } catch (error) {
+    console.error('Error fetching invoices:', error);
+    throw new ErrorHandler(500, 'Error fetching invoices');
+  }
+};
+
+module.exports = { getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };

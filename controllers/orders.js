@@ -15,7 +15,7 @@ const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
-const { cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
+const { getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -517,7 +517,7 @@ module.exports.createOrder = async (req, res, next) => {
     if (!req.body) {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
-    const { fullName, email, customerId, phone, fromWhere, toWhere, method, exiosShipmentPrice, originShipmentPrice, weight, packageCount, netIncome, currency, creditCurrency, debt, credit, containerNumber, receiptNo } = req.body;
+    const { fullName, email, customerId, phone, fromWhere, toWhere, method, exiosShipmentPrice, originShipmentPrice, weight, packageCount, netIncome, currency, creditCurrency, debt, credit } = req.body;
     const orderId = orderid.generate().slice(7, 17);
     const isOrderIdTaken = await Orders.findOne({ orderId });
     if (!!isOrderIdTaken) {
@@ -567,7 +567,8 @@ module.exports.createOrder = async (req, res, next) => {
           billOfLading: data.deliveredPackages?.containerInfo?.billOfLading
         },
         shipmentMethod: data.deliveredPackages.shipmentMethod,
-        receiptNo: data.deliveredPackages.receiptNo
+        receiptNo: data.deliveredPackages.receiptNo,
+        boxesCount: data.deliveredPackages.boxesCount
       },
       note: data.note,
     }))
@@ -1955,6 +1956,51 @@ module.exports.getMonthReport = async (req, res, next) => {
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));
+  }
+};
+
+module.exports.odoReport = async (req, res) => {
+  try {
+    const { type, startDate, endDate } = req.query;
+    
+    // Date range filtering logic
+    let dateFilter = {};
+    if (startDate && endDate) {
+      dateFilter.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)),
+      };
+    } else if (startDate) {
+      const start = new Date(startDate);
+      const end = new Date(startDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.createdAt = { $gte: start, $lte: end };
+    }
+
+    let data = [];
+    switch (type) {
+      case 'invoices':
+        data = await getInvoicesQuery(dateFilter);
+        break;
+      case 'shipments':
+        // data = await getShipmentsQuery(dateFilter);
+        break;
+      case 'payments':
+        // data = await getPaymentsQuery(dateFilter);
+        break;
+      default:
+        return res.status(400).json({ success: false, message: 'Invalid export type specified.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      type,
+      count: data.length,
+      results: data,
+    });
+  } catch (error) {
+    console.error('Export Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 

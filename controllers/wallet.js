@@ -3,6 +3,7 @@ const Order = require("../models/order");
 const OrderPaymentHistory = require("../models/orderPaymentHistory");
 const UserStatement = require("../models/userStatement");
 const Wallet = require("../models/wallet");
+const Inventory = require('../models/inventory');
 const ErrorHandler = require('../utils/errorHandler');
 const mongoose = require('mongoose');
 const { ObjectId } = mongoose.Types; // Import new ObjectId from mongoose
@@ -26,23 +27,100 @@ module.exports.getUserWallet = async (req, res, next) => {
 module.exports.getLatestStatements = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 15;
+    const limit = req.query.limit === '0' ? 0 : (parseInt(req.query.limit) || 15);
     const skip = (page - 1) * limit;
 
-    // 1. Fetch paginated records and populate both 'user' and 'createdBy'
-    const statements = await UserStatement.find({})
+    // 1. Build dynamic query object based on optional filters
+    const query = {};
+    
+    // Filter by calculationType (+ or -) if provided
+    if (req.query.calculationType) {
+      query.calculationType = req.query.calculationType === 'plus' ? '+' : req.query.calculationType === 'minus' ? '-' : undefined;
+    }
+
+    // Filter by Date Range (createdAt) if provided
+    if (req.query.startDate || req.query.endDate) {
+      query.createdAt = {};
+      
+      if (req.query.startDate) {
+        query.createdAt.$gte = new Date(req.query.startDate);
+      }
+      
+      if (req.query.endDate) {
+        const end = new Date(req.query.endDate);
+        end.setHours(23, 59, 59, 999); 
+        query.createdAt.$lte = end;
+      }
+    }
+
+    // 2. Fetch paginated records using the constructed query filter
+    const statements = await UserStatement.find(query)
       .sort({ createdAt: -1 }) // Newest first
       .skip(skip)
       .limit(limit)
-      .populate('user', 'firstName lastName customerId') // <-- Added this
+      .populate('user', 'firstName lastName customerId')
       .populate('createdBy', 'firstName lastName')
+      .lean()
       .exec();
 
-    // 2. Check if there are more records beyond this page
-    const totalCount = await UserStatement.countDocuments({});
-    const hasMore = skip + statements.length < totalCount;
+// 3. مطابقة الرحلات باستعلام واحد فقط لدعم أرقام التتبع المكررة
+    if (req.query.includeOdoCode === 'true' && statements.length > 0) {
+      
+      // أ) تخزين جميع الـ statements المرتبطة بنفس رقم التتبع في مصفوفة
+      const trackingMap = new Map();
 
-    // 3. Send response
+      statements.forEach(statement => {
+        const match = statement.description?.match(/تم دفع قيمة الشحن\s+([A-Za-z0-9]+)/);
+        if (match && match[1]) {
+          const trackingNumber = match[1];
+          
+          // إذا كان رقم التتبع موجوداً مسبقاً نضيف إليه، وإلا ننشئ مصفوفة جديدة
+          if (!trackingMap.has(trackingNumber)) {
+            trackingMap.set(trackingNumber, []);
+          }
+          trackingMap.get(trackingNumber).push(statement);
+        }
+      });
+
+      const trackingNumbers = Array.from(trackingMap.keys());
+
+      // ب) تنفيذ استعلام واحد فقط لجلب الرحلات المرتبطة
+      if (trackingNumbers.length > 0) {
+        const matchedInventories = await Inventory.find({
+          inventoryType: 'inventoryGoods',
+          'orders.paymentList.deliveredPackages.trackingNumber': { $in: trackingNumbers }
+        })
+        .sort({ createdAt: 1 }) // الأقدم أولاً
+        .select('odoReferenceCode orders.paymentList.deliveredPackages.trackingNumber')
+        .lean();
+
+        // ج) تحديث جميع المعاملات التي تحمل هذا الرقم
+        matchedInventories.forEach(inv => {
+          if (inv.odoReferenceCode && Array.isArray(inv.orders)) {
+            inv.orders.forEach(order => {
+              const trackingNumber = order?.paymentList?.deliveredPackages?.trackingNumber;
+              
+              if (trackingNumber && trackingMap.has(trackingNumber)) {
+                // جلب كل المعاملات المربوطة بهذا الرقم (سواء LYD أو USD)
+                const targetStatements = trackingMap.get(trackingNumber);
+                
+                targetStatements.forEach(targetStatement => {
+                  if (!targetStatement.odoReferenceCode) {
+                    targetStatement.odoReferenceCode = inv.odoReferenceCode;
+                  }
+                });
+              }
+            });
+          }
+        });
+      }
+    }
+
+    // 4. Check if there are more records beyond this page
+    const totalCount = await UserStatement.countDocuments(query);
+    const hasMore = limit === 0 ? false : (skip + statements.length < totalCount);
+
+    // 5. Send response
     res.status(200).json({
       statements,
       hasMore
@@ -52,7 +130,7 @@ module.exports.getLatestStatements = async (req, res, next) => {
     console.error("Error fetching statements:", error);
     res.status(500).json({ error: 'Internal Server Error fetching statements' });
   }
-}
+};
 
 module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
