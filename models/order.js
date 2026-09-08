@@ -307,6 +307,24 @@ const orderSchema = new Schema({
       type: Number,
       default: 1
     }, 
+  }],
+  purchaseItems: [{
+    date: {
+      type: Date,
+      default: Date.now
+    },
+    description: {
+      type: String,
+      default: 'شراء من مواقع'
+    },
+    unitPrice: {
+      type: Number,
+      default: 0
+    },
+    currency: {
+      type: String,
+      default: '',
+    },
   }]
 }, { timestamps: true })
 

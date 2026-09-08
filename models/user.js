@@ -59,6 +59,10 @@ const userSchema = new Schema({
       type: Boolean,
       default: false,
     },
+    isAccountant: {
+      type: Boolean,
+      default: false,
+    },
   }
 }, { timestamps: true });
 

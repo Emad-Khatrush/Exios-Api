@@ -291,10 +291,8 @@ const formatDate = (dateStr, createdAt) => {
 // 1. Invoices Fetcher
 const getInvoicesQuery = async (dateFilter) => {
   try {
-    console.log('Fetching invoices with date filter:', dateFilter);
     const query = { isCanceled: { $ne: true }, unsureOrder: { $ne: true }, isShipment: false, isPayment: true, ...dateFilter };
     const orders = await Orders.find(query).populate('user').lean();
-    console.log(orders, 'orders fetched for invoices');
     const rows = [];
   
     for (const order of orders) {
@@ -322,4 +320,56 @@ const getInvoicesQuery = async (dateFilter) => {
   }
 };
 
-module.exports = { getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };
+async function getPurchaseItemsByDate(startDate, endDate) {
+try {
+    let start, end;
+
+    if (endDate) {
+      start = new Date(startDate);
+      start.setUTCHours(0, 0, 0, 0);
+
+      end = new Date(endDate);
+      end.setUTCHours(23, 59, 59, 999);
+    } else {
+      start = new Date(startDate);
+      start.setUTCHours(0, 0, 0, 0);
+
+      end = new Date(startDate);
+      end.setUTCHours(23, 59, 59, 999);
+    }
+
+    const purchaseItems = await Orders.aggregate([
+      // 1. Deconstruct the purchaseItems array
+      { $unwind: '$purchaseItems' },
+
+      // 2. Filter by date boundary
+      {
+        $match: {
+          'purchaseItems.date': {
+            $gte: start,
+            $lte: end
+          }
+        }
+      },
+
+      // 3. Reshape and promote purchaseItems to the top level
+      {
+        $replaceRoot: {
+          newRoot: {
+            $mergeObjects: [
+              '$purchaseItems',
+              { orderId: '$orderId', orderDbId: '$_id' } // Attach parent order ref
+            ]
+          }
+        }
+      }
+    ]);
+
+    return purchaseItems;
+  } catch (error) {
+    console.error('Error fetching purchase items by date:', error);
+    throw error;
+  }
+}
+
+module.exports = { getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };

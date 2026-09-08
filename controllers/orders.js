@@ -15,7 +15,7 @@ const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
-const { getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
+const { getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -1982,8 +1982,8 @@ module.exports.odoReport = async (req, res) => {
       case 'invoices':
         data = await getInvoicesQuery(dateFilter);
         break;
-      case 'shipments':
-        // data = await getShipmentsQuery(dateFilter);
+      case 'purchaseItems':
+        data = await getPurchaseItemsByDate(startDate, endDate);
         break;
       case 'payments':
         // data = await getPaymentsQuery(dateFilter);
