@@ -1,7 +1,7 @@
 const express = require('express');
 
 const orders = require('../controllers/orders');
-const { protect, isAdmin, isClient, isEmployee, allowAdminsAndEmployee } = require('../middleware/check-auth');
+const { protect, isAdmin, isClient, allowAdminsAndAccountants, allowAdminsAndEmployee } = require('../middleware/check-auth');
 const multer = require('multer');
 // cloudinary settings
 const { storage } = require('../utils/cloudinary');
@@ -95,7 +95,7 @@ router.route('/monthReport')
       .get(protect, isAdmin, orders.getMonthReport)
 
 router.route('/odoReport')
-      .get(protect, isAdmin, orders.odoReport)
+      .get(protect, allowAdminsAndAccountants, orders.odoReport)
       
 // Client Routes
 
