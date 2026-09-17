@@ -135,7 +135,7 @@ module.exports.getLatestStatements = async (req, res, next) => {
 module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { createdAt, amount, currency, description, note } = req.body;
+    const { createdAt, amount, currency, description, note, actionType, office } = req.body;
 
     const existWallet = await Wallet.findOne({ user: id, currency });
 
@@ -188,7 +188,9 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       currency,
       total,
       note,
-      attachments: files
+      attachments: files,
+      office,
+      actionType
     });
 
     res.status(200).json({
@@ -235,7 +237,8 @@ module.exports.cancelPayment = async (req, res, next) => {
       currency: payment.currency,
       total,
       note: `${payment.category} Cancellation Refund`,
-      attachments: payment.attachments
+      attachments: payment.attachments,
+      actionType: 'cancellation',
     });
     await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
     res.status(200).json({
@@ -394,7 +397,7 @@ module.exports.getAllActiveWallets = async (req, res, next) => {
 module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { createdAt, amount, currency, description, note, orderId, category, rate } = req.body;
+    const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
 
     const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
 
@@ -461,6 +464,8 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       currency,
       total,
       note,
+      actionType,
+      office,
       attachments: files,
     });
 
