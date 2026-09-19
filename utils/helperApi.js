@@ -133,6 +133,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       currency,
       total: statementTotal,
       note: `${pkg?.orderId || ''}`,
+      actionType: 'wallet',
     });
 
     const order = await Orders.findOne({ orderId: pkg.orderId }).populate('user');

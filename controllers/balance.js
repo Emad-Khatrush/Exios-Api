@@ -277,6 +277,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
       total,
       note: `Payment for ${existingBalance?.debtType || ''} debt ${existingBalance?.order ? existingBalance?.order?.orderId : ''} #${balance.notes}`,
       attachments: files,
+      actionType: 'wallet',
     });
 
     if (existingBalance.order && existingBalance.debtType !== 'general') {
