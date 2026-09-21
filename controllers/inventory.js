@@ -227,8 +227,8 @@ module.exports.createInventory = async (req, res, next) => {
 
     let odoCode = odoReferenceCode;
     if (!odoCode && shippedCountry === 'UAE') {
-      if (shippingType === 'air') odoCode = 11;
-      else if (shippingType === 'sea') odoCode = 12;
+      if (shippingType === 'air') odoCode = 242;
+      else if (shippingType === 'sea') odoCode = 243;
     }
 
     const inventory = await Inventory.create({
