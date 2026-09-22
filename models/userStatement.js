@@ -17,7 +17,7 @@ const userStatementSchema = new Schema({
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
-  office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china'] },
+  office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank'] },
   review: {
     receivedDate: Date,
     isAdminConfirmed: Boolean
