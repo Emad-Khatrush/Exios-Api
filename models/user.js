@@ -63,7 +63,21 @@ const userSchema = new Schema({
       type: Boolean,
       default: false,
     },
-  }
+  },
+  // Special Exios shipment prices (USD) for chosen customers: air is per KG, sea is per CBM.
+  // Categories are free to add or remove; new customers start with Normal, Copy + Cosmetic, Medical.
+  specialPrices: {
+    enabled: { type: Boolean, default: false },
+    categories: [{
+      _id: false,
+      name: { type: String, trim: true },
+      air: Number,
+      sea: Number,
+    }],
+    note: String,
+    updatedAt: Date,
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  },
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function(password) {

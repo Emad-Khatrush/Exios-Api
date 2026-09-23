@@ -115,6 +115,81 @@ module.exports.updateCustomerId = async (req, res, next) => {
   }
 }
 
+const MAX_SPECIAL_PRICE_CATEGORIES = 20;
+const MAX_CATEGORY_NAME_LENGTH = 40;
+
+// Empty stays empty (no special price for that category); anything else must be a positive number
+const parseSpecialPrice = (value) => {
+  if (value === '' || value === null || value === undefined) return undefined;
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) throw new ErrorHandler(400, 'Prices must be positive numbers');
+  return Math.round(price * 100) / 100;
+};
+
+const parseSpecialPriceCategories = (categories) => {
+  if (!Array.isArray(categories)) throw new ErrorHandler(400, 'Categories are missing');
+  if (categories.length > MAX_SPECIAL_PRICE_CATEGORIES) {
+    throw new ErrorHandler(400, `No more than ${MAX_SPECIAL_PRICE_CATEGORIES} categories`);
+  }
+
+  const names = new Set();
+  return categories.map(category => {
+    const name = String(category?.name || '').trim();
+    if (!name) throw new ErrorHandler(400, 'Every category needs a name');
+    if (name.length > MAX_CATEGORY_NAME_LENGTH) {
+      throw new ErrorHandler(400, `Category names can be at most ${MAX_CATEGORY_NAME_LENGTH} characters`);
+    }
+    if (names.has(name.toLowerCase())) throw new ErrorHandler(400, `The category "${name}" is listed twice`);
+    names.add(name.toLowerCase());
+
+    return { name, air: parseSpecialPrice(category.air), sea: parseSpecialPrice(category.sea) };
+  });
+};
+
+module.exports.updateSpecialPrices = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const specialPrices = {
+      enabled: !!body.enabled,
+      categories: parseSpecialPriceCategories(body.categories),
+      note: String(body.note || '').trim(),
+      updatedAt: new Date(),
+      updatedBy: req.user._id,
+    };
+
+    const hasAnyPrice = specialPrices.categories.some(category => category.air || category.sea);
+    if (specialPrices.enabled && !hasAnyPrice) {
+      return next(new ErrorHandler(400, 'Add at least one price before turning special prices on'));
+    }
+
+    const user = await User.findByIdAndUpdate(id, { $set: { specialPrices } }, { new: true })
+      .select('firstName lastName customerId specialPrices');
+    if (!user) return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+}
+
+module.exports.getSpecialPriceCustomers = async (req, res, next) => {
+  try {
+    const customers = await User.find({ 'specialPrices.enabled': true })
+      .select('firstName lastName customerId phone city imgUrl specialPrices')
+      .populate('specialPrices.updatedBy', 'firstName lastName')
+      .sort({ 'specialPrices.updatedAt': -1 })
+      .lean();
+
+    res.status(200).json({ results: customers });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, error.message));
+  }
+}
+
 module.exports.getEmployees = async (req, res, next) => {
   try {
     let query = [{ $match: {

@@ -28,6 +28,13 @@ router.route('/account/update')
 router.route('/customerId/:id/update')
       .put(protect, allowAdminsAndEmployee, users.updateCustomerId);
 
+// Only admins set special prices; employees see them when creating shipment invoices
+router.route('/customer/:id/specialPrices')
+      .put(protect, isAdmin, users.updateSpecialPrices);
+
+router.route('/specialPriceCustomers')
+      .get(protect, allowAdminsAndEmployee, users.getSpecialPriceCustomers);
+
 router.post('/verifyToken', users.verifyToken);
 
 router.post('/login', users.login);
