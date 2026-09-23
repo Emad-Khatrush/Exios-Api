@@ -15,7 +15,7 @@ const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
-const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
+const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -165,12 +165,28 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
         }
       ]);
     } else {
-      orders = await Orders.find({ ...tabTypeQuery, user: id })
+      // This view is per package, not per order: a delivered package belongs in "finished"
+      // even while other packages of the same order are still on the way.
+      const query = tabType === 'finished'
+        ? { user: id, isCanceled: false, unsureOrder: false, 'paymentList.status.received': true }
+        : { ...tabTypeQuery, user: id };
+
+      orders = await Orders.find(query)
         .populate('user')
         .sort({ createdAt: -1 })
         .lean(); // .lean() is CRITICAL here for memory performance on large datasets
+
+      if (tabType === 'finished' || tabType === 'active') {
+        const wantReceived = tabType === 'finished';
+        orders = orders
+          .map(order => ({
+            ...order,
+            paymentList: (order.paymentList || []).filter(pkg => !!pkg?.status?.received === wantReceived),
+          }))
+          .filter(order => order.paymentList.length > 0);
+      }
     }
-    
+
     // --- 2. GATHER ALL PACKAGE IDS ---
     const packageIds = [];
     for (const order of (orders || [])) {
@@ -1528,10 +1544,13 @@ module.exports.createTrackingNumbersForClient = async (req, res, next) => {
 module.exports.markPackagesAsDelivered = async (req, res, next) => {
   try {
     const id = req.params.id;
-    const { selectedPackages, payment, totalCost } = req.body;
-    
-    validatePackages(selectedPackages);
-    validatePayment(payment);
+    validatePackages(req.body.selectedPackages);
+    const paymentAmounts = validatePayment(req.body.payment);
+
+    // Costs and totals come from the database; the client's totalCost and rate are ignored
+    const { packages: selectedPackages, totalCost } = await loadDeliverablePackages(id, req.body.selectedPackages);
+
+    const payment = withCalculatedRate(paymentAmounts, totalCost);
 
     const walletMap = await getUserWalletMap(id);
 
@@ -1549,7 +1568,8 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
 
   } catch (error) {
     console.error(error);
-    return next(new ErrorHandler(500, error.message));
+    // Keep 400s as 400 so the admin sees the real reason instead of a generic server error
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 

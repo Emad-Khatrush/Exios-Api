@@ -17,10 +17,99 @@ function validatePackages(selectedPackages) {
   }
 }
 
+// Paying up to this many USD short of (or over) the total is accepted to absorb rounding
+const PAYMENT_TOLERANCE_USD = 2;
+const BALANCE_EPSILON = 0.001;
+
+const roundToTwo = (num) => Math.round(num * 100) / 100;
+
+const toAmount = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : NaN;
+};
+
+// Returns the payment as clean numbers so later steps never work with strings or NaN
 function validatePayment(payment) {
-  if ((payment.amountLYD || 0) === 0 && (payment.amountUSD || 0) === 0) {
+  if (!payment || typeof payment !== 'object') {
+    throw new ErrorHandler(400, 'Payment details are missing');
+  }
+
+  const amountUSD = toAmount(payment.amountUSD || 0);
+  const amountLYD = toAmount(payment.amountLYD || 0);
+
+  if ([amountUSD, amountLYD].some(Number.isNaN)) {
+    throw new ErrorHandler(400, 'Payment amounts must be numbers');
+  }
+  if (amountUSD < 0 || amountLYD < 0) {
+    throw new ErrorHandler(400, 'Payment amounts cannot be negative');
+  }
+  if (amountLYD === 0 && amountUSD === 0) {
     throw new ErrorHandler(400, 'Payment amount cannot be zero');
   }
+
+  return { amountUSD: roundToTwo(amountUSD), amountLYD: roundToTwo(amountLYD) };
+}
+
+// The rate is never taken from the client. USD only: 0. LYD only: LYD / total.
+// Both: USD is taken first and the LYD pays the rest, so rate = LYD / (total - USD).
+function calculateRate(amountUSD, amountLYD, totalCost) {
+  if (amountLYD <= 0) return 0;
+  const remainingUSD = roundToTwo(totalCost - amountUSD);
+  if (remainingUSD <= 0) return 0;
+  return Math.round((amountLYD / remainingUSD) * 10000) / 10000;
+}
+
+function withCalculatedRate(payment, totalCost) {
+  const rate = calculateRate(payment.amountUSD, payment.amountLYD, totalCost);
+  if (payment.amountLYD > 0 && rate <= 0) {
+    throw new ErrorHandler(400, 'The USD payment already covers the total, remove the LYD amount');
+  }
+  return { ...payment, rate };
+}
+
+// Reads every selected package from the database instead of trusting the cost sent by the
+// client, and refuses packages that are already received, cancelled, or belong to someone else.
+async function loadDeliverablePackages(customerId, selectedPackages) {
+  const seen = new Set();
+  const packages = [];
+
+  for (const selected of selectedPackages) {
+    const packageId = String(selected?.id || '');
+    if (!packageId || seen.has(packageId)) continue;
+    seen.add(packageId);
+
+    const order = await Orders.findOne({ orderId: selected.orderId, user: customerId, isCanceled: { $ne: true } });
+    const item = order?.paymentList?.id(packageId);
+    if (!item) {
+      throw new ErrorHandler(400, `Package ${selected?.trackingNumber || packageId} was not found for this customer`);
+    }
+    if (item.status?.received) {
+      throw new ErrorHandler(400, `Package ${item.deliveredPackages?.trackingNumber || packageId} was already delivered`);
+    }
+
+    const weight = Number(item.deliveredPackages?.weight?.total || 0);
+    const exiosPrice = Number(item.deliveredPackages?.exiosPrice || 0);
+
+    packages.push({
+      ...selected,
+      id: packageId,
+      orderId: order.orderId,
+      trackingNumber: item.deliveredPackages?.trackingNumber || '',
+      weight,
+      measureUnit: item.deliveredPackages?.weight?.measureUnit || '',
+      exiosPrice,
+      boxesCount: item.deliveredPackages?.boxesCount || '',
+      locationPlace: item.deliveredPackages?.locationPlace || '',
+      cost: Number((weight * exiosPrice).toFixed(2)),
+    });
+  }
+
+  if (packages.length === 0) {
+    throw new ErrorHandler(400, 'No packages selected');
+  }
+
+  const totalCost = roundToTwo(packages.reduce((sum, pkg) => sum + pkg.cost, 0));
+  return { packages, totalCost };
 }
 
 async function getUserWalletMap(userId) {
@@ -35,21 +124,24 @@ function truncateToTwo(num) {
 }
 
 function checkSufficientFunds(walletMap, payment, totalCost) {
-  const hasUSD = walletMap['USD'] >= (payment.amountUSD || 0);
-  const hasLYD = walletMap['LYD'] >= (payment.amountLYD || 0);
+  const { amountUSD, amountLYD, rate } = payment;
 
-  if (!hasUSD && payment.amountUSD > 0) {
+  if (amountUSD > (walletMap['USD'] || 0) + BALANCE_EPSILON) {
     throw new ErrorHandler(400, 'Balance not enough for USD payment');
   }
-  if (!hasLYD && payment.amountLYD > 0) {
+  if (amountLYD > (walletMap['LYD'] || 0) + BALANCE_EPSILON) {
     throw new ErrorHandler(400, 'Balance not enough for LYD payment');
   }
 
-  const convertedLYDToUSD = payment.amountLYD ? truncateToTwo(walletMap['LYD'] / payment.rate) : 0;
-  const totalAvailableUSD = truncateToTwo(payment.amountUSD + convertedLYDToUSD);
+  // Convert the LYD being paid, not the whole LYD wallet
+  const convertedLYDToUSD = amountLYD > 0 ? roundToTwo(amountLYD / rate) : 0;
+  const coveredUSD = roundToTwo(amountUSD + convertedLYDToUSD);
 
-  if (totalAvailableUSD < (totalCost - 2)) {
-    throw new ErrorHandler(400, 'Total available balance is not enough for the total cost');
+  if (coveredUSD < totalCost - PAYMENT_TOLERANCE_USD) {
+    throw new ErrorHandler(400, `Payment covers $${coveredUSD} but the packages cost $${totalCost}`);
+  }
+  if (coveredUSD > totalCost + PAYMENT_TOLERANCE_USD) {
+    throw new ErrorHandler(400, `Payment of $${coveredUSD} is more than the packages cost ($${totalCost})`);
   }
 }
 
@@ -105,22 +197,25 @@ async function processPackagesPayment(req, res, next, id, selectedPackages, paym
 
 async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, isLast) {
   try {
-    const amountToDeduct = truncateToTwo(amount);
-    
-    let wallet = await Wallet.findOne({ user: id, currency });
-    if (!wallet) throw new ErrorHandler(404, `Wallet for ${currency} not found`);
+    // Rounded, not truncated: Math.trunc(1.13 * 100) / 100 gives 1.12
+    const amountToDeduct = roundToTwo(amount);
 
-    let newBalance = truncateToTwo(wallet.balance - amountToDeduct);
-    if (newBalance < 0) newBalance = 0;
-
-    await Wallet.findOneAndUpdate({ user: id, currency }, { balance: newBalance });
+    // Deduct atomically and only if the balance covers it, so two requests at once
+    // cannot both spend the same money (it used to be read, subtracted, then clamped to 0)
+    const wallet = await Wallet.findOneAndUpdate(
+      { user: id, currency, balance: { $gte: amountToDeduct - BALANCE_EPSILON } },
+      { $inc: { balance: -amountToDeduct } },
+      { new: true }
+    );
+    if (!wallet) throw new ErrorHandler(400, `Balance not enough for ${currency} payment`);
+    await Wallet.updateOne({ _id: wallet._id }, { balance: Math.max(0, roundToTwo(wallet.balance)) });
 
     // FIX: Handle cases where there is no previous statement for this currency
     const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
     
     // SAFE ACCESS: If no statement exists, previousTotal is 0
     const previousTotal = lastUserStatement.length > 0 ? Number(lastUserStatement[0].total || 0) : 0;
-    const statementTotal = truncateToTwo(previousTotal - amountToDeduct);
+    const statementTotal = roundToTwo(previousTotal - amountToDeduct);
 
     const userStatement = await UserStatement.create({
       user: id,
@@ -165,9 +260,6 @@ async function updateOrderStatuses(selectedPackages) {
     const order = await Orders.findOne({ orderId: package.orderId });
     const item = order.paymentList.id(package.id);
 
-    let hasPackageNotReceivedYet = false;
-    let hasPackageOnTheWay = false;
-
     if (item) {
       item.status.received = true;
     }
@@ -180,24 +272,18 @@ async function updateOrderStatuses(selectedPackages) {
     });
     order.activity = activities;
 
-    for (const pkg of order.paymentList) {
-      if (!pkg.status.received && pkg.status.arrivedLibya) {
-        hasPackageNotReceivedYet = true;
-        break;
-      } else if (!pkg.status.arrivedLibya && !pkg.status.received && pkg.status.arrived) {
-        hasPackageOnTheWay = true;
-        break;
-      }
-    }
+    const notReceived = order.paymentList.filter(pkg => !pkg.status.received);
 
-    if (hasPackageNotReceivedYet) {
-      order.orderStatus = order.isPayment ? 4 : 3;
-    } else if (hasPackageOnTheWay) {
-      order.orderStatus = order.isPayment ? 3 : 2;
-    } else {
+    if (notReceived.length === 0) {
       order.orderStatus = order.isPayment ? 5 : 4;
       order.isFinished = true;
+    } else if (notReceived.some(pkg => pkg.status.arrivedLibya)) {
+      order.orderStatus = order.isPayment ? 4 : 3;
+    } else if (notReceived.some(pkg => pkg.status.arrived)) {
+      order.orderStatus = order.isPayment ? 3 : 2;
     }
+    // Otherwise some packages have not even reached the warehouse yet: the order is not
+    // finished (it used to be marked finished here) and its status stays as it is.
 
     await order.save();
   }
@@ -255,8 +341,6 @@ async function cleanUpInventory(selectedPackages) {
     { safe: true, upsert: true, new: true }
   );
 }
-
-const roundToTwo = (num) => Math.round(num * 100) / 100;
 
 // Same steps as cancelling a wallet payment on an order: money back to the wallet,
 // a "+" cancellation statement, then the payment record is removed
@@ -479,4 +563,4 @@ try {
   }
 }
 
-module.exports = { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };
+module.exports = { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, calculateRate, withCalculatedRate };
