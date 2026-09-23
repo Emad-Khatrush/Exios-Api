@@ -2,6 +2,7 @@ const { errorMessages } = require("../constants/errorTypes");
 const Order = require("../models/order");
 const OrderPaymentHistory = require("../models/orderPaymentHistory");
 const UserStatement = require("../models/userStatement");
+const DeletedStatement = require("../models/deletedStatement");
 const Wallet = require("../models/wallet");
 const Inventory = require('../models/inventory');
 const ErrorHandler = require('../utils/errorHandler');
@@ -279,6 +280,190 @@ module.exports.verifyStatement = async (req, res, next) => {
     });
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
+  }
+}
+
+const roundToTwo = (num) => Math.round(num * 100) / 100;
+const signedAmount = (statement) => (statement.calculationType === '-' ? -1 : 1) * Number(statement.amount || 0);
+
+// Balance before the first inserted statement (usually 0)
+const getOpeningBalance = (statementsAsc) => (
+  statementsAsc.length ? Number(statementsAsc[0].total || 0) - signedAmount(statementsAsc[0]) : 0
+);
+
+// New statements are appended to the last stored total, so keep the stored running totals in insert order
+const rebuildStatementTotals = async (statementsAsc, openingBalance) => {
+  let runningTotal = openingBalance;
+  const updates = [];
+  statementsAsc.forEach((item) => {
+    runningTotal = roundToTwo(runningTotal + signedAmount(item));
+    if (item.total !== runningTotal) {
+      updates.push({ updateOne: { filter: { _id: item._id }, update: { $set: { total: runningTotal } } } });
+    }
+  });
+  if (updates.length) await UserStatement.bulkWrite(updates);
+}
+
+const adjustWalletBalance = async (userId, currency, delta) => {
+  const wallet = await Wallet.findOneAndUpdate({ user: userId, currency }, { $inc: { balance: delta } }, { new: true });
+  if (!wallet) return { before: null, after: null };
+
+  const after = roundToTwo(wallet.balance);
+  await Wallet.updateOne({ _id: wallet._id }, { balance: after });
+  return { before: roundToTwo(after - delta), after };
+}
+
+module.exports.deleteStatement = async (req, res, next) => {
+  try {
+    const { statementId, id } = req.params;
+
+    const statement = await UserStatement.findOne({ _id: statementId, user: id }).populate('createdBy', 'firstName lastName');
+    if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
+    // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
+    if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
+
+    const { currency } = statement;
+    const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 });
+    const openingBalance = getOpeningBalance(allStatements);
+
+    // Archive first, so nothing is removed or changed if the archive cannot be written
+    const snapshot = statement.toObject();
+    const archived = await DeletedStatement.create({
+      originalId: statement._id,
+      user: statement.user,
+      currency,
+      statement: {
+        ...snapshot,
+        createdBy: statement.createdBy?._id || snapshot.createdBy,
+        createdByName: statement.createdBy?.firstName ? `${statement.createdBy.firstName} ${statement.createdBy.lastName || ''}`.trim() : undefined,
+      },
+      deletedBy: req.user._id,
+      deletedAt: new Date(),
+    });
+
+    await UserStatement.deleteOne({ _id: statement._id });
+
+    // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
+    const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement));
+    await DeletedStatement.updateOne(
+      { _id: archived._id },
+      { $set: { walletBalanceBefore: wallet.before, walletBalanceAfter: wallet.after } }
+    );
+
+    await rebuildStatementTotals(
+      allStatements.filter((item) => String(item._id) !== String(statement._id)),
+      openingBalance
+    );
+
+    res.status(200).json({
+      results: {
+        deletedId: statement._id,
+        walletBalance: wallet.after,
+      }
+    });
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+}
+
+const EDITABLE_STATEMENT_FIELDS = ['createdAt', 'description', 'note', 'amount', 'office', 'actionType'];
+
+module.exports.updateStatement = async (req, res, next) => {
+  try {
+    const { statementId, id } = req.params;
+
+    const statement = await UserStatement.findOne({ _id: statementId, user: id });
+    if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
+    // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
+    if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
+
+    const changes = {};
+    EDITABLE_STATEMENT_FIELDS.forEach((field) => {
+      if (req.body[field] === undefined) return;
+      let value = req.body[field];
+
+      if (field === 'amount') {
+        value = roundToTwo(Number(value));
+        if (!Number.isFinite(value) || value <= 0) throw new ErrorHandler(400, 'Amount must be greater than 0');
+      }
+      if (field === 'createdAt') {
+        value = new Date(value);
+        if (isNaN(value.getTime())) throw new ErrorHandler(400, 'Invalid date');
+      }
+      if ((field === 'office' || field === 'actionType') && value === '') value = undefined;
+
+      const current = statement[field];
+      const isSame = field === 'createdAt'
+        ? new Date(current).getTime() === value.getTime()
+        : String(current ?? '') === String(value ?? '');
+      if (!isSame) changes[field] = value;
+    });
+
+    if (!Object.keys(changes).length) {
+      return res.status(200).json({ results: statement });
+    }
+
+    if (!String(changes.description ?? statement.description).trim()) {
+      return next(new ErrorHandler(400, 'Description is required'));
+    }
+
+    const before = {};
+    Object.keys(changes).forEach((field) => { before[field] = statement[field]; });
+
+    const { currency } = statement;
+    const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 });
+    const openingBalance = getOpeningBalance(allStatements);
+    const previousSigned = signedAmount(statement);
+
+    Object.keys(changes).forEach((field) => { statement[field] = changes[field]; });
+    statement.editHistory.push({ editedBy: req.user._id, editedAt: new Date(), before });
+    await statement.save();
+
+    // Only an amount change moves money in the wallet
+    const walletDelta = roundToTwo(signedAmount(statement) - previousSigned);
+    if (walletDelta !== 0) {
+      await adjustWalletBalance(id, currency, walletDelta);
+    }
+
+    await rebuildStatementTotals(
+      allStatements.map((item) => (String(item._id) === String(statement._id) ? statement : item)),
+      openingBalance
+    );
+
+    const updated = await UserStatement.findById(statement._id).populate('user');
+    res.status(200).json({ results: updated });
+  } catch (error) {
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+}
+
+module.exports.getDeletedStatements = async (req, res, next) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const query = {};
+    if (req.query.currency) query.currency = req.query.currency;
+
+    const [results, totalCount] = await Promise.all([
+      DeletedStatement.find(query)
+        .sort({ deletedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('user', 'firstName lastName customerId')
+        .populate('deletedBy', 'firstName lastName')
+        .lean(),
+      DeletedStatement.countDocuments(query),
+    ]);
+
+    res.status(200).json({
+      results,
+      totalCount,
+      hasMore: skip + results.length < totalCount,
+    });
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
   }
 }
 

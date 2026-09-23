@@ -1,6 +1,6 @@
 const express = require('express');
 const wallet = require('../controllers/wallet');
-const { protect, allowAdminsAndEmployee, isAdmin } = require('../middleware/check-auth');
+const { protect, allowAdminsAndEmployee, isAdmin, canManageStatements } = require('../middleware/check-auth');
 
 const router  = express.Router();
 const multer = require('multer');
@@ -30,8 +30,13 @@ router.route('/unverifiedUsersStatement')
 
 router.route('/user/:id/statement/:statementId')
       .post(protect, isAdmin, wallet.verifyStatement)
+      .put(protect, canManageStatements, wallet.updateStatement)
+      .delete(protect, canManageStatements, wallet.deleteStatement)
 
 router.route('/statements/latest')
       .get(protect, isAdmin, wallet.getLatestStatements)
+
+router.route('/statements/deleted')
+      .get(protect, isAdmin, wallet.getDeletedStatements)
       
 module.exports = router;

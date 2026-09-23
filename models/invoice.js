@@ -56,7 +56,19 @@ const invoiceSchema = new Schema({
     description: String
   }],
   list: [],
-  note: String
+  note: String,
+  isCanceled: { type: Boolean, default: false },
+  canceledAt: Date,
+  canceledBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  // What was actually returned to the wallet when the invoice was cancelled
+  cancellation: {
+    refundedUSD: Number,
+    refundedLYD: Number,
+    packages: []
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model("Invoice", invoiceSchema);

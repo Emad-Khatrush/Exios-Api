@@ -83,6 +83,19 @@ exports.allowAdminsAndEmployee = async (req, res, next) => {
   return next(new ErrorHandler(404, 'authorize-invalid'));
 }
 
+// Only these accounts can edit or delete wallet statements
+const STATEMENT_MANAGER_IDS = ['69deb74c4b5e921e7416ea11', '6aa99588ae35416174639238'];
+
+exports.canManageStatements = async (req, res, next) => {
+  if (!req.user) {
+    return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
+  }
+  if (STATEMENT_MANAGER_IDS.includes(String(req.user._id))) {
+    return next();
+  }
+  return next(new ErrorHandler(403, 'You are not allowed to edit or delete payments'));
+}
+
 exports.allowAdminsAndAccountants = async (req, res, next) => {
   if (!req.user) {
     return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));

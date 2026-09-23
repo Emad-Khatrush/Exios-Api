@@ -1,7 +1,7 @@
 const express = require('express');
 
 const orders = require('../controllers/orders');
-const { protect, isAdmin, isClient, allowAdminsAndAccountants, allowAdminsAndEmployee } = require('../middleware/check-auth');
+const { protect, isAdmin, isClient, allowAdminsAndAccountants, allowAdminsAndEmployee, canManageStatements } = require('../middleware/check-auth');
 const multer = require('multer');
 // cloudinary settings
 const { storage } = require('../utils/cloudinary');
@@ -87,6 +87,9 @@ router.route('/user/:id/markAsDelivered')
 
 router.route('/invoices/customer/:id')
       .get(protect, allowAdminsAndEmployee, orders.getInvoicesByCustomer);
+
+router.route('/invoices/:id/cancel')
+      .post(protect, canManageStatements, orders.cancelInvoice);
 
 router.route('/invoices/issued')
       .get(protect, allowAdminsAndEmployee, orders.getAllIssuedInvoices);

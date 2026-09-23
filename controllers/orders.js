@@ -15,7 +15,7 @@ const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
-const { getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
+const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages   } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -1556,7 +1556,10 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
 module.exports.getInvoicesByCustomer = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const invoices = await Invoices.find({ customer: id }).populate('customer').sort({ createdAt: -1 });
+    const invoices = await Invoices.find({ customer: id })
+      .populate('customer')
+      .populate('canceledBy', 'firstName lastName')
+      .sort({ createdAt: -1 });
 
     res.status(200).json({
       results: invoices
@@ -1567,10 +1570,36 @@ module.exports.getInvoicesByCustomer = async (req, res, next) => {
   }
 }
 
+module.exports.cancelInvoice = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Flip the flag first and atomically, so the same invoice can never be refunded twice
+    const invoice = await Invoices.findOneAndUpdate(
+      { _id: id, isCanceled: { $ne: true } },
+      { $set: { isCanceled: true, canceledAt: new Date(), canceledBy: req.user._id } },
+      { new: true }
+    );
+    if (!invoice) {
+      const exists = await Invoices.exists({ _id: id });
+      return next(new ErrorHandler(exists ? 400 : 404, exists ? 'Invoice is already cancelled' : 'Invoice not found'));
+    }
+
+    const cancellation = await cancelInvoicePackages(req.user, invoice);
+    await Invoices.updateOne({ _id: invoice._id }, { $set: { cancellation } });
+
+    res.status(200).json({ results: cancellation });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+}
+
 module.exports.getAllIssuedInvoices = async (req, res, next) => {
   try {
     const { date, from, to } = req.query;
-    let filter = {};
+    // Cancelled invoices were refunded, keep them out of the daily report
+    let filter = { isCanceled: { $ne: true } };
 
     if (date) {
       // Filter by single date (start & end of that day)

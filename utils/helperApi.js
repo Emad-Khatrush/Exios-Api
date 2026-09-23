@@ -256,6 +256,112 @@ async function cleanUpInventory(selectedPackages) {
   );
 }
 
+const roundToTwo = (num) => Math.round(num * 100) / 100;
+
+// Same steps as cancelling a wallet payment on an order: money back to the wallet,
+// a "+" cancellation statement, then the payment record is removed
+async function refundWalletPayment(user, payment, description, note) {
+  const amount = roundToTwo(Number(payment.receivedAmount || 0));
+  const customerId = payment.customer;
+  const { currency } = payment;
+
+  const wallet = await Wallet.findOneAndUpdate(
+    { user: customerId, currency },
+    { $inc: { balance: amount } },
+    { new: true }
+  );
+  if (wallet) {
+    await Wallet.updateOne({ _id: wallet._id }, { balance: roundToTwo(wallet.balance) });
+  } else {
+    await Wallet.create({ user: customerId, currency, balance: amount });
+  }
+
+  const lastUserStatement = await UserStatement.find({ user: customerId, currency }).sort({ _id: -1 }).limit(1);
+  const previousTotal = lastUserStatement.length > 0 ? Number(lastUserStatement[0].total || 0) : 0;
+
+  await UserStatement.create({
+    user: customerId,
+    createdBy: user,
+    calculationType: '+',
+    paymentType: 'wallet',
+    createdAt: new Date(),
+    description,
+    amount,
+    currency,
+    total: roundToTwo(previousTotal + amount),
+    note,
+    actionType: 'cancellation',
+  });
+
+  await OrderPaymentHistory.deleteOne({ _id: payment._id });
+  return amount;
+}
+
+// The delivery creates the payments a moment before the invoice itself
+const INVOICE_PAYMENT_WINDOW_MS = 15 * 60 * 1000;
+
+async function cancelInvoicePackages(user, invoice) {
+  const refunded = { USD: 0, LYD: 0 };
+  const packages = [];
+  const invoiceTime = new Date(invoice.createdAt).getTime();
+
+  for (const pkg of invoice.list || []) {
+    const summary = { trackingNumber: pkg.trackingNumber, orderId: pkg.orderId, refunds: [], statusUpdated: false };
+    const order = await Orders.findOne({ orderId: pkg.orderId });
+
+    if (order) {
+      const packageId = String(pkg.packageId || '');
+      const payments = await OrderPaymentHistory.find({
+        order: order._id,
+        category: 'receivedGoods',
+        paymentType: 'wallet',
+        createdAt: { $gte: new Date(invoiceTime - INVOICE_PAYMENT_WINDOW_MS), $lte: new Date(invoiceTime + 60 * 1000) },
+        $or: [
+          { 'list.id': packageId },
+          ...(ObjectId.isValid(packageId) ? [{ 'list.id': new ObjectId(packageId) }] : []),
+          ...(pkg.trackingNumber ? [{ 'list.trackingNumber': pkg.trackingNumber }] : []),
+        ],
+      });
+
+      for (const payment of payments) {
+        const amount = await refundWalletPayment(
+          user,
+          payment,
+          `إلغاء الفاتورة رقم #0${invoice.referenceId} واسترجاع قيمة شحن ${pkg.trackingNumber || ''} إلى المحفظة`,
+          `Invoice #0${invoice.referenceId} cancellation ${pkg.orderId || ''}`
+        );
+        refunded[payment.currency] = roundToTwo((refunded[payment.currency] || 0) + amount);
+        summary.refunds.push({ currency: payment.currency, amount });
+      }
+
+      // Back to "arrived in Libya, not received" so it shows again in ready for pickup
+      const item = packageId ? order.paymentList.id(packageId) : null;
+      if (item) {
+        item.status.arrivedLibya = true;
+        item.status.received = false;
+        summary.statusUpdated = true;
+      }
+
+      order.activity = [
+        ...(order.activity || []),
+        {
+          country: order.placedAt === 'tripoli' ? 'مكتب طرابلس' : 'مكتب بنغازي',
+          createdAt: new Date(),
+          description: `تم إلغاء استلام الطرد ${pkg.trackingNumber || ''} (إلغاء الفاتورة رقم #0${invoice.referenceId})`,
+        },
+      ];
+      // "وصلت البضائع" step
+      order.orderStatus = order.isPayment ? 4 : 3;
+      order.isFinished = false;
+      await order.save();
+    }
+
+    packages.push(summary);
+  }
+
+  return { refundedUSD: refunded.USD, refundedLYD: refunded.LYD, packages };
+}
+
 async function isNewCustomer(userId) {
   try {
     // Count orders that match your condition
@@ -373,4 +479,4 @@ try {
   }
 }
 
-module.exports = { getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };
+module.exports = { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages };

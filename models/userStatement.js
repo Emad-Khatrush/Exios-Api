@@ -18,6 +18,12 @@ const userStatementSchema = new Schema({
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
   office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank'] },
+  editHistory: [{
+    editedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    editedAt: Date,
+    // Previous values of the fields that were changed
+    before: Schema.Types.Mixed,
+  }],
   review: {
     receivedDate: Date,
     isAdminConfirmed: Boolean
