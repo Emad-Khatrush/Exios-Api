@@ -76,6 +76,10 @@ class WhatsAppMongoStore {
       .toArray();
     if (!latest) throw new Error('No WhatsApp session backup found');
 
+    // Fresh Heroku dynos start without .wwebjs_auth, and RemoteAuth only
+    // creates it when there's no remote session to restore.
+    await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
+
     await new Promise((resolve, reject) => {
       bucket.openDownloadStream(latest._id)
         .on('error', reject)
