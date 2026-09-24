@@ -44,7 +44,7 @@ router.route('/customerId/:id/update')
 
 // Only admins set special prices; employees see them when creating shipment invoices
 router.route('/customer/:id/specialPrices')
-      .put(protect, isAdmin, users.updateSpecialPrices);
+      .put(protect, allowAdminsAndAccountants, allowAdminsAndEmployee, users.updateSpecialPrices);
 
 // Only admins and accountants can review passport verifications
 router.route('/customer/:id/passportVerification')
