@@ -25,6 +25,105 @@ module.exports.getUserWallet = async (req, res, next) => {
   }
 }
 
+// The export sends plain dates picked in Libya (UTC+2, no DST) but the server runs in UTC,
+// so without the offset the window was shifted 2 hours and dropped early-morning records.
+const LIBYA_UTC_OFFSET = '+02:00';
+
+const toLibyaDayBoundary = (value, endOfDay) => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}${LIBYA_UTC_OFFSET}`);
+  }
+  const date = new Date(value);
+  if (endOfDay) date.setHours(23, 59, 59, 999);
+  return date;
+};
+
+const SHIPPING_PAYMENT_PREFIX = /تم دفع قيمة الشحن\s+(.+)/;
+const normalizeTracking = (value) => String(value ?? '').trim().toLowerCase();
+
+// Shipping payments are written as `تم دفع قيمة الشحن ${trackingNumber}` with the orderId in
+// `note`. Inventory.orders is a snapshot taken when the package joined the flight, so its
+// tracking number can be stale or blank; resolve the package live from Orders instead, then
+// join the flight by paymentList._id, which never changes.
+const attachOdooCodes = async (statements) => {
+  const parsed = statements
+    .map(statement => {
+      const tracking = statement.description?.match(SHIPPING_PAYMENT_PREFIX)?.[1]?.trim();
+      return tracking ? { statement, tracking, orderId: String(statement.note || '').trim() } : null;
+    })
+    .filter(Boolean);
+  if (parsed.length === 0) return;
+
+  const orderIds = [...new Set(parsed.map(p => p.orderId).filter(Boolean))];
+  const trackings = [...new Set(parsed.map(p => p.tracking))];
+
+  const orders = await Order.find({
+    $or: [
+      { orderId: { $in: orderIds } },
+      { 'paymentList.deliveredPackages.trackingNumber': { $in: trackings } },
+    ],
+  })
+    .select('orderId paymentList._id paymentList.deliveredPackages.trackingNumber')
+    .lean();
+
+  const orderById = new Map();
+  const packageIdsByTracking = new Map();
+  orders.forEach(order => {
+    orderById.set(String(order.orderId).trim(), order);
+    (order.paymentList || []).forEach(pkg => {
+      const key = normalizeTracking(pkg?.deliveredPackages?.trackingNumber);
+      if (!key) return;
+      if (!packageIdsByTracking.has(key)) packageIdsByTracking.set(key, []);
+      packageIdsByTracking.get(key).push(String(pkg._id));
+    });
+  });
+
+  // For each payment: the package with the same tracking number (inside its own order first),
+  // or, if the tracking number was changed after paying, any package of that order.
+  const resolved = parsed.map(({ statement, tracking, orderId }) => {
+    const key = normalizeTracking(tracking);
+    const order = orderById.get(orderId);
+    let packageIds = (order?.paymentList || [])
+      .filter(pkg => normalizeTracking(pkg?.deliveredPackages?.trackingNumber) === key)
+      .map(pkg => String(pkg._id));
+    if (packageIds.length === 0) packageIds = packageIdsByTracking.get(key) || [];
+
+    const isFallback = packageIds.length === 0;
+    if (isFallback) packageIds = (order?.paymentList || []).map(pkg => String(pkg._id));
+    return { statement, packageIds, isFallback };
+  });
+
+  const allIds = [...new Set(resolved.flatMap(r => r.packageIds))];
+  if (allIds.length === 0) return;
+
+  // Snapshots store paymentList._id as an ObjectId or as a string depending on how they were added
+  const inventories = await Inventory.find({
+    inventoryType: 'inventoryGoods',
+    odoReferenceCode: { $nin: [null, ''] },
+    'orders.paymentList._id': { $in: [...allIds, ...allIds.filter(id => ObjectId.isValid(id)).map(id => new ObjectId(id))] },
+  })
+    .sort({ createdAt: 1 }) // الأقدم أولاً
+    .select('odoReferenceCode orders.paymentList._id')
+    .lean();
+
+  const odooCodeByPackageId = new Map();
+  inventories.forEach(inv => {
+    (inv.orders || []).forEach(order => {
+      const id = order?.paymentList?._id && String(order.paymentList._id);
+      if (id && !odooCodeByPackageId.has(id)) odooCodeByPackageId.set(id, inv.odoReferenceCode);
+    });
+  });
+
+  resolved.forEach(({ statement, packageIds, isFallback }) => {
+    if (statement.odoReferenceCode) return;
+    const codes = [...new Set(packageIds.map(id => odooCodeByPackageId.get(id)).filter(Boolean))];
+    // A fallback guess is only safe when every package of the order sits on the same flight
+    if (codes.length === 1 || (!isFallback && codes.length > 0)) {
+      statement.odoReferenceCode = codes[0];
+    }
+  });
+};
+
 module.exports.getLatestStatements = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -44,13 +143,11 @@ module.exports.getLatestStatements = async (req, res, next) => {
       query.createdAt = {};
       
       if (req.query.startDate) {
-        query.createdAt.$gte = new Date(req.query.startDate);
+        query.createdAt.$gte = toLibyaDayBoundary(req.query.startDate, false);
       }
-      
+
       if (req.query.endDate) {
-        const end = new Date(req.query.endDate);
-        end.setHours(23, 59, 59, 999); 
-        query.createdAt.$lte = end;
+        query.createdAt.$lte = toLibyaDayBoundary(req.query.endDate, true);
       }
     }
 
@@ -64,57 +161,9 @@ module.exports.getLatestStatements = async (req, res, next) => {
       .lean()
       .exec();
 
-// 3. مطابقة الرحلات باستعلام واحد فقط لدعم أرقام التتبع المكررة
+    // 3. ربط كل عملية دفع شحن بكود أودو الخاص برحلتها
     if (req.query.includeOdoCode === 'true' && statements.length > 0) {
-      
-      // أ) تخزين جميع الـ statements المرتبطة بنفس رقم التتبع في مصفوفة
-      const trackingMap = new Map();
-
-      statements.forEach(statement => {
-        const match = statement.description?.match(/تم دفع قيمة الشحن\s+([A-Za-z0-9]+)/);
-        if (match && match[1]) {
-          const trackingNumber = match[1];
-          
-          // إذا كان رقم التتبع موجوداً مسبقاً نضيف إليه، وإلا ننشئ مصفوفة جديدة
-          if (!trackingMap.has(trackingNumber)) {
-            trackingMap.set(trackingNumber, []);
-          }
-          trackingMap.get(trackingNumber).push(statement);
-        }
-      });
-
-      const trackingNumbers = Array.from(trackingMap.keys());
-
-      // ب) تنفيذ استعلام واحد فقط لجلب الرحلات المرتبطة
-      if (trackingNumbers.length > 0) {
-        const matchedInventories = await Inventory.find({
-          inventoryType: 'inventoryGoods',
-          'orders.paymentList.deliveredPackages.trackingNumber': { $in: trackingNumbers }
-        })
-        .sort({ createdAt: 1 }) // الأقدم أولاً
-        .select('odoReferenceCode orders.paymentList.deliveredPackages.trackingNumber')
-        .lean();
-
-        // ج) تحديث جميع المعاملات التي تحمل هذا الرقم
-        matchedInventories.forEach(inv => {
-          if (inv.odoReferenceCode && Array.isArray(inv.orders)) {
-            inv.orders.forEach(order => {
-              const trackingNumber = order?.paymentList?.deliveredPackages?.trackingNumber;
-              
-              if (trackingNumber && trackingMap.has(trackingNumber)) {
-                // جلب كل المعاملات المربوطة بهذا الرقم (سواء LYD أو USD)
-                const targetStatements = trackingMap.get(trackingNumber);
-                
-                targetStatements.forEach(targetStatement => {
-                  if (!targetStatement.odoReferenceCode) {
-                    targetStatement.odoReferenceCode = inv.odoReferenceCode;
-                  }
-                });
-              }
-            });
-          }
-        });
-      }
+      await attachOdooCodes(statements);
     }
 
     // 4. Check if there are more records beyond this page
