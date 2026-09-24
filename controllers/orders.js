@@ -7,6 +7,7 @@ const { errorMessages } = require('../constants/errorTypes');
 const Offices = require('../models/office');
 const { addChangedField, getTapTypeQuery, convertObjDataFromStringToNumberType } = require('../middleware/helper');
 const { orderLabels } = require('../constants/orderLabels');
+const { ORDER_THEME_IDS } = require('../constants/orderThemes');
 const mongoose = require('mongoose');
 const mongodb = require('mongodb');
 const Users = require('../models/user');
@@ -1709,6 +1710,45 @@ module.exports.getOrderRating = async (req, res, next) => {
     const orderRating = await OrderRating.findOne({ order: orderId });
 
     res.status(200).json(orderRating);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
+// Lets a customer set a personal note (and a color to go with it) on their own
+// order, purely as a reminder/memory aid for themselves, e.g. "gift for mom" so
+// it's easy for them to recognize this order among their others at a glance.
+// Admins/employees are not involved, this is separate from `orderNote`.
+module.exports.updateOrderCustomization = async (req, res, next) => {
+  const orderId = req.params.id;
+  if (!orderId) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
+  try {
+    const order = await Orders.findOne({ _id: orderId, user: req.user._id });
+    if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
+    const { note, theme } = req.body;
+
+    if (typeof note === 'string') {
+      const trimmedNote = note.trim();
+      if (trimmedNote.length > 600) return next(new ErrorHandler(400, errorMessages.ORDER_NOTE_TOO_LONG));
+      order.customization.note = trimmedNote;
+    }
+
+    // Only change the color when the customer explicitly picks one. An empty or
+    // omitted `theme` keeps whatever color the order already has instead of
+    // resetting it, so editing just the note text never changes the color.
+    if (theme) {
+      if (!ORDER_THEME_IDS.includes(theme)) return next(new ErrorHandler(400, errorMessages.ORDER_THEME_INVALID));
+      order.customization.theme = theme;
+    } else if (!order.customization.theme) {
+      order.customization.theme = ORDER_THEME_IDS[0];
+    }
+
+    await order.save();
+
+    res.status(200).json(order);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));

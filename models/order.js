@@ -160,6 +160,22 @@ const orderSchema = new Schema({
     },
   }],
   orderNote: String,
+  // A personal note the customer sets for themselves on their own order (not to be
+  // confused with `orderNote`, which is set by admins/employees). Lets a customer
+  // jot down why they placed the order, e.g. "gift for mom", so it's easy for them
+  // to recognize at a glance, together with a color they picked to tell it apart
+  // from their other orders. Set by the customer from the client app only.
+  customization: {
+    note: {
+      type: String,
+      default: '',
+      maxlength: 600,
+    },
+    theme: {
+      type: String,
+      default: '',
+    },
+  },
   isCanceled: {
     type: Boolean,
     default: false,

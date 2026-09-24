@@ -124,4 +124,7 @@ router.route('/client/order/:id/rating')
       .get(protect, isClient, orders.getOrderRating)
       .post(protect, isClient, orders.createRatingForOrder)
 
+router.route('/client/order/:id/customization')
+      .put(protect, isClient, orders.updateOrderCustomization)
+
 module.exports = router;

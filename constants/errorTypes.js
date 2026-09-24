@@ -17,6 +17,8 @@ exports.errorMessages = {
   ORDER_CANT_DELETE: 'order-cant-delete',
   ORDER_HAS_RATING: 'order_has_rating',
   ORDER_STATUS_NOT_FOUND: 'order_status_not_found',
+  ORDER_NOTE_TOO_LONG: 'order-note-too-long',
+  ORDER_THEME_INVALID: 'order-theme-invalid',
   // tasks errors
   TASK_ID_TAKEN: 'order-id-taken',
   TASK_NOT_FOUND: 'order-not-found',
