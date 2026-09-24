@@ -43,6 +43,7 @@ const notifications = require('./routes/notifications');
 const balances = require('./routes/balance');
 const inventory = require('./routes/inventory');
 const wallet = require('./routes/wallet');
+const marketing = require('./routes/marketing');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -261,6 +262,7 @@ app.use('/api', notifications);
 app.use('/api', balances);
 app.use('/api', inventory);
 app.use('/api', wallet);
+app.use('/api', marketing);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {

@@ -494,6 +494,131 @@ module.exports.getEmpoyeeHomeData = async (req, res, next) => {
   }
 }
 
+// Last `monthsBack` months (oldest first, this month last) of shipped KG/CBM, for the trend chart
+const getShipmentTrend = async (monthsBack) => {
+  const from = moment().subtract(monthsBack - 1, 'months').startOf('month').toDate();
+
+  const rows = await Orders.aggregate([
+    { $unwind: '$paymentList' },
+    { $match: {
+        unsureOrder: false,
+        isCanceled: false,
+        'paymentList.deliveredPackages.arrivedAt': { $gte: from },
+    } },
+    { $group: {
+        _id: {
+          year: { $year: '$paymentList.deliveredPackages.arrivedAt' },
+          month: { $month: '$paymentList.deliveredPackages.arrivedAt' },
+          unit: '$paymentList.deliveredPackages.weight.measureUnit',
+        },
+        totalWeight: { $sum: '$paymentList.deliveredPackages.weight.total' },
+        packagesCount: { $sum: 1 },
+    } },
+  ]);
+
+  const months = [];
+  for (let i = monthsBack - 1; i >= 0; i--) {
+    const date = moment().subtract(i, 'months');
+    months.push({ year: date.year(), month: date.month() + 1, label: date.format('MMM') });
+  }
+
+  return months.map(({ year, month, label }) => {
+    const groups = rows.filter(row => row._id.year === year && row._id.month === month);
+    return {
+      label,
+      totalKG: groups.find(g => g._id.unit === 'KG')?.totalWeight || 0,
+      totalCBM: groups.find(g => g._id.unit === 'CBM')?.totalWeight || 0,
+      packagesCount: groups.reduce((sum, g) => sum + (g.packagesCount || 0), 0),
+    };
+  });
+};
+
+// This month's shipped KG/CBM/packages and open orders, split by office (Order.placedAt)
+const getOfficeBreakdown = async (currentMonthByNumber, currentYear) => {
+  const OFFICE_KEYS = ['tripoli', 'benghazi'];
+
+  const activeOrdersByOffice = await Orders.aggregate([
+    { $match: { isFinished: false, unsureOrder: false, isCanceled: false, placedAt: { $in: OFFICE_KEYS } } },
+    { $group: { _id: '$placedAt', count: { $sum: 1 } } },
+  ]);
+
+  const shipmentsByOffice = await Orders.aggregate([
+    { $unwind: '$paymentList' },
+    { $match: {
+        unsureOrder: false,
+        isCanceled: false,
+        placedAt: { $in: OFFICE_KEYS },
+        $expr: {
+          $and: [
+            { $eq: [{ $month: '$paymentList.deliveredPackages.arrivedAt' }, currentMonthByNumber] },
+            { $eq: [{ $year: '$paymentList.deliveredPackages.arrivedAt' }, currentYear] },
+          ],
+        },
+    } },
+    { $group: {
+        _id: { office: '$placedAt', unit: '$paymentList.deliveredPackages.weight.measureUnit' },
+        totalWeight: { $sum: '$paymentList.deliveredPackages.weight.total' },
+        packagesCount: { $sum: 1 },
+    } },
+  ]);
+
+  return OFFICE_KEYS.map(office => {
+    const groups = shipmentsByOffice.filter(g => g._id.office === office);
+    return {
+      office,
+      activeOrders: activeOrdersByOffice.find(g => g._id === office)?.count || 0,
+      totalKG: groups.find(g => g._id.unit === 'KG')?.totalWeight || 0,
+      totalCBM: groups.find(g => g._id.unit === 'CBM')?.totalWeight || 0,
+      packagesCount: groups.reduce((sum, g) => sum + (g.packagesCount || 0), 0),
+    };
+  });
+};
+
+// Latest orders and wallet payments merged into one feed, newest first
+const getRecentActivity = async (limit) => {
+  const [recentOrders, recentStatements] = await Promise.all([
+    Orders.find({ unsureOrder: false })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select('orderId customerInfo.fullName totalInvoice placedAt createdAt isCanceled')
+      .lean(),
+    UserStatement.find()
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate('user', 'firstName lastName customerId')
+      .select('description amount currency calculationType createdAt user')
+      .lean(),
+  ]);
+
+  const feed = [
+    ...recentOrders.map(order => ({
+      type: 'order',
+      id: String(order._id),
+      title: order.customerInfo?.fullName || order.orderId,
+      subtitle: `Order #${order.orderId}${order.isCanceled ? ' (cancelled)' : ''}`,
+      amount: order.totalInvoice || 0,
+      currency: 'USD',
+      isPositive: !order.isCanceled,
+      office: order.placedAt,
+      createdAt: order.createdAt,
+    })),
+    ...recentStatements.map(statement => ({
+      type: 'payment',
+      id: String(statement._id),
+      title: statement.user ? `${statement.user.firstName} ${statement.user.lastName}` : 'Wallet',
+      subtitle: statement.description || (statement.calculationType === '+' ? 'Wallet deposit' : 'Wallet payment'),
+      amount: statement.amount || 0,
+      currency: statement.currency || 'USD',
+      isPositive: statement.calculationType === '+',
+      office: null,
+      createdAt: statement.createdAt,
+    })),
+  ];
+
+  feed.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return feed.slice(0, limit);
+};
+
 module.exports.getHomeData = async (req, res, next) => {
   const currentMonthByNumber = moment().month() + 1; // from Jun 0 to Dec 11
   const currentYear = new Date().getFullYear();
@@ -608,6 +733,63 @@ module.exports.getHomeData = async (req, res, next) => {
     const thisMonthlyEarningPercentage = ((thisMonthlyEarning + thisShipmentMonthlyEarning) * 100) / totalInvoices;
     const previousMonthlyEarningPercentage = ((previousMonthlyEarning + previousShipmentMonthlyEarning) * 100) / totalInvoices;
 
+    // Shipment volume (KG/CBM) delivered this month vs previous month, for the dashboard stat tiles
+    const currentMonthWeightAgg = await Orders.aggregate([
+      { $unwind: '$paymentList' },
+      { $match: {
+          unsureOrder: false,
+          isCanceled: false,
+          $expr: {
+            $and: [
+              { $eq: [{ $month: '$paymentList.deliveredPackages.arrivedAt' }, currentMonthByNumber] },
+              { $eq: [{ $year: '$paymentList.deliveredPackages.arrivedAt' }, currentYear] }
+            ]
+          }
+      } },
+      { $group: {
+          _id: '$paymentList.deliveredPackages.weight.measureUnit',
+          totalWeight: { $sum: '$paymentList.deliveredPackages.weight.total' },
+          packagesCount: { $sum: 1 }
+      } },
+    ]);
+
+    const previousMonthWeightAgg = await Orders.aggregate([
+      { $unwind: '$paymentList' },
+      { $match: {
+          unsureOrder: false,
+          isCanceled: false,
+          $expr: {
+            $and: [
+              { $eq: [{ $month: '$paymentList.deliveredPackages.arrivedAt' }, currentMonthByNumber - 1] },
+              { $eq: [{ $year: '$paymentList.deliveredPackages.arrivedAt' }, currentYear] }
+            ]
+          }
+      } },
+      { $group: {
+          _id: '$paymentList.deliveredPackages.weight.measureUnit',
+          totalWeight: { $sum: '$paymentList.deliveredPackages.weight.total' },
+          packagesCount: { $sum: 1 }
+      } },
+    ]);
+
+    const sumMeasure = (agg, unit) => agg.find(group => group._id === unit)?.totalWeight || 0;
+    const sumPackages = (agg) => agg.reduce((sum, group) => sum + (group.packagesCount || 0), 0);
+
+    const shipmentStats = {
+      totalKG: sumMeasure(currentMonthWeightAgg, 'KG'),
+      totalCBM: sumMeasure(currentMonthWeightAgg, 'CBM'),
+      packagesCount: sumPackages(currentMonthWeightAgg),
+      previousTotalKG: sumMeasure(previousMonthWeightAgg, 'KG'),
+      previousTotalCBM: sumMeasure(previousMonthWeightAgg, 'CBM'),
+      previousPackagesCount: sumPackages(previousMonthWeightAgg),
+    };
+
+    const [shipmentTrend, officeBreakdown, recentActivity] = await Promise.all([
+      getShipmentTrend(6),
+      getOfficeBreakdown(currentMonthByNumber, currentYear),
+      getRecentActivity(8),
+    ]);
+
     res.status(200).json({
       monthlyEarning: [
         {
@@ -627,7 +809,11 @@ module.exports.getHomeData = async (req, res, next) => {
       offices,
       debts,
       credits,
-      clientUsersCount
+      clientUsersCount,
+      shipmentStats,
+      shipmentTrend,
+      officeBreakdown,
+      recentActivity
     })
   } catch (error) {
     console.log(error);
