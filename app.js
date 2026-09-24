@@ -16,7 +16,7 @@ const qrcode = require('qrcode-terminal');
 process.env.PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
 
-// DB Collections
+// DB Collections 
 const Users = require('./models/user');
 
 // import routes
