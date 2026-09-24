@@ -10,6 +10,7 @@ const moment = require('moment-timezone');
 const Office = require('../models/office');
 const { generateString } = require('../middleware/helper');
 const UserStatement = require('../models/userStatement');
+const { uploadToGoogleCloud } = require('../utils/googleClould');
 
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -17,6 +18,7 @@ module.exports.createUser = async (req, res, next) => {
   const { repeatedPassword, password, email, phone } = req.body;
 
   try {
+    if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
     if (repeatedPassword !== password) return next(new ErrorHandler(400, errorMessages.PASSWORD_NOT_MATCH));
     const customerId = generateString(1, characters) + generateString(3, numbers);
     const userFound = await User.findOne({ $or: [ { customerId }, { username: email } ] });
@@ -24,13 +26,21 @@ module.exports.createUser = async (req, res, next) => {
 
     const phoneExist = await User.findOne({ phone });
     if (!!phoneExist) return next(new ErrorHandler(400, errorMessages.PHONE_EXIST));
-    
+
+    const uploadedPassport = await uploadToGoogleCloud(req.file, 'exios-passports');
+    if (!uploadedPassport?.publicUrl) return next(new ErrorHandler(500, errorMessages.PASSPORT_UPLOAD_FAILED));
+
     const hashedPassword = await bcrypt.hash(req.body.password, 12);
     const user = await User.create({
       ...req.body,
       username: email,
       password: hashedPassword,
       customerId,
+      passportVerification: {
+        status: 'pending',
+        imageUrl: uploadedPassport.publicUrl,
+        submittedAt: new Date(),
+      },
       roles: {
         isAdmin: false,
         isEmployee: false,
@@ -40,6 +50,94 @@ module.exports.createUser = async (req, res, next) => {
 
     const token = await user.getSignedToken();
     res.status(200).json({ success: true, token: token });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+module.exports.uploadPassport = async (req, res, next) => {
+  try {
+    if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
+
+    const uploadedPassport = await uploadToGoogleCloud(req.file, 'exios-passports');
+    if (!uploadedPassport?.publicUrl) return next(new ErrorHandler(500, errorMessages.PASSPORT_UPLOAD_FAILED));
+
+    const user = await User.findByIdAndUpdate(req.user._id, {
+      $set: {
+        'passportVerification.status': 'pending',
+        'passportVerification.imageUrl': uploadedPassport.publicUrl,
+        'passportVerification.submittedAt': new Date(),
+        'passportVerification.rejectionReason': null,
+      },
+      $unset: {
+        'passportVerification.reviewedAt': '',
+        'passportVerification.reviewedBy': '',
+      }
+    }, { new: true });
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+module.exports.updatePassportVerification = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status, rejectionReason, firstName, lastName } = req.body;
+
+    if (!['verified', 'rejected'].includes(status)) {
+      return next(new ErrorHandler(400, 'Status must be verified or rejected'));
+    }
+    if (status === 'rejected' && !String(rejectionReason || '').trim()) {
+      return next(new ErrorHandler(400, 'Rejection reason is required'));
+    }
+
+    const updateFields = {
+      'passportVerification.status': status,
+      'passportVerification.rejectionReason': status === 'rejected' ? String(rejectionReason).trim() : null,
+      'passportVerification.wasRejected': status === 'rejected',
+      'passportVerification.reviewedAt': new Date(),
+      'passportVerification.reviewedBy': req.user._id,
+    };
+
+    // Let the reviewer fix the customer's name (as spelled on the passport) at the moment of approval
+    if (status === 'verified') {
+      if (String(firstName || '').trim()) updateFields.firstName = String(firstName).trim();
+      if (String(lastName || '').trim()) updateFields.lastName = String(lastName).trim();
+    }
+
+    const user = await User.findByIdAndUpdate(id, { $set: updateFields }, { new: true })
+      .select('firstName lastName customerId passportVerification');
+
+    if (!user) return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+}
+
+module.exports.getPendingPassportVerifications = async (req, res, next) => {
+  try {
+    const customers = await User.find({ 'passportVerification.status': 'pending' })
+      .select('firstName lastName username customerId phone city createdAt passportVerification')
+      .sort({ 'passportVerification.submittedAt': 1 })
+      .lean();
+
+    res.status(200).json({ results: customers });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, error.message));
+  }
+}
+
+module.exports.getMyAccount = async (req, res, next) => {
+  try {
+    res.status(200).json(req.user);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));

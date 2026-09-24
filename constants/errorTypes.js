@@ -9,6 +9,8 @@ exports.errorMessages = {
   USER_SUBSCRIPTION_CANCLED: 'user-subscription-canceled',
   PASSWORD_NOT_MATCH: 'password-not-match',
   USER_ROLE_INVALID: 'user-role-invalid',
+  PASSPORT_IMAGE_REQUIRED: 'passport-image-required',
+  PASSPORT_UPLOAD_FAILED: 'passport-upload-failed',
   // order errors
   ORDER_ID_TAKEN: 'order-id-taken',
   ORDER_NOT_FOUND: 'order-not-found',

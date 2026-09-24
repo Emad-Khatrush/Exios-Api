@@ -78,6 +78,19 @@ const userSchema = new Schema({
     updatedAt: Date,
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
+  // Passport verification required at registration; customer can use the app while pending
+  // for the first time, but must re-upload if an admin rejects it, and stays blocked while
+  // that re-upload is pending review (wasRejected tracks that, since status alone can't
+  // tell a first-time pending apart from a pending-after-rejection).
+  passportVerification: {
+    status: { type: String, enum: ['pending', 'verified', 'rejected'], default: 'pending' },
+    imageUrl: { type: String },
+    rejectionReason: { type: String },
+    wasRejected: { type: Boolean, default: false },
+    submittedAt: { type: Date },
+    reviewedAt: { type: Date },
+    reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  },
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function(password) {
