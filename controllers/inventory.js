@@ -587,6 +587,42 @@ module.exports.uploadFiles= async (req, res, next) => {
   res.status(200).json(inventory)
 }
 
+module.exports.deleteFiles = async (req, res, next) => {
+  try {
+    const inventory = await Inventory.findByIdAndUpdate(req.body.id, {
+      $pull: {
+        attachments: {
+          filename: req.body.image.filename
+        }
+      }
+    }, { new: true });
+
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    await Activities.create({
+      user: req.user,
+      details: {
+        path: '/inventory',
+        status: 'deleted',
+        type: 'inventory',
+        actionName: 'image',
+        actionId: inventory._id
+      },
+      changedFields: [{
+        label: 'image',
+        value: 'image',
+        changedFrom: req.body.image.path,
+        changedTo: ''
+      }]
+    })
+
+    res.status(200).json({ isSuccess: true });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
 module.exports.getWarehouseInventory = async (req, res, next) => {
   try {
     const { office } = req.params;

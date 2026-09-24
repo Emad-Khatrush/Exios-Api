@@ -22,7 +22,10 @@ router.route('/inventory/orders')
 
 router.route('/inventory/uploadFiles')
     .post(protect, allowAdminsAndEmployee, upload.array('files'), inventory.uploadFiles);
-    
+
+router.route('/inventory/deleteFiles')
+    .delete(protect, allowAdminsAndEmployee, inventory.deleteFiles);
+
 router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
 
