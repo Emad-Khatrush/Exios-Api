@@ -3,9 +3,9 @@ const axios = require('axios');
 const validatePhoneNumber = (phone) => {
   let cleanPhone = `${phone}`.trim();
 
-  // 1. Handle your specific hardcoded case safely for Baileys
+  // 1. Handle your specific hardcoded test case
   if (cleanPhone.includes('5535728209')) {
-      return '905535728209@s.whatsapp.net';
+      return '905535728209@c.us';
   }
 
   // 2. Strip any existing WhatsApp domain suffixes if passed in
@@ -33,8 +33,8 @@ const validatePhoneNumber = (phone) => {
       cleanPhone = '218' + cleanPhone;
   }
 
-  // 6. Return the clean string formatted as a Baileys JID
-  return `${cleanPhone}@s.whatsapp.net`;
+  // 6. Return the clean string formatted as a whatsapp-web.js JID
+  return `${cleanPhone}@c.us`;
 };
 
 const formatPhoneNumber = (phone) => {

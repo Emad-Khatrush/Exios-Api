@@ -12,15 +12,6 @@ const Queue = require('bull');
 const path = require('path');
 const os = require('os');
 const qrcode = require('qrcode-terminal');
-const fs = require('fs');
-
-const { 
-    default: makeWASocket, 
-    DisconnectReason, 
-    useMultiFileAuthState,
-    fetchLatestBaileysVersion
-} = require('@whiskeysockets/baileys');
-const pino = require('pino');
 
 process.env.PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
@@ -72,18 +63,16 @@ redisClient.on('error', (err) => {
 });
 
 // Whatsup packages
-const { Client, RemoteAuth, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
+const { Client, MessageMedia } = require('whatsapp-web.js');
+const { WhatsAppMongoStore, SafeRemoteAuth } = require('./utils/whatsappStore');
 const { isAdmin, protect } = require('./middleware/check-auth');
 const { generatePDF } = require('./utils/sender');
 const Orders = require('./models/order');
 
 let qrCodeData = null;
-let client;
-let globalSock; // Global variable to hold the WhatsApp socket instance
-// Track connection attempts globally
-let retryCount = 0;
-const MAX_RETRIES = 3; // Change this to how many times you want to retry
+let client; // whatsapp-web.js Client instance
+let isWhatsAppReady = false;
+let isInitializingWhatsApp = false; // guards against overlapping initialize() calls
 
 const app = express();
 
@@ -151,101 +140,189 @@ app.use(cors());
 
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
-db.once("open", async () => {
-  console.log('MongoDB connected');
-  const store = new MongoStore({ mongoose: mongoose });
-  const WhatsAppConfig = RemoteAuth; // Use LocalAuth for local session storage
-  client = new Client({
-    authStrategy: new WhatsAppConfig({
-      store,
-      backupSyncIntervalMs: 60000, // Optional: set backup sync interval to 1 minute
-    }),
-    puppeteer: {
+
+const WHATSAPP_DATA_PATH = './.wwebjs_auth/';
+let whatsappStore; // created once DB is connected
+
+// Builds a fresh Client and wires up all listeners. Safe to call repeatedly
+// (e.g. after a disconnect) — RemoteAuth pulls the saved session back from
+// Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
+// require re-scanning the QR code.
+async function initializeWhatsAppClient() {
+  if (isInitializingWhatsApp) {
+    console.log('WhatsApp client initialization already in progress, skipping.');
+    return;
+  }
+  isInitializingWhatsApp = true;
+  isWhatsAppReady = false;
+
+  try {
+    if (!whatsappStore) {
+      whatsappStore = new WhatsAppMongoStore({ mongoose, dataPath: WHATSAPP_DATA_PATH });
+    }
+
+    client = new Client({
+      authStrategy: new SafeRemoteAuth({
+        store: whatsappStore,
+        dataPath: WHATSAPP_DATA_PATH,
+        backupSyncIntervalMs: 60000, // sync session to Mongo every minute
+      }),
+      puppeteer: {
         executablePath: process.env.NODE_ENV === 'production'
-            ? '/app/.chrome-for-testing/chrome-linux64/chrome' // Heroku Linux production path
-            : path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-148.0.7778.97', 'chrome-win64', 'chrome.exe'), // Your exact local Windows path      
+          ? '/app/.chrome-for-testing/chrome-linux64/chrome' // Heroku Linux production path
+          : path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-148.0.7778.97', 'chrome-win64', 'chrome.exe'), // local Windows path
         args: [
-        "--disable-accelerated-2d-canvas",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-breakpad",
-        "--disable-cache",
-        "--disable-component-extensions-with-background-pages",
-        "--disable-crash-reporter",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-gpu",
-        "--disable-hang-monitor",
-        "--disable-ipc-flooding-protection",
-        "--disable-mojo-local-storage",
-        "--disable-notifications",
-        "--disable-popup-blocking",
-        "--disable-print-preview",
-        "--disable-prompt-on-repost",
-        "--disable-renderer-backgrounding",
-        "--disable-software-rasterizer",
-        "--ignore-certificate-errors",
-        "--log-level=3",
-        "--no-default-browser-check",
-        "--no-first-run",
-        "--no-sandbox",
-        "--no-zygote",
-        "--renderer-process-limit=100",
-        "--enable-gpu-rasterization",
-        "--enable-zero-copy",       
-        "--disable-backgrounding-occluded-windows",
-        "--disable-setuid-sandbox",
-        "--js-flags=\"--max-old-space-size=250\"", // Limits JS heap to ~250MB
-      ],
-    }
-  });
-  // client.initialize(); 
-
-  client.on('qr', (qr) => {
-
-    console.log(qr);
-    qrCodeData = qr;
-    qrcode.generate(qr, { small: true });
-  })
-
-  client.on('ready', () => {
-    console.log('WhatsApp client is ready!');
-  });
-
-  client.on('loading_screen', (percent, message) => {
-    console.log('LOADING SCREEN', percent, message);
-  });
-
-  client.on('auth_failure', msg => {
-    // Fired if session restore was unsuccessful
-    console.error('AUTHENTICATION FAILURE', msg);
-  });
-  
-  client.on('authenticated', (session) => {    
-    // Save the session object however you prefer.
-    // Convert it to json, save it to a file, store it in a database...
-    console.log("authenticated");
-  });
-  
-  client.on('remote_session_saved', () => {
-    console.log('Remote Session Saved');
-  });
-
-  client.on('disconnected', async (reason) => {
-    try {
-      if (await store.sessionExists({session: 'RemoteAuth'})) {
-        console.log('Deleting session from store');
-        await store.delete({ session: 'RemoteAuth' });
+          "--disable-accelerated-2d-canvas",
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
+          "--disable-breakpad",
+          "--disable-cache",
+          "--disable-component-extensions-with-background-pages",
+          "--disable-crash-reporter",
+          "--disable-dev-shm-usage",
+          "--disable-extensions",
+          "--disable-gpu",
+          "--disable-hang-monitor",
+          "--disable-ipc-flooding-protection",
+          "--disable-mojo-local-storage",
+          "--disable-notifications",
+          "--disable-popup-blocking",
+          "--disable-print-preview",
+          "--disable-prompt-on-repost",
+          "--disable-renderer-backgrounding",
+          "--disable-software-rasterizer",
+          "--disable-features=site-per-process,TranslateUI",
+          "--ignore-certificate-errors",
+          "--log-level=3",
+          "--no-default-browser-check",
+          "--no-first-run",
+          "--no-sandbox",
+          "--no-zygote",
+          "--enable-gpu-rasterization",
+          "--enable-zero-copy",
+          "--disable-setuid-sandbox",
+          "--js-flags=--max-old-space-size=250", // caps JS heap at ~250MB
+        ],
       }
-      client.destroy()
-      console.log('Client disconnected:', reason); 
-      
-    } catch (error) {
-      client.destroy()
-      console.log('Client disconnected:', reason);
+    });
+
+    client.on('qr', (qr) => {
+      console.log('Scan the QR code below to connect WhatsApp:');
+      qrCodeData = qr;
+      qrcode.generate(qr, { small: true });
+    });
+
+    client.on('ready', () => {
+      console.log('WhatsApp client is ready!');
+      qrCodeData = null;
+      isWhatsAppReady = true;
+      isInitializingWhatsApp = false;
+
+      // RemoteAuth's own first backup waits 60s after auth, and then only
+      // syncs every backupSyncIntervalMs after that. If the process restarts
+      // before that first backup lands, Mongo has no session to restore and
+      // the next boot asks for a fresh QR scan. Force an early backup here
+      // (once the session files have had a moment to settle) so a restart
+      // shortly after scanning doesn't lose the session.
+      setTimeout(async () => {
+        if (client && client.authStrategy && isWhatsAppReady &&
+            await client.authStrategy.storeRemoteSession({ emit: true })) {
+          console.log('Initial WhatsApp session backup saved to MongoDB.');
+        }
+      }, 15000);
+    });
+
+    client.on('loading_screen', (percent, message) => {
+      console.log('LOADING SCREEN', percent, message);
+    });
+
+    client.on('authenticated', () => {
+      console.log('WhatsApp authenticated');
+    });
+
+    client.on('remote_session_saved', () => {
+      console.log('Remote session saved');
+    });
+
+    client.on('auth_failure', async (msg) => {
+      console.error('AUTHENTICATION FAILURE', msg);
+      isWhatsAppReady = false;
+      isInitializingWhatsApp = false;
+      // Session is unusable — wipe it so the next attempt starts fresh with a new QR
+      try {
+        if (await whatsappStore.sessionExists({ session: 'RemoteAuth' })) {
+          await whatsappStore.delete({ session: 'RemoteAuth' });
+        }
+      } catch (err) {
+        console.error('Failed to delete broken session:', err);
+      }
+      setTimeout(initializeWhatsAppClient, 5000);
+    });
+
+    client.on('disconnected', async (reason) => {
+      console.log('WhatsApp client disconnected:', reason);
+      isWhatsAppReady = false;
+      isInitializingWhatsApp = false;
+
+      try {
+        // Only wipe the stored session on an explicit logout; a network drop
+        // or Heroku restart should just reconnect with the existing session.
+        if (reason === 'LOGOUT' && await whatsappStore.sessionExists({ session: 'RemoteAuth' })) {
+          console.log('Logged out — deleting session from store');
+          await whatsappStore.delete({ session: 'RemoteAuth' });
+        }
+      } catch (err) {
+        console.error('Error while handling disconnect:', err);
+      }
+
+      try {
+        await client.destroy();
+      } catch (err) {
+        // Client may already be torn down; ignore.
+      }
+
+      setTimeout(initializeWhatsAppClient, 5000);
+    });
+
+    await client.initialize();
+  } catch (error) {
+    console.error('Failed to initialize WhatsApp client:', error);
+    isInitializingWhatsApp = false;
+    setTimeout(initializeWhatsAppClient, 10000);
+  }
+}
+
+db.once("open", () => {
+  console.log('MongoDB connected');
+  initializeWhatsAppClient();
+});
+
+// Heroku sends SIGTERM ~30s before killing the dyno on restarts/deploys;
+// nodemon sends SIGUSR2 on a local restart; Ctrl+C sends SIGINT. Whichever
+// one fires, force one last session backup to Mongo *before* destroying the
+// client — otherwise a restart can land in the gap between RemoteAuth's
+// periodic backups and you lose the session, requiring a fresh QR scan.
+async function shutdownWhatsAppClient(signal) {
+  console.log(`${signal} received, shutting down gracefully...`);
+  // Only 2 attempts: Heroku kills the dyno 30s after SIGTERM.
+  if (client && client.authStrategy && isWhatsAppReady &&
+      await client.authStrategy.storeRemoteSession({ emit: true }, 2)) {
+    console.log('Final WhatsApp session backup saved to MongoDB.');
+  }
+  try {
+    if (client) {
+      await client.destroy();
     }
-  });
-})
+  } catch (err) {
+    console.error('Error destroying WhatsApp client on shutdown:', err);
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', () => shutdownWhatsAppClient('SIGTERM'));
+process.on('SIGINT', () => shutdownWhatsAppClient('SIGINT'));
+process.on('SIGUSR2', () => shutdownWhatsAppClient('SIGUSR2'));
 
 // render routes
 app.use('/api', users);
@@ -275,7 +352,7 @@ app.get('/api/get-qr-code', (req, res) => {
 app.post('/api/sendWhatsupMessage', async (req, res) => {
   const { phoneNumber, message } = req.body
   try {
-      await sendMessage(globalSock, validatePhoneNumber(phoneNumber), message);
+      await sendMessage(client, validatePhoneNumber(phoneNumber), message);
       return res.status(200).json({ success: true, message: 'Message sent successfully' });
 
     // const target = await client.getContactById(validatePhoneNumber(phoneNumber));
@@ -296,7 +373,7 @@ app.post('/api/sendWhatsupImages', async (req, res) => {
   try {
       if (imgUrls && imgUrls.length > 0) {
         for (const imgUrl of imgUrls) {
-          await sendPhoto(globalSock, validatePhoneNumber(phoneNumber), imgUrl);
+          await sendPhoto(client, validatePhoneNumber(phoneNumber), imgUrl);
         }
       }
 
@@ -397,7 +474,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
     if (testBigData) {
       const usersTest = [];
       for (let i = 0; i < 100; i++) {
-        usersTest.push({ phone: `111011111${i}@s.whatsapp.net`, firstName: 'Test', lastName: i });
+        usersTest.push({ phone: `111011111${i}@c.us`, firstName: 'Test', lastName: i });
       }
       // Send to the worker we modified earlier
       await sendMessageQueue.add('send-large-messages', { imgUrl, content: rtlContent, users: usersTest });
@@ -445,7 +522,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
     for (const user of users) {
       if (user.phone && `${user.phone}`.length >= 5) {
 
-        const phoneNumber = `${user.phone}@s.whatsapp.net`;
+        const phoneNumber = `${user.phone}@c.us`;
         const generatedContent = replaceWords(content, {
           fullName: `${user?.firstName} ${user?.lastName}`,
           customerId: user?.customerId,
@@ -542,12 +619,12 @@ sendMessageQueue.process('send-message', 1, async (job) => {
 
   try {
     if (imgUrl) {
-      await sendPhoto(globalSock, validatePhoneNumber(phone), imgUrl);
+      await sendPhoto(client, validatePhoneNumber(phone), imgUrl);
     }
 
     // By using Baileys, we can send messages directly through the socket
     // const targetJid = '905535728209@s.whatsapp.net'; 
-    await sendMessage(globalSock, validatePhoneNumber(phone), content);
+    await sendMessage(client, validatePhoneNumber(phone), content);
 
     // By using whatsapp-web.js, we can send messages directly through the client
     // await client.sendMessage(target.id._serialized, content);
@@ -652,110 +729,38 @@ app.use(async (req, res) => {
 });
 
 
-// Try new whatsup 
-async function connectToWhatsApp() {
-    // 1. Configure the folder where session credentials will be saved
-    // On Heroku, this directory will be created in your app root.
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    
-    // Fetch latest WhatsApp Web version to avoid version mismatch errors
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`Using WA Web v${version.join('.')}, isLatest: ${isLatest}`);
-
-    // 2. Initialize the WhatsApp socket connection
-    const sock = makeWASocket({
-        version,
-        auth: state,
-        printQRInTerminal: false, // We will handle printing manually below
-        logger: pino({ level: 'silent' }), // Suppress heavy internal logs
-    });
-
-    // 3. Listen for connection updates (QR code, Connecting, Opened, Closed)
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        // If a new QR code is generated, display it in the terminal
-        if (qr) {
-            console.log('Scan the QR code below to connect your WhatsApp:');
-            console.log(qr);
-            qrCodeData = qr;
-            qrcode.generate(qr, { small: true });
-        }
-
-        // Handle connection states
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting: ', shouldReconnect);
-            
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log(`Connection closed. Status Code: ${statusCode}`);
-
-            // If we haven't hit the retry limit yet, try to reconnect
-            if (retryCount < MAX_RETRIES) {
-                retryCount++;
-                console.log(`[Retry ${retryCount}/${MAX_RETRIES}] Connection lost. Reconnecting in 5 seconds...`);
-                
-                // Add a small delay so it doesn't spam the WhatsApp servers instantly
-                setTimeout(() => {
-                    connectToWhatsApp();
-                }, 5000); 
-
-            } else {
-                // If it fails after MAX_RETRIES, destroy the session completely
-                console.error(`CRITICAL: Could not reconnect after ${MAX_RETRIES} attempts. Wiping session...`);
-                
-                try {
-                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
-                    console.log('Old session folder successfully destroyed.');
-                } catch (err) {
-                    console.error('Failed to delete session folder:', err);
-                }
-
-                // Reset the retry counter for the next fresh cycle
-                retryCount = 0; 
-                console.log('Starting fresh instance... Waiting for a new QR code.');
-                connectToWhatsApp();
-            }
-        } else if (connection === 'open') {
-            console.log('WhatsApp client is ready!');
-            // CRITICAL: Reset the counter back to 0 when the connection is successful!
-            retryCount = 0;
-        }
-    });
-
-    // 4. Critical step: Save credentials automatically whenever they update
-    sock.ev.on('creds.update', saveCreds);
-
-    globalSock = sock; // Store the socket instance globally for use in other functions
-}
-
 /**
- * Helper function to send text messages
- * @param {import('@whiskeysockets/baileys').WASocket} sock 
- * @param {string} jid - Target WhatsApp ID (phone_number@s.whatsapp.net)
+ * Sends a text message via the whatsapp-web.js client.
+ * @param {Client} waClient
+ * @param {string} jid - Target WhatsApp ID (phone_number@c.us)
  * @param {string} text - The message body
  */
-async function sendMessage(sock, jid, text) {
+async function sendMessage(waClient, jid, text) {
+    if (!waClient || !isWhatsAppReady) {
+        throw new Error('whatsup-auth-not-found');
+    }
     try {
-        await sock.sendMessage(jid, { text: text });
+        await waClient.sendMessage(jid, text);
         console.log(`Message successfully sent to ${jid}`);
     } catch (error) {
         console.error('Failed to send message:', error);
+        throw error;
     }
 }
 
-async function sendPhoto(sock, jid, imgUrl) {
+async function sendPhoto(waClient, jid, imgUrl) {
+    if (!waClient || !isWhatsAppReady) {
+        throw new Error('whatsup-auth-not-found');
+    }
     try {
-        await sock.sendMessage(jid, { image: { url: imgUrl }, });
+        const media = await MessageMedia.fromUrl(imgUrl, { unsafeMime: true });
+        await waClient.sendMessage(jid, media);
         console.log(`Photo successfully sent to ${jid}`);
     } catch (error) {
         console.error('Failed to send photo:', error);
+        throw error;
     }
 }
-
-
-// Start the application
-connectToWhatsApp();
 
 // Error Handler
 app.use(errorHandler);
