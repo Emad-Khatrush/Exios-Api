@@ -7,6 +7,22 @@ const { RemoteAuth } = require('whatsapp-web.js');
 // the library calls this from a bare setInterval, where a rejection would be
 // unhandled and crash the process.
 class SafeRemoteAuth extends RemoteAuth {
+  constructor(options) {
+    super(options);
+    // RemoteAuth only backs up 'Local Storage' (a folder), but newer Chrome
+    // (e.g. Heroku's Chrome for Testing) stores it as a 'LocalStorage' SQLite
+    // file plus a 'WebStorage' folder. Without these the restored profile has
+    // no WhatsApp localStorage, so it shows a QR again. Missing ones are skipped.
+    this.requiredDirs = [
+      ...this.requiredDirs,
+      'LocalStorage',
+      'LocalStorage-wal',
+      'LocalStorage-shm',
+      'LocalStorage-journal',
+      'WebStorage',
+    ];
+  }
+
   // whatsapp-web.js calls disconnect() on transient states too (CONFLICT,
   // UNLAUNCHED, UNPAIRED_IDLE), and the stock version deletes the saved
   // session from Mongo — so one hiccup forced a new QR scan. Only a real
