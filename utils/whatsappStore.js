@@ -7,6 +7,18 @@ const { RemoteAuth } = require('whatsapp-web.js');
 // the library calls this from a bare setInterval, where a rejection would be
 // unhandled and crash the process.
 class SafeRemoteAuth extends RemoteAuth {
+  // whatsapp-web.js calls disconnect() on transient states too (CONFLICT,
+  // UNLAUNCHED, UNPAIRED_IDLE), and the stock version deletes the saved
+  // session from Mongo — so one hiccup forced a new QR scan. Only a real
+  // logout (logout() below) wipes it now.
+  async disconnect() {
+    clearInterval(this.backupSync);
+  }
+
+  async logout() {
+    await super.disconnect();
+  }
+
   async storeRemoteSession(options, attempts = 4) {
     for (let i = 1; i <= attempts; i++) {
       try {
