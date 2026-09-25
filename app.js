@@ -7,7 +7,7 @@ const morgan = require('morgan');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
-const { validatePhoneNumber, imageToBase64, replaceWords, getRandomStep } = require('./utils/messages');
+const { validatePhoneNumber, imageToBase64, replaceWords } = require('./utils/messages');
 const Queue = require('bull');
 const path = require('path');
 const os = require('os');
@@ -143,12 +143,14 @@ db.on("error", console.error.bind(console, "connection error:"));
 
 const WHATSAPP_DATA_PATH = './.wwebjs_auth/';
 let whatsappStore; // created once DB is connected
+let isShuttingDown = false;
 
 // Builds a fresh Client and wires up all listeners. Safe to call repeatedly
 // (e.g. after a disconnect) — RemoteAuth pulls the saved session back from
 // Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
 // require re-scanning the QR code.
 async function initializeWhatsAppClient() {
+  if (isShuttingDown) return;
   if (isInitializingWhatsApp) {
     console.log('WhatsApp client initialization already in progress, skipping.');
     return;
@@ -165,7 +167,11 @@ async function initializeWhatsAppClient() {
       authStrategy: new SafeRemoteAuth({
         store: whatsappStore,
         dataPath: WHATSAPP_DATA_PATH,
-        backupSyncIntervalMs: 60000, // sync session to Mongo every minute
+        // Periodic backups copy Chrome's profile while it's running, so they
+        // can be inconsistent and each one zips ~80MB on a 1GB dyno. They're
+        // only crash insurance — the clean backup taken on shutdown is the one
+        // that normally gets restored.
+        backupSyncIntervalMs: 5 * 60 * 1000,
       }),
       puppeteer: {
         executablePath: process.env.NODE_ENV === 'production'
@@ -184,7 +190,6 @@ async function initializeWhatsAppClient() {
           "--disable-gpu",
           "--disable-hang-monitor",
           "--disable-ipc-flooding-protection",
-          "--disable-mojo-local-storage",
           "--disable-notifications",
           "--disable-popup-blocking",
           "--disable-print-preview",
@@ -218,18 +223,14 @@ async function initializeWhatsAppClient() {
       isWhatsAppReady = true;
       isInitializingWhatsApp = false;
 
-      // RemoteAuth's own first backup waits 60s after auth, and then only
-      // syncs every backupSyncIntervalMs after that. If the process restarts
-      // before that first backup lands, Mongo has no session to restore and
-      // the next boot asks for a fresh QR scan. Force an early backup here
-      // (once the session files have had a moment to settle) so a restart
-      // shortly after scanning doesn't lose the session.
+      // One early backup as crash insurance, once the post-login sync has
+      // settled (backing up mid-sync captures a half-written database).
       setTimeout(async () => {
-        if (client && client.authStrategy && isWhatsAppReady &&
+        if (client && client.authStrategy && isWhatsAppReady && !isShuttingDown &&
             await client.authStrategy.storeRemoteSession({ emit: true })) {
           console.log('Initial WhatsApp session backup saved to MongoDB.');
         }
-      }, 15000);
+      }, 90000);
     });
 
     client.on('loading_screen', (percent, message) => {
@@ -263,6 +264,7 @@ async function initializeWhatsAppClient() {
       console.log('WhatsApp client disconnected:', reason);
       isWhatsAppReady = false;
       isInitializingWhatsApp = false;
+      if (isShuttingDown) return;
 
       try {
         // Only wipe the stored session on an explicit logout; a network drop
@@ -297,27 +299,36 @@ db.once("open", () => {
   initializeWhatsAppClient();
 });
 
-// Heroku sends SIGTERM ~30s before killing the dyno on restarts/deploys;
-// nodemon sends SIGUSR2 on a local restart; Ctrl+C sends SIGINT. Whichever
-// one fires, force one last session backup to Mongo *before* destroying the
-// client — otherwise a restart can land in the gap between RemoteAuth's
-// periodic backups and you lose the session, requiring a fresh QR scan.
+// Heroku sends SIGTERM (then SIGKILL 30s later) on restarts/deploys; nodemon
+// sends SIGUSR2; Ctrl+C sends SIGINT. Close Chrome *first* so it flushes its
+// IndexedDB/Local Storage to disk, then back up that consistent profile —
+// this is the backup the next boot restores from.
 async function shutdownWhatsAppClient(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   console.log(`${signal} received, shutting down gracefully...`);
-  // Only 2 attempts: Heroku kills the dyno 30s after SIGTERM.
-  if (client && client.authStrategy && isWhatsAppReady &&
+
+  const wasLoggedIn = isWhatsAppReady;
+  if (client) {
+    const chrome = client.pupBrowser && client.pupBrowser.process();
+    try {
+      await client.destroy();
+    } catch (err) {
+      // Heroku also SIGTERMs Chrome directly, so it may already be closing.
+    }
+    if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
+      await new Promise((resolve) => {
+        chrome.once('exit', resolve);
+        setTimeout(resolve, 8000);
+      });
+    }
+  }
+
+  if (wasLoggedIn && client && client.authStrategy &&
       await client.authStrategy.storeRemoteSession({ emit: true }, 2)) {
     console.log('Final WhatsApp session backup saved to MongoDB.');
   }
-  try {
-    if (client) {
-      await client.destroy();
-    }
-  } catch (err) {
-    console.error('Error destroying WhatsApp client on shutdown:', err);
-  } finally {
-    process.exit(0);
-  }
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => shutdownWhatsAppClient('SIGTERM'));
@@ -481,20 +492,21 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
       return res.status(200).json({ success: true, message: 'Big data test started' });
     }
 
-    // 4. Send the entire list to the worker
-    // We don't split it here anymore; we let the worker's "Batch & Rest" handle the flow
+    // 4. Hand the list to the worker, which schedules 1 message per minute
     if (users.length > 0) {
-      await sendMessageQueue.add('send-large-messages', { 
-        imgUrl, 
-        content: rtlContent, 
-        users 
+      await sendMessageQueue.add('send-large-messages', {
+        imgUrl,
+        content: rtlContent,
+        users
       }, {
-        // Optional: remove the job from Redis after completion to save memory
-        removeOnComplete: true 
+        removeOnComplete: true
       });
     }
 
-    return res.status(200).json({ success: true, message: `Processing ${users.length} messages in background...` });
+    return res.status(200).json({
+      success: true,
+      message: `Scheduling ${users.length} messages at 1 per minute (~${users.length} minutes, after any batch already queued)...`
+    });
 
   } catch (error) {
     console.error("Route Error:", error);
@@ -508,147 +520,89 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
   console.log('Queue resumed.');
 })
 
-// Helper function for the rest period
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const CLIENT_MESSAGE_INTERVAL_MS = 60 * 1000; // 1 message per minute
+// Timestamp of the next free send slot, shared across campaigns so batches
+// sent back-to-back (skip/limit) queue up behind each other instead of overlapping.
+const CLIENT_NEXT_SLOT_KEY = 'whatsapp:clients:nextSlot';
 
+// Schedules every message up front as a delayed job (persisted in Redis), so
+// a Heroku restart mid-campaign doesn't lose the remaining messages.
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users } = job.data;
-  const BATCH_SIZE = 5; // Define how many messages per batch
-  
-  try {
-    let index = job.data.index || 0;
-    let processedInCurrentBatch = 0;
 
-    for (const user of users) {
-      if (user.phone && `${user.phone}`.length >= 5) {
+  const storedSlot = Number(await redisClient.get(CLIENT_NEXT_SLOT_KEY)) || 0;
+  let nextSlot = Math.max(Date.now(), storedSlot);
+  let index = 0;
 
-        const phoneNumber = `${user.phone}@c.us`;
-        const generatedContent = replaceWords(content, {
-          fullName: `${user?.firstName} ${user?.lastName}`,
-          customerId: user?.customerId,
-          phone: user?.phone,
-        });
+  for (const user of users) {
+    if (!user.phone || `${user.phone}`.length < 5) continue;
 
-        const rtlContent = `\u202B${generatedContent}`;
-        const delay = getRandomStep(2000, 3000, 1000);
+    const generatedContent = replaceWords(content, {
+      fullName: `${user?.firstName} ${user?.lastName}`,
+      customerId: user?.customerId,
+      phone: user?.phone,
+    });
 
-        // Add the individual message job
-        await sendMessageQueue.add('send-message', 
-          { index: index + 1, imgUrl, content: rtlContent, phone: phoneNumber }, 
-          { delay: delay * index } // Slight 1s delay between individual adds
-        );
-
-        index++;
-        processedInCurrentBatch++;
-
-        //   // --- THE REST LOGIC ---
-        if (processedInCurrentBatch >= BATCH_SIZE) {
-          // Calculate random rest between 30s (100000ms) and 1m (90000ms)
-          const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
-          
-          console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
-          
-          await sleep(restTime);
-          processedInCurrentBatch = 0; // Reset counter for next batch
-        }
-
-
-        // const isRegistered = await client.isRegisteredUser(phoneNumber);
-        // if (!isRegistered) {
-        //   console.log(`User ${user.phone} is not registered.`);
-        //   index++;
-        //   processedInCurrentBatch++;
-
-        //   // --- THE REST LOGIC ---
-        //   if (processedInCurrentBatch >= BATCH_SIZE) {
-        //     // Calculate random rest between 30s (100000ms) and 1m (90000ms)
-        //     const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
-            
-        //     console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
-            
-        //     await sleep(restTime);
-        //     processedInCurrentBatch = 0; // Reset counter for next batch
-        //   }
-        //   continue;
-        // }
-
-        // const target = await client.getContactById(phoneNumber);
-        
-        // if (target) {
-        //   const generatedContent = replaceWords(content, {
-        //     fullName: `${user?.firstName} ${user?.lastName}`,
-        //     customerId: user?.customerId,
-        //     phone: user?.phone,
-        //   });
-
-        //   const rtlContent = `\u202B${generatedContent}`;
-        //   const delay = getRandomStep(2000, 3000, 1000);
-
-        //   // Add the individual message job
-        //   await sendMessageQueue.add('send-message', 
-        //     { target, index: index + 1, imgUrl, content: rtlContent }, 
-        //     { delay: delay * index } // Slight 1s delay between individual adds
-        //   );
-
-        //   index++;
-        //   processedInCurrentBatch++;
-
-        //   // --- THE REST LOGIC ---
-        //   if (processedInCurrentBatch >= BATCH_SIZE) {
-        //     // Calculate random rest between 30s (100000ms) and 1m (90000ms)
-        //     const restTime = Math.floor(Math.random() * (100000 - 90000 + 1) + 90000);
-            
-        //     console.log(`Batch of ${BATCH_SIZE} finished. Resting for ${restTime / 1000} seconds...`);
-            
-        //     await sleep(restTime);
-        //     processedInCurrentBatch = 0; // Reset counter for next batch
-        //   }
-        // }
-      }
-    }
-  } catch (error) {
-    console.log(`Error processing batch: ${error?.message}`);
-    return Promise.reject(error);
+    index++;
+    await sendMessageQueue.add('send-message',
+      { index, imgUrl, content: `\u202B${generatedContent}`, phone: `${user.phone}@c.us`, campaign: true },
+      { delay: Math.max(0, nextSlot - Date.now()), removeOnComplete: true }
+    );
+    nextSlot += CLIENT_MESSAGE_INTERVAL_MS;
   }
 
-  return Promise.resolve();
+  await redisClient.set(CLIENT_NEXT_SLOT_KEY, nextSlot);
+  console.log(`Scheduled ${index} client messages, 1 per minute. Last one at ${new Date(nextSlot - CLIENT_MESSAGE_INTERVAL_MS).toISOString()}`);
 });
 
+// Claims the next free 1-per-minute slot and returns its delay from now.
+async function claimNextClientSlot() {
+  const storedSlot = Number(await redisClient.get(CLIENT_NEXT_SLOT_KEY)) || 0;
+  const slot = Math.max(Date.now(), storedSlot);
+  await redisClient.set(CLIENT_NEXT_SLOT_KEY, slot + CLIENT_MESSAGE_INTERVAL_MS);
+  return slot - Date.now();
+}
+
+const MAX_MESSAGE_RETRIES = 3;
+
 sendMessageQueue.process('send-message', 1, async (job) => {
-  const { index, imgUrl, content, phone } = job.data;
+  const { index, imgUrl, content, phone, campaign, retries = 0 } = job.data;
 
   try {
     if (imgUrl) {
       await sendPhoto(client, validatePhoneNumber(phone), imgUrl);
     }
-
-    // By using Baileys, we can send messages directly through the socket
-    // const targetJid = '905535728209@s.whatsapp.net'; 
     await sendMessage(client, validatePhoneNumber(phone), content);
-
-    // By using whatsapp-web.js, we can send messages directly through the client
-    // await client.sendMessage(target.id._serialized, content);
 
     console.log("Message Sent " + index + ' !');
     await sendMessageQueue.clean(0);
-
   } catch (error) {
-    console.log(`Error processing job, attempt ${index}: ${error?.message}`);
-    // Retry the job after a delay of 10 seconds
-    await sendMessageQueue.add('send-message', { index, imgUrl, content, phone }, { delay: index * 30000 });
-    return Promise.resolve();
+    // WhatsApp being disconnected isn't the message's fault \u2014 don't count it
+    // against the retry limit, just wait for a later slot.
+    const notConnected = error?.message === 'whatsup-auth-not-found';
+    const nextRetries = notConnected ? retries : retries + 1;
+
+    if (nextRetries > MAX_MESSAGE_RETRIES) {
+      console.log(`Giving up on message ${index} to ${phone} after ${MAX_MESSAGE_RETRIES} retries: ${error?.message}`);
+      return;
+    }
+
+    // Client campaign retries take the next free slot so they never break
+    // the 1-per-minute rate; other messages keep a short fixed backoff.
+    const delay = campaign ? await claimNextClientSlot() : 30000;
+    console.log(`Error sending message ${index} (${error?.message}), retrying in ${Math.round(delay / 1000)}s`);
+    await sendMessageQueue.add('send-message',
+      { ...job.data, retries: nextRetries },
+      { delay, removeOnComplete: true }
+    );
   }
-
-  // Introduce a delay of 3 seconds before processing the next job
-  await job.delay(5000);
-
-  return Promise.resolve();
 });
 
 app.use(async (req, res) => {
   if (req.query.deleteMessages === 'all') {
     // 1. Forcefully wipe all jobs (active, waiting, delayed, failed) from Redis
     await sendMessageQueue.obliterate({ force: true });
+    await redisClient.del(CLIENT_NEXT_SLOT_KEY);
     await sendMessageQueue.clean(0);
     await sendMessageQueue.clean(0, 'active');
     await sendMessageQueue.clean(0, 'failed');
