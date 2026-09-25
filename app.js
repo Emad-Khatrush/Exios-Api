@@ -147,7 +147,6 @@ const WHATSAPP_DATA_PATH = './.wwebjs_auth/';
 let whatsappStore; // created once DB is connected
 let isShuttingDown = false;
 let isBackupRestart = false; // Chrome is being closed on purpose for a clean backup
-let loggedInThisRun = false; // reached 'ready' and hasn't logged out since
 let shownQrThisClient = false; // current client needed a QR scan (= new link)
 
 // Closes Chrome and waits for the process to exit, so it has flushed
@@ -168,23 +167,43 @@ async function closeChromeCleanly(waClient) {
 
 // A backup copied while Chrome runs can miss Local Storage (Chrome writes it
 // lazily) and catch IndexedDB mid-write, which restores to a QR screen. So
-// after a new QR link, briefly close Chrome, back up the flushed profile, and
-// reconnect from that backup — which also proves the backup restores.
+// briefly close Chrome, snapshot the flushed profile locally (~1s), reconnect
+// from that snapshot (~20s offline), and upload it to Mongo in the background
+// — the upload takes minutes on this database, too long to wait for.
+const SNAPSHOT_REFRESH_MS = 6 * 60 * 60 * 1000;
+let snapshotRefreshTimer = null;
+
 async function cleanBackupAndReconnect() {
   if (isShuttingDown || !isWhatsAppReady || !client) return;
-  console.log('Taking clean WhatsApp session backup (reconnecting in a few seconds)...');
+  console.log('Taking clean WhatsApp session snapshot (reconnecting in a few seconds)...');
   isBackupRestart = true;
   isWhatsAppReady = false;
   const oldClient = client;
+  let snapshotOk = false;
   try {
     await closeChromeCleanly(oldClient);
-    if (await oldClient.authStrategy.storeRemoteSession({ emit: true })) {
-      console.log('Clean WhatsApp session backup saved to MongoDB. Verifying restore...');
-    }
+    snapshotOk = await oldClient.authStrategy.snapshotSession();
   } finally {
     isBackupRestart = false;
   }
   initializeWhatsAppClient();
+
+  if (!snapshotOk) return;
+  const started = Date.now();
+  console.log('Uploading WhatsApp session snapshot to MongoDB in the background...');
+  if (await oldClient.authStrategy.uploadSnapshot()) {
+    console.log(`WhatsApp session backup saved to MongoDB (upload took ${((Date.now() - started) / 1000).toFixed(0)}s). Restarts will reconnect without a QR.`);
+  }
+}
+
+// Keeps the MongoDB copy reasonably fresh, so a restart doesn't restore a
+// session that is many days old.
+function scheduleSnapshotRefresh() {
+  clearTimeout(snapshotRefreshTimer);
+  snapshotRefreshTimer = setTimeout(async () => {
+    await cleanBackupAndReconnect();
+    scheduleSnapshotRefresh();
+  }, SNAPSHOT_REFRESH_MS);
 }
 
 // Builds a fresh Client and wires up all listeners. Safe to call repeatedly
@@ -291,14 +310,19 @@ async function initializeWhatsAppClient() {
       qrCodeData = null;
       isWhatsAppReady = true;
       isInitializingWhatsApp = false;
-      loggedInThisRun = true;
 
       if (shownQrThisClient) {
-        console.log('WhatsApp client is ready (new QR link). Clean backup in 90s.');
-        // Let the post-link history sync settle first.
-        setTimeout(cleanBackupAndReconnect, 90000);
+        console.log('WhatsApp client is ready (new QR link). Clean snapshot in 90s.');
+        // 'ready' can fire twice per login; one timer covers both. Waiting
+        // lets the post-link history sync settle first.
+        clearTimeout(snapshotRefreshTimer);
+        snapshotRefreshTimer = setTimeout(async () => {
+          await cleanBackupAndReconnect();
+          scheduleSnapshotRefresh();
+        }, 90000);
       } else {
         console.log('WhatsApp client is ready — restored from saved session, no QR needed.');
+        scheduleSnapshotRefresh();
       }
     });
 
@@ -322,7 +346,6 @@ async function initializeWhatsAppClient() {
       console.error('AUTHENTICATION FAILURE', msg);
       isWhatsAppReady = false;
       isInitializingWhatsApp = false;
-      loggedInThisRun = false;
       // Session is unusable — wipe it so the next attempt starts fresh with a new QR
       try {
         if (await whatsappStore.sessionExists({ session: 'RemoteAuth' })) {
@@ -338,7 +361,6 @@ async function initializeWhatsAppClient() {
       console.log('WhatsApp client disconnected:', reason);
       isWhatsAppReady = false;
       isInitializingWhatsApp = false;
-      if (reason === 'LOGOUT') loggedInThisRun = false;
       if (isShuttingDown || isBackupRestart) return;
 
       try {
@@ -375,27 +397,16 @@ db.once("open", () => {
 });
 
 // Heroku sends SIGTERM (then SIGKILL 30s later) on restarts/deploys; nodemon
-// sends SIGUSR2; Ctrl+C sends SIGINT. Close Chrome *first* so it flushes its
-// IndexedDB/Local Storage to disk, then back up that consistent profile —
-// this is the backup the next boot restores from.
+// sends SIGUSR2; Ctrl+C sends SIGINT. No backup here: uploading the session
+// to this MongoDB takes ~3 minutes, far past Heroku's 30s, and a killed upload
+// only leaves junk behind. The next boot restores the latest clean snapshot.
 async function shutdownWhatsAppClient(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  const started = Date.now();
-  const elapsed = () => `${((Date.now() - started) / 1000).toFixed(1)}s`;
-  console.log(`${signal} received, shutting down gracefully...`);
-
-  // Not isWhatsAppReady: Heroku SIGTERMs Chrome at the same moment, and its
-  // disconnect can flip that flag before we get here.
-  if (client && loggedInThisRun) {
+  console.log(`${signal} received, shutting down...`);
+  clearTimeout(snapshotRefreshTimer);
+  if (client) {
     await closeChromeCleanly(client);
-    console.log(`Chrome closed after ${elapsed()}, backing up session...`);
-    if (await client.authStrategy.storeRemoteSession({ emit: true }, 2)) {
-      console.log(`Final WhatsApp session backup saved to MongoDB after ${elapsed()}.`);
-    }
-  } else if (client) {
-    await closeChromeCleanly(client);
-    console.log('WhatsApp was not logged in; skipping session backup.');
   }
   process.exit(0);
 }
