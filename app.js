@@ -177,36 +177,58 @@ async function initializeWhatsAppClient() {
         executablePath: process.env.NODE_ENV === 'production'
           ? '/app/.chrome-for-testing/chrome-linux64/chrome' // Heroku Linux production path
           : path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-148.0.7778.97', 'chrome-win64', 'chrome.exe'), // local Windows path
+        defaultViewport: { width: 800, height: 600 },
         args: [
-          "--disable-accelerated-2d-canvas",
-          "--disable-background-timer-throttling",
-          "--disable-backgrounding-occluded-windows",
-          "--disable-breakpad",
-          "--disable-cache",
-          "--disable-component-extensions-with-background-pages",
-          "--disable-crash-reporter",
-          "--disable-dev-shm-usage",
-          "--disable-extensions",
+          // Run browser, renderer, GPU and utility work in one process instead
+          // of 5-8, removing per-process overhead (biggest single saving).
+          "--single-process",
+          "--no-zygote",
+          "--renderer-process-limit=1",
+          "--disable-site-isolation-trials",
+          // Chrome's reduced-memory mode (smaller caches, lower-res buffers).
+          "--enable-low-end-device-mode",
+          // Don't download/decode images (profile pics, thumbnails). Sending
+          // images still works — that goes through upload, not rendering.
+          "--blink-settings=imagesEnabled=false",
+          // Chrome only honours the LAST --disable-features flag, so keep one.
+          "--disable-features=site-per-process,IsolateOrigins,TranslateUI,Translate,BackForwardCache,MediaRouter,OptimizationHints,AudioServiceOutOfProcess,AutofillServerCommunication,CertificateTransparencyComponentUpdater,PaintHolding,DialMediaRouteProvider",
+          "--js-flags=--max-old-space-size=256 --optimize-for-size",
           "--disable-gpu",
+          "--disable-software-rasterizer",
+          "--disable-accelerated-2d-canvas",
+          "--disable-dev-shm-usage",
+          "--disable-cache",
+          "--disk-cache-size=1",
+          "--media-cache-size=1",
+          "--aggressive-cache-discard",
+          "--disable-background-networking",
+          "--disable-component-update",
+          "--disable-default-apps",
+          "--disable-domain-reliability",
+          "--disable-sync",
+          "--metrics-recording-only",
+          "--no-pings",
+          "--mute-audio",
+          "--disable-extensions",
+          "--disable-component-extensions-with-background-pages",
+          "--disable-breakpad",
+          "--disable-crash-reporter",
           "--disable-hang-monitor",
-          "--disable-ipc-flooding-protection",
           "--disable-notifications",
           "--disable-popup-blocking",
           "--disable-print-preview",
           "--disable-prompt-on-repost",
+          // Keep WhatsApp's timers running at full speed in a headless tab.
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
           "--disable-renderer-backgrounding",
-          "--disable-software-rasterizer",
-          "--disable-features=site-per-process,TranslateUI",
+          "--disable-ipc-flooding-protection",
           "--ignore-certificate-errors",
           "--log-level=3",
           "--no-default-browser-check",
           "--no-first-run",
           "--no-sandbox",
-          "--no-zygote",
-          "--enable-gpu-rasterization",
-          "--enable-zero-copy",
           "--disable-setuid-sandbox",
-          "--js-flags=--max-old-space-size=250", // caps JS heap at ~250MB
         ],
       }
     });
