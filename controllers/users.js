@@ -135,6 +135,22 @@ module.exports.getPendingPassportVerifications = async (req, res, next) => {
   }
 }
 
+// Admin only (see routes/users.js) - customers whose passport was uploaded and approved.
+module.exports.getApprovedPassportVerifications = async (req, res, next) => {
+  try {
+    const customers = await User.find({ 'passportVerification.status': 'verified' })
+      .select('firstName lastName username customerId phone city createdAt passportVerification')
+      .populate('passportVerification.reviewedBy', 'firstName lastName')
+      .sort({ 'passportVerification.reviewedAt': -1 })
+      .lean();
+
+    res.status(200).json({ results: customers });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, error.message));
+  }
+}
+
 module.exports.getMyAccount = async (req, res, next) => {
   try {
     res.status(200).json(req.user);

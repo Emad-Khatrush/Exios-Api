@@ -53,6 +53,10 @@ router.route('/customer/:id/passportVerification')
 router.route('/passportVerifications')
       .get(protect, allowAdminsAndAccountants, users.getPendingPassportVerifications);
 
+// Admin only - the "Approved" tab in Passport Review.
+router.route('/passportVerifications/approved')
+      .get(protect, isAdmin, users.getApprovedPassportVerifications);
+
 router.route('/specialPriceCustomers')
       .get(protect, allowAdminsAndAccountants, allowAdminsAndEmployee, users.getSpecialPriceCustomers);
 

@@ -442,54 +442,41 @@ app.get('/api/get-qr-code', (req, res) => {
   }
 });
 
-app.post('/api/sendWhatsupMessage', async (req, res) => {
+// Rejects WhatsApp requests up front when the client can't send, so the
+// frontend shows an error instead of "sent" for messages that would only sit
+// in the queue. 'whatsup-auth-not-found' is the code the admin frontend maps
+// to "You need to scan QR"; the other message is shown to the user as-is.
+function requireWhatsApp(req, res, next) {
+  if (client && isWhatsAppReady) return next();
+  const message = qrCodeData
+    ? 'whatsup-auth-not-found'
+    : 'WhatsApp is connecting, please try again in a few minutes.';
+  return res.status(503).json({ success: false, message });
+}
+
+app.post('/api/sendWhatsupMessage', requireWhatsApp, async (req, res) => {
   const { phoneNumber, message } = req.body
   try {
-      await sendMessage(client, validatePhoneNumber(phoneNumber), message);
-      return res.status(200).json({ success: true, message: 'Message sent successfully' });
-
-    // const target = await client.getContactById(validatePhoneNumber(phoneNumber));
-    // if (target) {
-    //   await client.sendMessage(target.id._serialized, message);
-    //   return res.status(200).json({ success: true, message: 'Message sent successfully' });
-    // } else {
-    //   return res.status(400).json({ success: false, message: 'Contact not found' });
-    // }
+    await sendMessage(client, validatePhoneNumber(phoneNumber), message);
+    return res.status(200).json({ success: true, message: 'Message sent successfully' });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
+    return res.status(500).json({ success: false, message: `Failed to send WhatsApp message: ${error.message}` });
   }
 });
 
-app.post('/api/sendWhatsupImages', async (req, res) => {
+app.post('/api/sendWhatsupImages', requireWhatsApp, async (req, res) => {
   const { imgUrls, phoneNumber } = req.body
   try {
-      if (imgUrls && imgUrls.length > 0) {
-        for (const imgUrl of imgUrls) {
-          await sendPhoto(client, validatePhoneNumber(phoneNumber), imgUrl);
-        }
-      }
-
-    // const target = await client.getContactById(validatePhoneNumber(phoneNumber));
-    // if (target) {
-    //   if (imgUrls && imgUrls.length > 0) {
-    //     for (const imgUrl of imgUrls) {
-
-    //       // const media = new MessageMedia('image/png', await imageToBase64(imgUrl))
-    //       // await client.sendMessage(target.id._serialized, media);
-    //     }
-    //   }
-    //   return res.status(200).json({ success: true, message: 'Images sent successfully' });
-    // } else {
-    //   return res.status(400).json({ success: false, message: 'Contact not found' });
-    // }
+    for (const imgUrl of imgUrls || []) {
+      await sendPhoto(client, validatePhoneNumber(phoneNumber), imgUrl);
+    }
+    return res.status(200).json({ success: true, message: 'Images sent successfully' });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
+    return res.status(500).json({ success: false, message: `Failed to send WhatsApp image: ${error.message}` });
   }
 });
 
-app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
+app.post('/api/inventorySendWhatsupMessages', protect, requireWhatsApp, async (req, res) => {
   try {
     const { data } = req.body;
     let index = 0;
@@ -513,7 +500,7 @@ app.post('/api/inventorySendWhatsupMessages', protect, async (req, res) => {
   }
 })
 
-app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
+app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async (req, res) => {
   const { imgUrl, content, target, testMode, testBigData, skip, limit } = req.body;
 
   try {
@@ -592,7 +579,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, async (req, res) => {
 
   } catch (error) {
     console.error("Route Error:", error);
-    return res.status(500).json({ success: false, message: 'whatsup-auth-not-found' });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
