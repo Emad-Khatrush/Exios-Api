@@ -295,6 +295,21 @@ module.exports.getSingleInventory = async (req, res, next) => {
   }
 }
 
+// Admin only (see routes/inventory.js) - permanently removes the inventory
+// record itself. The orders grouped under it live in the separate Orders
+// collection and are untouched, they just stop showing up under this voyage.
+module.exports.deleteInventory = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const inventory = await Inventory.findByIdAndDelete(id);
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    res.status(200).json({ message: 'Inventory deleted successfully' });
+  } catch (error) {
+    return next(new ErrorHandler(404, error.message));
+  }
+}
+
 module.exports.addExpenseToInventory = async (req, res, next) => {
   try {
     const { inventoryId } = req.params; // e.g. /inventory/:inventoryId/expenses

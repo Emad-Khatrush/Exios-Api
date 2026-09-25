@@ -37,7 +37,6 @@ const inventorySchema = new Schema({
   costPrice: Number,
   voyageCurrency: {
     type: String,
-    required: true,
     enum: ['USD', 'LYD']
   },
   inventoryType: {

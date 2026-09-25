@@ -28,6 +28,7 @@ router.route('/inventory/deleteFiles')
 
 router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
+    .delete(protect, isAdmin, inventory.deleteInventory)
 
 router.route('/inventory/:inventoryId/expenses')
     .post(protect, allowAdminsAndEmployee, inventory.addExpenseToInventory)

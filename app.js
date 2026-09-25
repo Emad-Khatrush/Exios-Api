@@ -773,16 +773,43 @@ async function sendMessage(waClient, jid, text) {
     }
 }
 
+// Identify the real image type from the file's first bytes, since URL
+// extensions and Content-Type headers are often missing or wrong.
+function detectImageMime(buf) {
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    if (buf.length >= 8 && buf.toString('hex', 0, 8) === '89504e470d0a1a0a') return 'image/png';
+    if (buf.length >= 6 && buf.toString('ascii', 0, 4) === 'GIF8') return 'image/gif';
+    if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+    return null;
+}
+
+// Downloads the image ourselves instead of MessageMedia.fromUrl, which sends
+// whatever the URL returns (error pages, empty bodies, unknown formats).
+async function downloadImage(imgUrl) {
+    const res = await fetch(imgUrl);
+    if (!res.ok) {
+        throw new Error(`Image download failed: HTTP ${res.status} for ${imgUrl}`);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    const mimetype = detectImageMime(buf);
+    if (!mimetype) {
+        throw new Error(`URL is not a JPEG/PNG/GIF/WEBP image (Content-Type: ${res.headers.get('content-type')}, ${buf.length} bytes): ${imgUrl}`);
+    }
+    return new MessageMedia(mimetype, buf.toString('base64'), `image.${mimetype.split('/')[1]}`, buf.length);
+}
+
 async function sendPhoto(waClient, jid, imgUrl) {
     if (!waClient || !isWhatsAppReady) {
         throw new Error('whatsup-auth-not-found');
     }
+    let media;
     try {
-        const media = await MessageMedia.fromUrl(imgUrl, { unsafeMime: true });
+        media = await downloadImage(imgUrl);
         await waClient.sendMessage(jid, media);
         console.log(`Photo successfully sent to ${jid}`);
     } catch (error) {
-        console.error('Failed to send photo:', error);
+        const info = media ? `${media.mimetype}, ${media.filesize} bytes` : 'not downloaded';
+        console.error(`Failed to send photo to ${jid} (${info}, url: ${imgUrl}):`, error.message);
         throw error;
     }
 }
