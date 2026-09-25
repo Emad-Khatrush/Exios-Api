@@ -35,6 +35,8 @@ const balances = require('./routes/balance');
 const inventory = require('./routes/inventory');
 const wallet = require('./routes/wallet');
 const marketing = require('./routes/marketing');
+const popupAds = require('./routes/popupAds');
+const analytics = require('./routes/analytics');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -232,9 +234,6 @@ async function initializeWhatsAppClient() {
           "--disable-site-isolation-trials",
           // Chrome's reduced-memory mode (smaller caches, lower-res buffers).
           "--enable-low-end-device-mode",
-          // Don't download/decode images (profile pics, thumbnails). Sending
-          // images still works — that goes through upload, not rendering.
-          "--blink-settings=imagesEnabled=false",
           // Chrome only honours the LAST --disable-features flag, so keep one.
           "--disable-features=site-per-process,IsolateOrigins,TranslateUI,Translate,BackForwardCache,MediaRouter,OptimizationHints,AudioServiceOutOfProcess,AutofillServerCommunication,CertificateTransparencyComponentUpdater,PaintHolding,DialMediaRouteProvider",
           "--js-flags=--max-old-space-size=256 --optimize-for-size",
@@ -421,6 +420,8 @@ app.use('/api', balances);
 app.use('/api', inventory);
 app.use('/api', wallet);
 app.use('/api', marketing);
+app.use('/api', popupAds);
+app.use('/api', analytics);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {
