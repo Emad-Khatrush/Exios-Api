@@ -798,6 +798,29 @@ async function downloadImage(imgUrl) {
     return new MessageMedia(mimetype, buf.toString('base64'), `image.${mimetype.split('/')[1]}`, buf.length);
 }
 
+// whatsapp-web.js 1.34.7 bug (wwebjs/whatsapp-web.js#201921): the MediaData
+// model carries a private __x_id that, when spread into the outgoing message,
+// overwrites the message's own id, so every media send fails with "Data passed
+// to getter must include an id property". Strip it in the page, the same fix as
+// upstream PR #201923. Re-applied per send because the page can be re-injected.
+// Remove once a whatsapp-web.js release includes that PR.
+async function patchMediaIdCollision(waClient) {
+    await waClient.pupPage.evaluate(() => {
+        const wwebjs = window.WWebJS;
+        if (!wwebjs || wwebjs.processMediaData.__xIdPatched) return;
+        const original = wwebjs.processMediaData;
+        const patched = async (...args) => {
+            const mediaData = await original(...args);
+            if (mediaData && Object.prototype.hasOwnProperty.call(mediaData, '__x_id')) {
+                delete mediaData.__x_id;
+            }
+            return mediaData;
+        };
+        patched.__xIdPatched = true;
+        wwebjs.processMediaData = patched;
+    });
+}
+
 async function sendPhoto(waClient, jid, imgUrl) {
     if (!waClient || !isWhatsAppReady) {
         throw new Error('whatsup-auth-not-found');
@@ -805,6 +828,7 @@ async function sendPhoto(waClient, jid, imgUrl) {
     let media;
     try {
         media = await downloadImage(imgUrl);
+        await patchMediaIdCollision(waClient);
         await waClient.sendMessage(jid, media);
         console.log(`Photo successfully sent to ${jid}`);
     } catch (error) {
