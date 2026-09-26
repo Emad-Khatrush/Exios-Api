@@ -39,6 +39,11 @@ const toLibyaDayBoundary = (value, endOfDay) => {
 };
 
 const SHIPPING_PAYMENT_PREFIX = /تم دفع قيمة الشحن\s+(.+)/;
+// Invoice-cancellation shipping refunds (helperApi.js cancelInvoicePackages) are written as
+// `... واسترجاع قيمة شحن ${trackingNumber} إلى المحفظة` with the orderId as the last word of
+// `note` ("Invoice #0123 cancellation 9692-0957"), not the whole note like shipping payments.
+const CANCELLATION_REFUND_TRACKING = /واسترجاع قيمة شحن\s+(.+?)\s+إلى المحفظة/;
+const CANCELLATION_REFUND_ORDER_ID = /cancellation\s+(\S+)\s*$/;
 const normalizeTracking = (value) => String(value ?? '').trim().toLowerCase();
 
 // Shipping payments are written as `تم دفع قيمة الشحن ${trackingNumber}` with the orderId in
@@ -48,8 +53,18 @@ const normalizeTracking = (value) => String(value ?? '').trim().toLowerCase();
 const attachOdooCodes = async (statements) => {
   const parsed = statements
     .map(statement => {
-      const tracking = statement.description?.match(SHIPPING_PAYMENT_PREFIX)?.[1]?.trim();
-      return tracking ? { statement, tracking, orderId: String(statement.note || '').trim() } : null;
+      const shippingTracking = statement.description?.match(SHIPPING_PAYMENT_PREFIX)?.[1]?.trim();
+      if (shippingTracking) {
+        return { statement, tracking: shippingTracking, orderId: String(statement.note || '').trim() };
+      }
+
+      const cancellationTracking = statement.description?.match(CANCELLATION_REFUND_TRACKING)?.[1]?.trim();
+      if (cancellationTracking) {
+        const orderId = statement.note?.match(CANCELLATION_REFUND_ORDER_ID)?.[1]?.trim();
+        if (orderId) return { statement, tracking: cancellationTracking, orderId };
+      }
+
+      return null;
     })
     .filter(Boolean);
   if (parsed.length === 0) return;
