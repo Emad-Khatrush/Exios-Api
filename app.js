@@ -8,7 +8,6 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/error');
 const { validatePhoneNumber, imageToBase64, replaceWords } = require('./utils/messages');
-const Queue = require('bull');
 const path = require('path');
 const os = require('os');
 const qrcode = require('qrcode-terminal');
@@ -16,8 +15,9 @@ const qrcode = require('qrcode-terminal');
 process.env.PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
 
-// DB Collections 
+// DB Collections
 const Users = require('./models/user');
+const Campaign = require('./models/campaign');
 
 // import routes
 const orders = require('./routes/orders');
@@ -37,6 +37,7 @@ const wallet = require('./routes/wallet');
 const marketing = require('./routes/marketing');
 const popupAds = require('./routes/popupAds');
 const analytics = require('./routes/analytics');
+const campaigns = require('./routes/campaigns');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -78,14 +79,9 @@ let isInitializingWhatsApp = false; // guards against overlapping initialize() c
 
 const app = express();
 
-// Initialize Bull queue with Redis client
-const sendMessageQueue = new Queue('send-message', {
-  redis: {
-    port: process.env.REDIS_PORT,
-    host: process.env.REDIS_HOST,
-    password: process.env.REDIS_PASS,
-  }
-});
+// Bull queue with Redis client - shared module so controllers (e.g. campaign
+// delete, which cancels pending jobs) reference the same queue instance.
+const sendMessageQueue = require('./utils/messageQueue');
 
 const connectionUrl = process.env.MONGO_URL_2 || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
 mongoose.connect(connectionUrl, {
@@ -433,6 +429,7 @@ app.use('/api', wallet);
 app.use('/api', marketing);
 app.use('/api', popupAds);
 app.use('/api', analytics);
+app.use('/api', campaigns);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {
@@ -561,12 +558,32 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
       return res.status(200).json({ success: true, message: 'Big data test started' });
     }
 
-    // 4. Hand the list to the worker, which schedules 1 message per minute
+    // 4. Persist a campaign record (snapshot of who is being targeted) so the
+    // admin can track sent/failed progress and manage or delete it later.
+    let campaign = null;
     if (users.length > 0) {
+      campaign = await Campaign.create({
+        content,
+        imgUrl: imgUrl || null,
+        target,
+        totalUsers: users.length,
+        createdBy: req.user._id,
+        users: users.map((user) => ({
+          user: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          phone: user.phone,
+          customerId: user.customerId,
+          status: 'pending',
+        })),
+      });
+
+      // 5. Hand the list to the worker, which schedules 1 message per minute
       await sendMessageQueue.add('send-large-messages', {
         imgUrl,
         content: rtlContent,
-        users
+        users,
+        campaignId: String(campaign._id),
       }, {
         removeOnComplete: true
       });
@@ -574,6 +591,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
 
     return res.status(200).json({
       success: true,
+      campaignId: campaign?._id || null,
       message: `Scheduling ${users.length} messages at 1 per minute (~${users.length} minutes, after any batch already queued)...`
     });
 
@@ -597,7 +615,7 @@ const CLIENT_NEXT_SLOT_KEY = 'whatsapp:clients:nextSlot';
 // Schedules every message up front as a delayed job (persisted in Redis), so
 // a Heroku restart mid-campaign doesn't lose the remaining messages.
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
-  const { imgUrl, content, users } = job.data;
+  const { imgUrl, content, users, campaignId } = job.data;
 
   const storedSlot = Number(await redisClient.get(CLIENT_NEXT_SLOT_KEY)) || 0;
   let nextSlot = Math.max(Date.now(), storedSlot);
@@ -614,7 +632,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
     index++;
     await sendMessageQueue.add('send-message',
-      { index, imgUrl, content: `\u202B${generatedContent}`, phone: `${user.phone}@c.us`, campaign: true },
+      { index, imgUrl, content: `\u202B${generatedContent}`, phone: `${user.phone}@c.us`, campaign: true, campaignId, userId: user._id ? String(user._id) : undefined },
       { delay: Math.max(0, nextSlot - Date.now()), removeOnComplete: true }
     );
     nextSlot += CLIENT_MESSAGE_INTERVAL_MS;
@@ -634,8 +652,33 @@ async function claimNextClientSlot() {
 
 const MAX_MESSAGE_RETRIES = 3;
 
+// Marks one targeted user's status on their campaign and bumps the counters,
+// then flips the campaign to 'completed' once every user has a final status.
+// Cancelled/deleted campaigns (userId no longer matched, or campaign gone)
+// are silently ignored - the message either already went out or was skipped.
+async function updateCampaignProgress(campaignId, userId, status) {
+  if (!campaignId || !userId) return;
+  try {
+    const counterField = status === 'sent' ? 'sentCount' : 'failedCount';
+    const campaign = await Campaign.findOneAndUpdate(
+      { _id: campaignId, 'users.user': userId },
+      {
+        $set: { 'users.$.status': status, 'users.$.sentAt': new Date() },
+        $inc: { [counterField]: 1 },
+      },
+      { new: true }
+    );
+    if (campaign && campaign.sentCount + campaign.failedCount >= campaign.totalUsers && campaign.status === 'sending') {
+      campaign.status = 'completed';
+      await campaign.save();
+    }
+  } catch (error) {
+    console.error('Failed to update campaign progress:', error);
+  }
+}
+
 sendMessageQueue.process('send-message', 1, async (job) => {
-  const { index, imgUrl, content, phone, campaign, retries = 0 } = job.data;
+  const { index, imgUrl, content, phone, campaign, campaignId, userId, retries = 0 } = job.data;
 
   try {
     if (imgUrl) {
@@ -645,6 +688,7 @@ sendMessageQueue.process('send-message', 1, async (job) => {
 
     console.log("Message Sent " + index + ' !');
     await sendMessageQueue.clean(0);
+    await updateCampaignProgress(campaignId, userId, 'sent');
   } catch (error) {
     // WhatsApp being disconnected isn't the message's fault \u2014 don't count it
     // against the retry limit, just wait for a later slot.
@@ -653,6 +697,7 @@ sendMessageQueue.process('send-message', 1, async (job) => {
 
     if (nextRetries > MAX_MESSAGE_RETRIES) {
       console.log(`Giving up on message ${index} to ${phone} after ${MAX_MESSAGE_RETRIES} retries: ${error?.message}`);
+      await updateCampaignProgress(campaignId, userId, 'failed');
       return;
     }
 
