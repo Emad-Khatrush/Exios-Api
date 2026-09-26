@@ -560,6 +560,21 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
 
     // 4. Persist a campaign record (snapshot of who is being targeted) so the
     // admin can track sent/failed progress and manage or delete it later.
+    // Normalize each stored phone (a Number, so any leading 0 is lost) into a
+    // WhatsApp ID up front, so the campaign and the worker use the exact
+    // number that gets messaged. Users with no usable phone are left out so
+    // the campaign total only counts people who will actually get a message.
+    users = users
+      .filter((user) => user.phone && `${user.phone}`.length >= 5)
+      .map((user) => ({
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        customerId: user.customerId,
+        rawPhone: `${user.phone}`,
+        phone: validatePhoneNumber(user.phone),
+      }));
+
     let campaign = null;
     if (users.length > 0) {
       campaign = await Campaign.create({
@@ -572,7 +587,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
           user: user._id,
           firstName: user.firstName,
           lastName: user.lastName,
-          phone: user.phone,
+          phone: user.phone.split('@')[0],
           customerId: user.customerId,
           status: 'pending',
         })),
@@ -627,12 +642,12 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
     const generatedContent = replaceWords(content, {
       fullName: `${user?.firstName} ${user?.lastName}`,
       customerId: user?.customerId,
-      phone: user?.phone,
+      phone: user?.rawPhone || user?.phone,
     });
 
     index++;
     await sendMessageQueue.add('send-message',
-      { index, imgUrl, content: `\u202B${generatedContent}`, phone: `${user.phone}@c.us`, campaign: true, campaignId, userId: user._id ? String(user._id) : undefined },
+      { index, imgUrl, content: `\u202B${generatedContent}`, phone: validatePhoneNumber(user.phone), campaign: true, campaignId, userId: user._id ? String(user._id) : undefined },
       { delay: Math.max(0, nextSlot - Date.now()), removeOnComplete: true }
     );
     nextSlot += CLIENT_MESSAGE_INTERVAL_MS;
