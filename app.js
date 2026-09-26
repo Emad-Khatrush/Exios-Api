@@ -623,17 +623,29 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
 })
 
 const CLIENT_MESSAGE_INTERVAL_MS = 60 * 1000; // 1 message per minute
-// Timestamp of the next free send slot, shared across campaigns so batches
-// sent back-to-back (skip/limit) queue up behind each other instead of overlapping.
-const CLIENT_NEXT_SLOT_KEY = 'whatsapp:clients:nextSlot';
+
+// Next free 1-per-minute send slot, worked out from the campaign messages
+// actually waiting in the queue (not a stored counter, which kept drifting
+// hours ahead when messages were retried or campaigns deleted). Campaigns
+// sent back-to-back still line up behind each other instead of overlapping.
+async function getNextClientSlot() {
+  const delayed = await sendMessageQueue.getDelayed();
+  let last = 0;
+  for (const queued of delayed) {
+    if (queued.name === 'send-message' && queued.data?.campaignId) {
+      last = Math.max(last, queued.timestamp + (queued.opts?.delay || 0));
+    }
+  }
+  return Math.max(Date.now(), last ? last + CLIENT_MESSAGE_INTERVAL_MS : 0);
+}
 
 // Schedules every message up front as a delayed job (persisted in Redis), so
 // a Heroku restart mid-campaign doesn't lose the remaining messages.
 sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users, campaignId } = job.data;
 
-  const storedSlot = Number(await redisClient.get(CLIENT_NEXT_SLOT_KEY)) || 0;
-  let nextSlot = Math.max(Date.now(), storedSlot);
+  let nextSlot = await getNextClientSlot();
+  const firstSlot = nextSlot;
   let index = 0;
 
   for (const user of users) {
@@ -653,19 +665,25 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
     nextSlot += CLIENT_MESSAGE_INTERVAL_MS;
   }
 
-  await redisClient.set(CLIENT_NEXT_SLOT_KEY, nextSlot);
-  console.log(`Scheduled ${index} client messages, 1 per minute. Last one at ${new Date(nextSlot - CLIENT_MESSAGE_INTERVAL_MS).toISOString()}`);
+  if (campaignId && index > 0) {
+    await Campaign.updateOne(
+      { _id: campaignId },
+      { $set: { firstMessageAt: new Date(firstSlot), lastMessageAt: new Date(nextSlot - CLIENT_MESSAGE_INTERVAL_MS) } }
+    ).catch((error) => console.error('Failed to save campaign schedule:', error));
+  }
+  console.log(`Scheduled ${index} client messages, 1 per minute, from ${new Date(firstSlot).toISOString()} to ${new Date(nextSlot - CLIENT_MESSAGE_INTERVAL_MS).toISOString()}`);
 });
 
-// Claims the next free 1-per-minute slot and returns its delay from now.
+// Delay from now until the next free 1-per-minute slot.
 async function claimNextClientSlot() {
-  const storedSlot = Number(await redisClient.get(CLIENT_NEXT_SLOT_KEY)) || 0;
-  const slot = Math.max(Date.now(), storedSlot);
-  await redisClient.set(CLIENT_NEXT_SLOT_KEY, slot + CLIENT_MESSAGE_INTERVAL_MS);
-  return slot - Date.now();
+  return (await getNextClientSlot()) - Date.now();
 }
 
 const MAX_MESSAGE_RETRIES = 3;
+
+// whatsapp-web.js errors that mean the number can never receive a message
+// (not registered on WhatsApp). Retrying these only wastes send slots.
+const isPermanentSendError = (error) => /No LID for user|not a valid WhatsApp|wid error: invalid wid/i.test(error?.message || '');
 
 // Marks one targeted user's status on their campaign and bumps the counters,
 // then flips the campaign to 'completed' once every user has a final status.
@@ -710,8 +728,8 @@ sendMessageQueue.process('send-message', 1, async (job) => {
     const notConnected = error?.message === 'whatsup-auth-not-found';
     const nextRetries = notConnected ? retries : retries + 1;
 
-    if (nextRetries > MAX_MESSAGE_RETRIES) {
-      console.log(`Giving up on message ${index} to ${phone} after ${MAX_MESSAGE_RETRIES} retries: ${error?.message}`);
+    if (isPermanentSendError(error) || nextRetries > MAX_MESSAGE_RETRIES) {
+      console.log(`Giving up on message ${index} to ${phone} after ${retries} retries: ${error?.message}`);
       await updateCampaignProgress(campaignId, userId, 'failed');
       return;
     }
@@ -731,7 +749,6 @@ app.use(async (req, res) => {
   if (req.query.deleteMessages === 'all') {
     // 1. Forcefully wipe all jobs (active, waiting, delayed, failed) from Redis
     await sendMessageQueue.obliterate({ force: true });
-    await redisClient.del(CLIENT_NEXT_SLOT_KEY);
     await sendMessageQueue.clean(0);
     await sendMessageQueue.clean(0, 'active');
     await sendMessageQueue.clean(0, 'failed');

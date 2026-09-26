@@ -37,6 +37,10 @@ const campaignSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // When the queue worker scheduled the first/last message (1 per minute,
+    // after any campaign already queued). Set shortly after creation.
+    firstMessageAt: Date,
+    lastMessageAt: Date,
     users: [{
       _id: false,
       user: {
