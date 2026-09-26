@@ -861,19 +861,22 @@ module.exports.updateOrder = async (req, res, next) => {
 
       await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
 
-      await Inventory.updateMany(
+      // Mongoose's query builder (Model.updateMany included) silently no-ops
+      // this $pull on real warehouse documents - the raw driver, bypassing
+      // it entirely, is the only reliable way to actually remove the array
+      // element (see the same fix and comment in controllers/inventory.js).
+      await Inventory.collection.updateMany(
         { inventoryType: 'warehouseInventory' },
         {
-          $pull: { 
-            orders: { 
+          $pull: {
+            orders: {
               $or: [
                 { "paymentList._id": { $in: receivedOrders.map(orderPackage => orderPackage._id) } },
                 { "paymentList._id": { $in: receivedOrders.map(orderPackage => new ObjectId(orderPackage._id)) } }
               ]
-            } 
+            }
           }
-        },
-        { safe: true, upsert: true, new: true }
+        }
       )
     }
 

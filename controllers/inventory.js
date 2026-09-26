@@ -7,6 +7,8 @@ const mongodb = require('mongodb');
 const Activities = require("../models/activities");
 const ReturnedPayments = require("../models/returnedPayments");
 const Users = require("../models/user");
+const PackageDeletion = require("../models/packageDeletion");
+const WarehouseCheck = require("../models/warehouseCheck");
 
 const { ObjectId } = mongodb;
 
@@ -487,16 +489,30 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
       }
     ])
 
+    // ?office=tripoli|benghazi targets that office's warehouse, resolved the
+    // same way getWarehouseInventory does (newest one), instead of callers
+    // hardcoding an inventory id that breaks when the warehouse is recreated.
+    let inventoryId = req.query.id;
+    if (req.query.office) {
+      const warehouse = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: req.query.office })
+        .sort({ createdAt: -1 })
+        .select('_id');
+      if (!warehouse) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+      inventoryId = warehouse._id;
+    }
+
+    // No upsert: a missing inventory must fail, not be silently recreated as
+    // a blank inventory holding these packages.
     const inventory = await Inventory.findOneAndUpdate(
-      { _id: req.query.id },
+      { _id: inventoryId },
       {
-        $push: { 
-          "orders": { 
+        $push: {
+          "orders": {
             $each: orders.map(orderArray => orderArray)
           }
         },
       },
-      { safe: true, upsert: true, new: true }
+      { new: true }
     )
     .populate(['createdBy', 'orders'])
 
@@ -536,23 +552,27 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
     const { body } = req;
     const paymentList = body;
 
-    const inventory = await Inventory.findOneAndUpdate(
-      { _id: req.query.id },
+    // See the comment on deleteWarehousePackage: Mongoose's query builder
+    // (findOneAndUpdate included) silently no-ops this $pull on real
+    // documents, so the raw driver is used here instead, then the updated
+    // document is re-fetched normally (with populate) for the response.
+    await Inventory.collection.updateOne(
+      { _id: new ObjectId(req.query.id) },
       {
-        $pull: { 
-          orders: { 
+        $pull: {
+          orders: {
             $or: [
               { "paymentList._id": { $in: paymentList.map(id => id) } },
               { "paymentList._id": { $in: paymentList.map(id => new ObjectId(id)) } }
             ]
-          } 
+          }
         }
-      },
-      { safe: true, upsert: true, new: true }
-    )
-    .populate(['createdBy', 'orders'])
+      }
+    );
+
+    const inventory = await Inventory.findById(req.query.id).populate(['createdBy', 'orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    
+
     res.status(200).json(inventory);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -586,7 +606,7 @@ module.exports.uploadFiles= async (req, res, next) => {
   
   const inventory = await Inventory.findByIdAndUpdate(id, {
     $push: { "attachments": images },
-  }, { safe: true, upsert: true });
+  });
   
   await Activities.create({
     user: req.user,
@@ -671,6 +691,140 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     return next(new ErrorHandler(404, error.message));
   }
 }
+
+// Employee/admin: removes one package from a warehouse, with a required
+// reason, and keeps a permanent audit record of who did it and why (an
+// employee can delete, but only an admin can list these records - see
+// getPackageDeletions).
+module.exports.deleteWarehousePackage = async (req, res, next) => {
+  try {
+    const { id, paymentListId } = req.params;
+    const reason = (req.body?.reason || '').trim();
+
+    if (!reason) {
+      return next(new ErrorHandler(400, 'A reason is required to delete a package'));
+    }
+
+    const inventory = await Inventory.findById(id);
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    const entry = inventory.orders.find((order) => String(order.paymentList?._id) === paymentListId);
+    if (!entry) return next(new ErrorHandler(404, 'Package not found in this warehouse'));
+
+    const pkg = entry.paymentList?.deliveredPackages || {};
+    // The order snapshot embedded in the warehouse only stores `user` as a
+    // bare id (it's pushed unpopulated), so look up the customerId separately.
+    const customer = entry.user ? await Users.findById(entry.user).select('customerId') : null;
+
+    // Every Mongoose query method (updateOne, findOneAndUpdate, updateMany)
+    // silently no-ops this $pull on real warehouse documents - it reports
+    // matched/modified but leaves `orders` untouched, because this array has
+    // no schema type (orders: []) and Mongoose's query casting for that
+    // mis-handles the nested 'paymentList._id' path once the document has
+    // real-world complexity (confirmed on clones of production data; only
+    // trivial single-field test docs happened to pass). The raw MongoDB
+    // driver, bypassing Mongoose's query builder entirely, works correctly.
+    await Inventory.collection.updateOne(
+      { _id: new ObjectId(id) },
+      { $pull: { orders: { 'paymentList._id': new ObjectId(paymentListId) } } }
+    );
+
+    const deletion = await PackageDeletion.create({
+      inventory: id,
+      inventoryPlace: inventory.inventoryPlace,
+      order: entry._id,
+      orderId: entry.orderId,
+      paymentListId,
+      snapshot: {
+        customerName: entry.customerInfo?.fullName,
+        customerId: customer?.customerId,
+        phone: entry.customerInfo?.phone,
+        trackingNumber: pkg.trackingNumber,
+        receiptNo: pkg.receiptNo,
+        weight: pkg.weight,
+      },
+      reason,
+      deletedBy: req.user._id,
+    });
+
+    res.status(200).json(deletion);
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
+// Admin only: the audit trail of packages employees (or admins) have deleted
+// from a warehouse, most recent first.
+module.exports.getPackageDeletions = async (req, res, next) => {
+  try {
+    const { office } = req.query;
+    const query = office ? { inventoryPlace: office } : {};
+    const deletions = await PackageDeletion.find(query)
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .populate('deletedBy', 'firstName lastName');
+
+    res.status(200).json(deletions);
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
+// Employee/admin: records that someone physically walked the warehouse and
+// reconciled it against the system. `discrepancies` lists any package that
+// didn't match (missing, damaged, wrong location, ...), each with a note.
+module.exports.submitWarehouseCheck = async (req, res, next) => {
+  try {
+    const { office } = req.params;
+    const { notes, discrepancies } = req.body;
+
+    const cleanDiscrepancies = Array.isArray(discrepancies)
+      ? discrepancies
+          .filter((d) => d?.note && String(d.note).trim())
+          .map((d) => ({
+            paymentListId: d.paymentListId,
+            trackingNumber: d.trackingNumber,
+            customerName: d.customerName,
+            note: String(d.note).trim(),
+          }))
+      : [];
+
+    const warehouse = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: office })
+      .sort({ createdAt: -1 })
+      .select('_id orders');
+    if (!warehouse) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    const check = await WarehouseCheck.create({
+      inventoryPlace: office,
+      inventory: warehouse._id,
+      checkedBy: req.user._id,
+      totalPackages: warehouse.orders.length,
+      discrepancies: cleanDiscrepancies,
+      notes: (notes || '').trim() || undefined,
+    });
+
+    const populated = await check.populate('checkedBy', 'firstName lastName');
+    res.status(201).json(populated);
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
+// History of weekly checks for an office, most recent first - lets the
+// employee see proof they submitted it, and the admin see every one.
+module.exports.getWarehouseChecks = async (req, res, next) => {
+  try {
+    const { office } = req.params;
+    const checks = await WarehouseCheck.find({ inventoryPlace: office })
+      .sort({ createdAt: -1 })
+      .limit(30)
+      .populate('checkedBy', 'firstName lastName');
+
+    res.status(200).json(checks);
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
 
 module.exports.updateInventory = async (req, res, next) => {
   try {

@@ -326,7 +326,11 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
 }
 
 async function cleanUpInventory(selectedPackages) {
-  await Inventory.updateMany(
+  // Mongoose's query builder (Model.updateMany included) silently no-ops
+  // this $pull on real warehouse documents - the raw driver, bypassing it
+  // entirely, is the only reliable way to actually remove the array element
+  // (see the same fix and comment in controllers/inventory.js).
+  await Inventory.collection.updateMany(
     { inventoryType: 'warehouseInventory' },
     {
       $pull: {
@@ -337,8 +341,7 @@ async function cleanUpInventory(selectedPackages) {
           ]
         }
       }
-    },
-    { safe: true, upsert: true, new: true }
+    }
   );
 }
 

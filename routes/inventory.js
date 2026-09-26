@@ -26,6 +26,13 @@ router.route('/inventory/uploadFiles')
 router.route('/inventory/deleteFiles')
     .delete(protect, allowAdminsAndEmployee, inventory.deleteFiles);
 
+// Must come before /inventory/:id, or Express matches "deletions" as :id first.
+router.route('/inventory/deletions')
+    .get(protect, isAdmin, inventory.getPackageDeletions)
+
+router.route('/inventory/:id/packages/:paymentListId')
+    .delete(protect, allowAdminsAndEmployee, inventory.deleteWarehousePackage)
+
 router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
     .delete(protect, isAdmin, inventory.deleteInventory)
@@ -37,6 +44,12 @@ router.route('/inventory/:inventoryId/expenses')
 
 router.route('/warehouse/:office/goods')
     .get(protect, allowAdminsAndEmployee, inventory.getWarehouseInventory)
+
+router.route('/warehouse/:office/check')
+    .post(protect, allowAdminsAndEmployee, inventory.submitWarehouseCheck)
+
+router.route('/warehouse/:office/checks')
+    .get(protect, allowAdminsAndEmployee, inventory.getWarehouseChecks)
 
 // Returned Payments routes
 router.route('/returnedPayments')
