@@ -89,7 +89,33 @@ const balanceSchema = new mongoose.Schema({
     fileType: String,
     description: String
   }],
-  debtPriority: String
+  debtPriority: String,
+  // Set when an admin/accountant closes a debt by hand (e.g. 0.1$ left over).
+  // The written-off remainder is moved to a separate 'lost' balance.
+  manualClosure: {
+    note: String,
+    writtenOffAmount: Number,
+    closedAt: Date,
+    closedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    lostBalance: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Balance',
+    },
+  },
+  // True for debts created on an order after debts started following their order.
+  // Only these move to the new customer when the order's customer changes; older debts stay put.
+  followsOrder: {
+    type: Boolean,
+    default: false,
+  },
+  // On a 'lost' balance created by a manual closure: the debt it was written off from
+  sourceBalance: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Balance',
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Balance', balanceSchema);

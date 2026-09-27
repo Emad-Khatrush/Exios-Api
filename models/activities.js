@@ -6,7 +6,7 @@ const activitySchema = new Schema({
   details: {
     path: { type: String },
     status:{ type: String, enum: ['added', 'updated', 'deleted'] }, // updated, deleted, added
-    type: { type: String, enum: ['order', 'expense', 'activity', 'income', 'inventory'] }, // order, expense, activity, income, inventory
+    type: { type: String, enum: ['order', 'expense', 'activity', 'income', 'inventory', 'debt'] }, // order, expense, activity, income, inventory, debt
     actionName: { type: String, enum: ['image'] },
     actionId: String
   },

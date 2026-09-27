@@ -16,6 +16,7 @@ const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
+const { syncOrderDebtsOwner } = require('../utils/debts');
 const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
@@ -798,6 +799,11 @@ module.exports.updateOrder = async (req, res, next) => {
     const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true }).populate('user');
     if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
+    // The order moved to another customer: its unpaid debts move with it
+    if (user && !user._id.equals(oldOrder.user)) {
+      await syncOrderDebtsOwner(newOrder._id, user._id);
+    }
+
     // calculate the revenue of the order
     const dollarDifference =  newOrder.receivedUSD - oldOrder.receivedUSD;
     const dinnarDifference =  newOrder.receivedLYD - oldOrder.receivedLYD;
@@ -930,6 +936,11 @@ module.exports.updateSinglePackage = async (req, res, next) => {
     if (user) update.user = user;
     const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
     if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
+    // The order moved to another customer: its unpaid debts move with it
+    if (user && !user._id.equals(oldOrder.user)) {
+      await syncOrderDebtsOwner(newOrder._id, user._id);
+    }
 
     res.status(200).json(newOrder);
   } catch (error) {

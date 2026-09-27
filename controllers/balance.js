@@ -4,6 +4,7 @@ const Users = require('../models/user');
 const Wallets = require('../models/wallet');
 const UserStatement = require('../models/userStatement');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
+const Activities = require('../models/activities');
 
 const ErrorHandler = require('../utils/errorHandler');
 const { errorMessages } = require('../constants/errorTypes');
@@ -48,7 +49,7 @@ module.exports.getBalances = async (req, res, next) => {
         }
       }
     ]))[0]?.results
-    debts = await Balance.populate(debts, [{ path: "order" }, { path: "owner" }, { path: "createdBy" }]);
+    debts = await Balance.populate(debts, [{ path: "order" }, { path: "owner" }, { path: "createdBy" }, { path: "manualClosure.closedBy", select: "firstName lastName" }]);
     
     const credits = await Balance.find({ balanceType: 'credit' }).populate(['owner', 'order', 'createdBy']);
     let countList = (await Balance.aggregate([
@@ -129,16 +130,27 @@ module.exports.getBalances = async (req, res, next) => {
 module.exports.createBalance = async (req, res, next) => {
   try {
     const { balanceType, amount, currency, orderId, customerId, notes, createdOffice, debtType } = req.body;
-    if (!balanceType || !amount || !currency || !customerId || !notes || !createdOffice) {
+    // customerId is only needed when the debt is not tied to an order
+    if (!balanceType || !amount || !currency || (!customerId && !orderId) || !notes || !createdOffice) {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
 
-    const user = await Users.findOne({ customerId });
-    if (!user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
-
+    // A debt on an order belongs to whoever owns the order, so it follows the order
+    // if its customer is changed later (see syncOrderDebtsOwner in updateOrder)
     let order;
+    let user;
     if (orderId) {
-      order = await Orders.findOne({ orderId });
+      order = await Orders.findOne({ orderId: String(orderId).trim() }).populate('user');
+      if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+      if (!order.user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
+      user = order.user;
+
+      if (customerId && String(user.customerId).toLowerCase() !== String(customerId).trim().toLowerCase()) {
+        return next(new ErrorHandler(400, errorMessages.BALANCE_ORDER_CUSTOMER_MISMATCH));
+      }
+    } else {
+      user = await Users.findOne({ customerId });
+      if (!user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
     }
 
     const balance = await Balance.create({
@@ -151,7 +163,8 @@ module.exports.createBalance = async (req, res, next) => {
       owner: user,
       createdBy: req.user,
       initialAmount: amount,
-      debtType
+      debtType,
+      followsOrder: !!order,
     })
     
     res.status(200).json(balance);
@@ -418,7 +431,7 @@ module.exports.searchForDebt = async (req, res, next) => {
       }
     )
     let debts = (await Balance.aggregate(query))[0]?.results;
-    debts = await Balance.populate(debts, [{ path: "owner" }, { path: "order" }, { path: "createdBy" }]);
+    debts = await Balance.populate(debts, [{ path: "owner" }, { path: "order" }, { path: "createdBy" }, { path: "manualClosure.closedBy", select: "firstName lastName" }]);
 
     res.status(200).json(debts);
   } catch (error) {
@@ -468,6 +481,133 @@ module.exports.confirmDebt = async (req, res, next) => {
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+// Close a debt by hand when only a small remainder is left (e.g. 0.1$).
+// The debt is marked closed and the remainder is written off into a new 'lost' debt with the same note.
+// No money moves, so wallets and statements are untouched.
+module.exports.closeDebtManually = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const note = String(req.body?.note || '').trim();
+    if (!note) {
+      return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
+    }
+
+    const existingBalance = await Balance.findOne({ _id: id, balanceType: 'debt' });
+    if (!existingBalance) {
+      return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
+    }
+
+    if (!['open', 'overdue'].includes(existingBalance.status)) {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_NOT_CLOSABLE));
+    }
+
+    const writtenOffAmount = Math.trunc(Number(existingBalance.amount || 0) * 100) / 100;
+    const closedAt = new Date();
+
+    // Only close it if nobody changed it since we read it (a payment or another close in between)
+    const closedBalance = await Balance.findOneAndUpdate(
+      { _id: id, status: existingBalance.status, amount: existingBalance.amount },
+      {
+        $set: {
+          status: 'closed',
+          amount: 0,
+          manualClosure: {
+            note,
+            writtenOffAmount,
+            closedAt,
+            closedBy: req.user._id,
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!closedBalance) {
+      return next(new ErrorHandler(409, errorMessages.BALANCE_NOT_CLOSABLE));
+    }
+
+    if (writtenOffAmount > 0) {
+      let lostBalance;
+      try {
+        lostBalance = await Balance.create({
+          balanceType: 'debt',
+          status: 'lost',
+          amount: writtenOffAmount,
+          initialAmount: writtenOffAmount,
+          currency: existingBalance.currency,
+          createdOffice: existingBalance.createdOffice,
+          debtType: existingBalance.debtType,
+          order: existingBalance.order,
+          owner: existingBalance.owner,
+          createdBy: req.user,
+          notes: note,
+          sourceBalance: existingBalance._id,
+        });
+      } catch (error) {
+        // Put the original debt back so the remainder is not silently lost
+        await Balance.updateOne(
+          { _id: id },
+          { $set: { status: existingBalance.status, amount: existingBalance.amount }, $unset: { manualClosure: 1 } }
+        );
+        throw error;
+      }
+
+      closedBalance.manualClosure.lostBalance = lostBalance._id;
+      await closedBalance.save();
+    }
+
+    res.status(200).json(closedBalance);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
+  }
+}
+
+// Admin only: remove a debt that was created by mistake.
+// Debts with payments are refused - those payments already changed the wallet and statements.
+module.exports.deleteBalance = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const balance = await Balance.findOne({ _id: id }).populate('owner', 'customerId');
+    if (!balance) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
+
+    if ((balance.paymentHistory || []).length > 0) {
+      return next(new ErrorHandler(400, errorMessages.BALANCE_HAS_PAYMENTS));
+    }
+
+    await Balance.deleteOne({ _id: id });
+
+    // A debt closed by hand has a matching 'lost' remainder; it goes with it.
+    // Deleting that 'lost' remainder instead leaves the closed debt, but drops its link.
+    if (balance.manualClosure?.lostBalance) {
+      await Balance.deleteOne({ _id: balance.manualClosure.lostBalance });
+    }
+    if (balance.sourceBalance) {
+      await Balance.updateOne({ _id: balance.sourceBalance }, { $unset: { 'manualClosure.lostBalance': 1 } });
+    }
+
+    await Activities.create({
+      user: req.user,
+      details: {
+        path: '/balances',
+        status: 'deleted',
+        type: 'debt',
+        actionId: String(balance._id),
+      },
+      changedFields: [
+        { label: 'Customer', value: balance.owner?.customerId || String(balance.owner?._id || '') },
+        { label: 'Amount', value: `${balance.initialAmount} ${balance.currency}` },
+        { label: 'Status', value: balance.status },
+        { label: 'Notes', value: balance.notes },
+      ],
+    });
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
   }
 }
 

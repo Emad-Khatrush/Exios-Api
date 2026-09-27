@@ -29,6 +29,9 @@ exports.errorMessages = {
   BALANCE_ALREADY_PAID: 'balance-already-paid',
   BALANCE_RATE_ZERO: 'balance-rate-zero',
   BALANCE_NOT_ENOUGH: 'balance-not-enough',
+  BALANCE_NOT_CLOSABLE: 'balance-not-closable',
+  BALANCE_HAS_PAYMENTS: 'balance-has-payments',
+  BALANCE_ORDER_CUSTOMER_MISMATCH: 'balance-order-customer-mismatch',
   // Invetnory errors
   INVENTORY_NOT_FOUND: 'inventory-not-found',
   // Invetnory errors
