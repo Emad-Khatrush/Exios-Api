@@ -20,7 +20,8 @@ const inventorySchema = new Schema({
   shippedCountry: {
     type: String,
     required: true,
-    enum: ['CN', 'UAE', 'TR', 'USA', 'UK']
+    // LY: goods already in Libya (office warehouses and internal shipping between offices)
+    enum: ['CN', 'UAE', 'TR', 'USA', 'UK', 'LY']
   },
   inventoryPlace: {
     type: String,

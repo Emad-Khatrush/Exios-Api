@@ -45,6 +45,9 @@ router.route('/inventory/:inventoryId/expenses')
 router.route('/warehouse/:office/goods')
     .get(protect, allowAdminsAndEmployee, inventory.getWarehouseInventory)
 
+router.route('/warehouse/:office/internalShipping')
+    .post(protect, allowAdminsAndEmployee, inventory.createInternalShipping)
+
 router.route('/warehouse/:office/check')
     .post(protect, allowAdminsAndEmployee, inventory.submitWarehouseCheck)
 

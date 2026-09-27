@@ -495,10 +495,9 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
     // hardcoding an inventory id that breaks when the warehouse is recreated.
     let inventoryId = req.query.id;
     if (req.query.office) {
-      const warehouse = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: req.query.office })
-        .sort({ createdAt: -1 })
-        .select('_id');
-      if (!warehouse) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+      if (!WAREHOUSE_OFFICES.includes(req.query.office)) return next(new ErrorHandler(400, 'Unknown office'));
+      // Created on first use, so moving packages to an office with no warehouse yet works
+      const warehouse = await getOrCreateWarehouse(req.query.office, req.user);
       inventoryId = warehouse._id;
     }
 
@@ -659,9 +658,42 @@ module.exports.deleteFiles = async (req, res, next) => {
   }
 }
 
+const WAREHOUSE_OFFICES = ['tripoli', 'benghazi'];
+const WAREHOUSE_NAMES = { tripoli: 'مخزن طرابلس', benghazi: 'مخزن بنغازي' };
+
+// The office warehouse is the newest 'warehouseInventory' of that office. When an office has
+// none yet it is created here, so the warehouse page and "move to warehouse" never hit a 404.
+// The upsert is atomic, so two requests at the same time still end up with one warehouse.
+const getOrCreateWarehouse = async (office, user) => {
+  const existing = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: office })
+    .sort({ createdAt: -1 })
+    .select('_id');
+  if (existing) return existing;
+
+  return Inventory.findOneAndUpdate(
+    { inventoryType: 'warehouseInventory', inventoryPlace: office },
+    {
+      $setOnInsert: {
+        inventoryType: 'warehouseInventory',
+        inventoryPlace: office,
+        voyage: WAREHOUSE_NAMES[office],
+        shippedCountry: 'LY',
+        shippingType: 'domestic',
+        status: 'processing',
+        createdBy: user?._id,
+        orders: [],
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  ).select('_id');
+};
+
 module.exports.getWarehouseInventory = async (req, res, next) => {
   try {
     const { office } = req.params;
+    if (!WAREHOUSE_OFFICES.includes(office)) return next(new ErrorHandler(400, 'Unknown office'));
+
+    await getOrCreateWarehouse(office, req.user);
     const inventory = await Inventory.find({ inventoryType: 'warehouseInventory', inventoryPlace: office }).sort({ createdAt: -1 }).populate(['createdBy', 'orders']);
     if (inventory.length === 0) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
 
@@ -947,5 +979,90 @@ module.exports.createReturnedPayment = async (req, res, next) => {
     res.status(200).json(returnedPayment);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
+  }
+}
+
+// Internal shipping (شحن داخلي): send selected packages out of an office warehouse.
+// Creates a new domestic inventory holding them, then removes them from the warehouse.
+module.exports.createInternalShipping = async (req, res, next) => {
+  try {
+    const { office } = req.params;
+    const { paymentListIds, voyage, destination, note } = req.body || {};
+
+    if (!WAREHOUSE_OFFICES.includes(office)) return next(new ErrorHandler(400, 'Unknown office'));
+    if (!WAREHOUSE_OFFICES.includes(destination)) return next(new ErrorHandler(400, 'Choose the destination office'));
+    if (!String(voyage || '').trim()) return next(new ErrorHandler(400, 'Shipment name is required'));
+    if (!Array.isArray(paymentListIds) || paymentListIds.length === 0) {
+      return next(new ErrorHandler(400, 'Select at least one package'));
+    }
+
+    const warehouse = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: office }).sort({ createdAt: -1 });
+    if (!warehouse) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+
+    // Every selected package must still be in this warehouse (someone may have moved or deleted it meanwhile)
+    const inWarehouse = new Set((warehouse.orders || []).map(order => String(order.paymentList?._id)));
+    const requested = Array.from(new Set(paymentListIds.map(String)));
+    const missing = requested.filter(id => !inWarehouse.has(id));
+    if (missing.length > 0) {
+      return next(new ErrorHandler(409, `${missing.length} of the selected packages are no longer in this warehouse. Refresh the page and try again.`));
+    }
+
+    // Fresh copies of the packages, the same way packages are added to any inventory
+    const objectIds = requested.map(id => new ObjectId(id));
+    const orders = await Orders.aggregate([
+      { $unwind: '$paymentList' },
+      { $match: { 'paymentList._id': { $in: objectIds } } }
+    ]);
+
+    const shipment = await Inventory.create({
+      createdBy: req.user,
+      inventoryType: 'inventoryGoods',
+      shippingType: 'domestic',
+      shippedCountry: 'LY',
+      inventoryPlace: destination,
+      voyage: String(voyage).trim(),
+      note: [`شحن داخلي من ${WAREHOUSE_NAMES[office]}`, String(note || '').trim()].filter(Boolean).join('\n'),
+      status: 'processing',
+      orders,
+    });
+
+    // Raw driver $pull, see deleteWarehousePackage for why Mongoose can't be used here.
+    // If it fails, remove the new shipment so the packages are not in two places.
+    try {
+      await Inventory.collection.updateOne(
+        { _id: warehouse._id },
+        {
+          $pull: {
+            orders: {
+              $or: [
+                { 'paymentList._id': { $in: requested } },
+                { 'paymentList._id': { $in: objectIds } }
+              ]
+            }
+          }
+        }
+      );
+    } catch (error) {
+      await Inventory.deleteOne({ _id: shipment._id });
+      throw error;
+    }
+
+    await Activities.create({
+      user: req.user,
+      details: {
+        path: `/inventory/${shipment._id}/edit`,
+        status: 'added',
+        type: 'inventory',
+        actionId: String(shipment._id),
+      },
+      changedFields: [
+        { label: 'Internal shipping', value: `${requested.length} packages from ${office} to ${destination}` },
+      ],
+    });
+
+    res.status(200).json({ _id: shipment._id, voyage: shipment.voyage, movedCount: requested.length });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, error.message));
   }
 }

@@ -1,6 +1,7 @@
 const express = require('express');
 
 const orders = require('../controllers/orders');
+const ordersControl = require('../controllers/ordersControl');
 const { protect, isAdmin, isClient, allowAdminsAndAccountants, allowAdminsAndEmployee } = require('../middleware/check-auth');
 const multer = require('multer');
 // cloudinary settings
@@ -62,6 +63,10 @@ router.route('/order/:id/cancel')
 
 router.route('/order/:id/addActivity')
       .post(protect, allowAdminsAndEmployee, orders.createOrderActivity)
+
+// X-Tracking > مراقبة الطلبيات: every open package with its stage and automatic checks (read-only)
+router.route('/orders/control')
+      .get(protect, isAdmin, ordersControl.getOrdersControl)
 
 router.route('/orders/rating')
       .get(protect, isAdmin, orders.getRatings)
