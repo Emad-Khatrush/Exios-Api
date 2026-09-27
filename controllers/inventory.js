@@ -864,7 +864,18 @@ module.exports.updateInventory = async (req, res, next) => {
     const { id } = req.query;
     if (!id) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
 
-    const updatedInventory = await Inventory.updateOne({ _id: id }, { ...req.body }, { new: true });
+    const update = { ...req.body };
+
+    // The ready date (inventoryFinishedDate) is the day the inventory is marked finished (اكتملت).
+    // Set it here when the status changes to finished and no date was sent with it.
+    if (update.status === 'finished' && !update.inventoryFinishedDate) {
+      const current = await Inventory.findById(id).select('status');
+      if (current && current.status !== 'finished') {
+        update.inventoryFinishedDate = new Date();
+      }
+    }
+
+    const updatedInventory = await Inventory.updateOne({ _id: id }, update, { new: true });
 
     res.status(200).json(updatedInventory);
   } catch (error) {
