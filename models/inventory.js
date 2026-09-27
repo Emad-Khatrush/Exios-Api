@@ -30,7 +30,12 @@ const inventorySchema = new Schema({
   inventoryFinishedDate: {
     type: Date,
   },
+  // No longer shown in the admin (replaced by arrivalDate); kept for existing records
   departureDate: {
+    type: Date,
+  },
+  // The day the shipment arrived in Libya
+  arrivalDate: {
     type: Date,
   },
   voyageAmount: Number,

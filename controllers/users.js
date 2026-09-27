@@ -229,6 +229,50 @@ module.exports.updateCustomerId = async (req, res, next) => {
   }
 }
 
+// Admin only: edit a customer's basic info from the admin panel (Customer > Settings)
+module.exports.updateCustomerInfo = async (req, res, next) => {
+  const { id } = req.params;
+  const firstName = String(req.body.firstName || '').trim();
+  const lastName = String(req.body.lastName || '').trim();
+  const username = String(req.body.username || '').trim();
+  const city = String(req.body.city || '').trim();
+  // Stored the same way login reads it (no +, 00, 218 or leading 0)
+  const phoneText = formatPhoneNumber(String(req.body.phone || ''));
+  const phone = Number(phoneText);
+
+  if (!firstName || !lastName || !username || !phoneText) {
+    return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
+  }
+  if (!/^\d+$/.test(phoneText) || !Number.isFinite(phone)) {
+    return next(new ErrorHandler(400, 'Phone number can only contain digits'));
+  }
+
+  try {
+    const user = await User.findById(id);
+    if (!user) return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
+
+    // Login looks users up by username (any letter case) or by phone, so both must stay unique
+    const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const usernameTaken = await User.findOne({ _id: { $ne: id }, username: { $regex: `^${escapedUsername}$`, $options: 'i' } });
+    if (usernameTaken) return next(new ErrorHandler(400, errorMessages.USER_EXIST));
+
+    const phoneTaken = await User.findOne({ _id: { $ne: id }, phone });
+    if (phoneTaken) return next(new ErrorHandler(400, errorMessages.PHONE_EXIST));
+
+    user.firstName = firstName;
+    user.lastName = lastName;
+    user.username = username;
+    user.phone = phone;
+    user.city = city || undefined;
+    await user.save();
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
+  }
+}
+
 const MAX_SPECIAL_PRICE_CATEGORIES = 20;
 const MAX_CATEGORY_NAME_LENGTH = 40;
 

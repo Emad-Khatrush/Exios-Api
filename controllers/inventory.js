@@ -212,7 +212,7 @@ module.exports.getInventoriesNotFinishCalculation = async (req, res, next) => {
 
 module.exports.createInventory = async (req, res, next) => {
   try {
-    const { inventoryFinishedDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note, costPrice, odoReferenceCode } = req.body;
+    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note, costPrice, odoReferenceCode } = req.body;
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -237,6 +237,7 @@ module.exports.createInventory = async (req, res, next) => {
       createdBy: req.user,
       attachments,
       inventoryFinishedDate,
+      arrivalDate: arrivalDate || undefined,
       voyageAmount,
       voyage,
       shippedCountry,

@@ -42,6 +42,10 @@ router.route('/account/passport/upload')
 router.route('/customerId/:id/update')
       .put(protect, allowAdminsAndEmployee, users.updateCustomerId);
 
+// Only admins can edit a customer's name, username, phone and city
+router.route('/customer/:id/info')
+      .put(protect, isAdmin, users.updateCustomerInfo);
+
 // Only admins set special prices; employees see them when creating shipment invoices
 router.route('/customer/:id/specialPrices')
       .put(protect, allowAdminsAndAccountants, allowAdminsAndEmployee, users.updateSpecialPrices);
