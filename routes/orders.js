@@ -35,6 +35,10 @@ router.route('/currentOrdersTab')
 router.route('/orders/search')
       .get(protect, allowAdminsAndEmployee, orders.getOrdersBySearch)
 
+// X-Tracking: stages with counts, one-box search, office/method/service filters
+router.route('/orders/tracking')
+      .get(protect, allowAdminsAndEmployee, orders.getTrackingOrders)
+
 router.route('/unsureOrder/add')
       .post(protect, allowAdminsAndEmployee, orders.createUnsureOrder);
 

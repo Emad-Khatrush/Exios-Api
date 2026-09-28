@@ -190,14 +190,25 @@ module.exports.getLatestStatements = async (req, res, next) => {
     if (req.query.withSummary === 'true') {
       const groups = await UserStatement.aggregate([
         { $match: query },
-        { $group: { _id: { type: '$calculationType', currency: '$currency' }, amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+        { $group: {
+            _id: { type: '$calculationType', actionType: '$actionType', paymentType: '$paymentType', currency: '$currency' },
+            amount: { $sum: '$amount' },
+            count: { $sum: 1 },
+        } },
       ]);
-      const pick = (type, currency) => groups.find((g) => g._id.type === type && g._id.currency === currency);
-      summary = {
-        count: totalCount,
-        deposits: { USD: pick('+', 'USD')?.amount || 0, LYD: pick('+', 'LYD')?.amount || 0, count: groups.filter((g) => g._id.type === '+').reduce((s, g) => s + g.count, 0) },
-        payments: { USD: pick('-', 'USD')?.amount || 0, LYD: pick('-', 'LYD')?.amount || 0, count: groups.filter((g) => g._id.type === '-').reduce((s, g) => s + g.count, 0) },
+      // Same rule as the customer statement: only cash/bank deposits and cash withdrawals
+      // are real money. Refunds, compensation and cancellations only credit the wallet.
+      const flowOf = ({ type, actionType, paymentType }) => {
+        if (type === '-') return actionType === 'withdrawal' || paymentType === 'withdrawal' ? 'cashOut' : 'spent';
+        return ['refund', 'compensation', 'cancellation', 'wallet'].includes(actionType) ? 'credit' : 'cashIn';
       };
+      const empty = () => ({ USD: 0, LYD: 0, count: 0 });
+      summary = { count: totalCount, cashIn: empty(), credit: empty(), spent: empty(), cashOut: empty() };
+      groups.forEach(({ _id, amount, count }) => {
+        const bucket = summary[flowOf(_id)];
+        if (_id.currency === 'USD' || _id.currency === 'LYD') bucket[_id.currency] += amount || 0;
+        bucket.count += count;
+      });
     }
 
     // 6. Send response

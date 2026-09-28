@@ -65,7 +65,7 @@ module.exports.getInvoices = async (req, res, next) => {
     }
 
     let orders = await Orders.aggregate(query); 
-    orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
+    orders = await Orders.populate(orders, [{ path: "madeBy", select: "-password" }, { path: "user", select: "-password" }]);
 
     let ordersCountList = (await Orders.aggregate([
       { $match: { isCanceled: false } },
@@ -257,7 +257,7 @@ module.exports.getOrders = async (req, res, next) => {
 
     const tabTypeQuery = getTapTypeQuery(tabType);
     tabTypeQuery.isCanceled = false;
-    const orders = await Orders.find(tabTypeQuery).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit);
+    const orders = await Orders.find(tabTypeQuery).populate('user', TRACKING_USER_FIELDS).sort({ createdAt: -1 }).skip(skip).limit(limit);
     
     let ordersCountList = (await Orders.aggregate([
       { $match: { isCanceled: false } },
@@ -394,13 +394,113 @@ module.exports.getOrders = async (req, res, next) => {
   }
 }
 
+// ---------- X-Tracking ----------
+
+// Only what the admin needs to recognise the customer - never the whole user document.
+const TRACKING_USER_FIELDS = 'firstName lastName customerId phone imgUrl';
+
+// Stages shown as chips on X-Tracking, in pipeline order. Each reuses the same rule as the
+// old tabs (getTapTypeQuery) so counts and lists always agree.
+const TRACKING_STAGES = ['all', 'active', 'unpaid', 'arriving', 'arrivedWarehouse', 'readyForPickup', 'finished', 'hasProblem', 'hasRemainingPayment', 'unsure'];
+
+const trackingStageQuery = (stage) => (stage === 'all' ? {} : getTapTypeQuery(stage));
+
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Filters shared by the list and the stage counts: office, shipping method, service type and search.
+const buildTrackingFilter = async (query) => {
+  const filter = { isCanceled: false };
+  if (query.office) filter.placedAt = String(query.office);
+  if (['air', 'sea'].includes(query.method)) filter['shipment.method'] = query.method;
+  if (query.service === 'purchase') filter.isPayment = true;
+  if (query.service === 'shipping') filter.isPayment = false;
+
+  // One box searches everything: order ID, customer name/ID, phone, tracking, receipt and container numbers.
+  const search = String(query.search || '').trim();
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), 'i');
+    const users = await Users.find({ customerId: pattern }).select('_id').limit(500).lean();
+    filter.$or = [
+      { orderId: pattern },
+      { 'customerInfo.fullName': pattern },
+      { 'customerInfo.phone': pattern },
+      { 'paymentList.deliveredPackages.trackingNumber': pattern },
+      { 'paymentList.deliveredPackages.receiptNo': pattern },
+      { 'paymentList.deliveredPackages.containerInfo.billOfLading': pattern },
+      ...(users.length ? [{ user: { $in: users.map((u) => u._id) } }] : []),
+    ];
+  }
+  return filter;
+};
+
+// Query: stage, search, office, method (air|sea), service (purchase|shipping),
+// sort (recent|waiting), skip, limit. Returns the page, its total and a count per stage
+// for the same filters, so every chip shows how many orders it would show.
+module.exports.getTrackingOrders = async (req, res, next) => {
+  try {
+    const stage = TRACKING_STAGES.includes(req.query.stage) ? req.query.stage : 'active';
+    const skip = Math.max(parseInt(req.query.skip, 10) || 0, 0);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const sortByWaiting = req.query.sort === 'waiting';
+
+    const baseFilter = await buildTrackingFilter(req.query);
+    // Stage rules carry their own $or/$and, so combine with $and instead of spreading keys
+    const listFilter = { $and: [baseFilter, trackingStageQuery(stage)] };
+
+    const [orders, total, countRows] = await Promise.all([
+      Orders.aggregate([
+        { $match: listFilter },
+        { $addFields: { lastActivityAt: { $ifNull: [{ $max: '$activity.createdAt' }, '$createdAt'] } } },
+        // "Waiting longest" puts the orders nobody has updated for the longest time first
+        { $sort: sortByWaiting ? { lastActivityAt: 1, _id: 1 } : { createdAt: -1, _id: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        { $project: {
+            orderId: 1, customerInfo: 1, user: 1, placedAt: 1, shipment: 1, productName: 1,
+            totalInvoice: 1, orderStatus: 1, isPayment: 1, isShipment: 1, isFinished: 1,
+            unsureOrder: 1, hasProblem: 1, hasRemainingPayment: 1, orderNote: 1, createdAt: 1,
+            debt: 1, credit: 1, lastActivityAt: 1,
+            lastActivity: { $arrayElemAt: ['$activity', -1] },
+            images: { $slice: [{ $ifNull: ['$images', []] }, 6] },
+            imagesCount: { $size: { $ifNull: ['$images', []] } },
+            packages: { $map: {
+              input: { $ifNull: ['$paymentList', []] },
+              as: 'p',
+              in: {
+                _id: '$$p._id',
+                trackingNumber: '$$p.deliveredPackages.trackingNumber',
+                received: '$$p.status.received',
+                arrivedLibya: '$$p.status.arrivedLibya',
+                mark: '$$p.mark',
+              },
+            } },
+        } },
+      ]).allowDiskUse(true),
+      Orders.countDocuments(listFilter),
+      Orders.aggregate([
+        { $match: baseFilter },
+        { $facet: Object.fromEntries(TRACKING_STAGES.map((key) => [key, [{ $match: trackingStageQuery(key) }, { $count: 'n' }]])) },
+      ]).allowDiskUse(true),
+    ]);
+
+    await Orders.populate(orders, { path: 'user', select: TRACKING_USER_FIELDS });
+
+    const counts = Object.fromEntries(TRACKING_STAGES.map((key) => [key, countRows[0]?.[key]?.[0]?.n || 0]));
+    const offices = await Orders.distinct('placedAt', { isCanceled: false });
+
+    res.status(200).json({ orders, total, counts, stage, skip, limit, offices: offices.filter(Boolean).sort() });
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
 module.exports.getOrdersTab = async (req, res, next) => {
   try {
     const { limit, skip, tabType } = req.query;
 
     const tabTypeQuery = getTapTypeQuery(tabType);
     tabTypeQuery.isCanceled = false;
-    const orders = await Orders.find(tabTypeQuery).populate('user').sort({ createdAt: -1 }).skip(skip).limit(limit);
+    const orders = await Orders.find(tabTypeQuery).populate('user', TRACKING_USER_FIELDS).sort({ createdAt: -1 }).skip(skip).limit(limit);
     const totalOrders = await Orders.countDocuments();
     
     res.status(200).json({
@@ -509,7 +609,9 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
         as: "user"
       }
     },
-    { $unwind: "$user" }
+    { $unwind: "$user" },
+    // Never send login secrets to the browser
+    { $project: { "user.password": 0 } }
   );
 
   // Always keep $sort at the end

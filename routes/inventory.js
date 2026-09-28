@@ -12,8 +12,10 @@ router.route('/inventory')
       .post(protect, allowAdminsAndEmployee, upload.array('files'), inventory.createInventory)
       .put(protect, allowAdminsAndEmployee, inventory.updateInventory);
 
-router.route('/inventory/calculationNotReady')
-      .get(protect, allowAdminsAndEmployee, inventory.getInventoriesNotFinishCalculation)
+// Admin flight board (open / needs attention / finished air & sea flights).
+// Must come before /inventory/:id.
+router.route('/inventory/flights')
+      .get(protect, isAdmin, inventory.getFlights)
 
 router.route('/inventory/orders')
     .get(protect, allowAdminsAndEmployee, inventory.getInventoryOrders)

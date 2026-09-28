@@ -45,13 +45,30 @@ module.exports.getInventory = async (req, res, next) => {
       }
     }
 
-    // Handle searchValue with text search
-    if (searchValue) {
+    // Partial search: any part of a voyage, order ID or tracking number matches
+    // (the text index only matched whole words, so half a tracking number found nothing).
+    const search = String(searchValue || '').trim();
+    if (search) {
+      const pattern = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const orderMatch = { $or: [{ orderId: pattern }, { 'paymentList.deliveredPackages.trackingNumber': pattern }] };
+      // Packages found on the live orders, since the copies kept on the inventory can be outdated
+      const livePackages = await Orders.aggregate([
+        { $match: orderMatch },
+        { $unwind: '$paymentList' },
+        { $match: orderMatch },
+        { $limit: 2000 },
+        { $project: { _id: 0, id: '$paymentList._id' } },
+      ]);
       query = [
         {
           $match: {
             inventoryType: 'inventoryGoods',
-            $text: { $search: searchValue.trim().toLowerCase() } // Use text index for faster search
+            $or: [
+              { voyage: pattern },
+              { 'orders.orderId': pattern },
+              { 'orders.paymentList.deliveredPackages.trackingNumber': pattern },
+              { 'orders.paymentList._id': { $in: livePackages.map((p) => p.id) } },
+            ],
           }
         },
         {
@@ -69,37 +86,32 @@ module.exports.getInventory = async (req, res, next) => {
     // Aggregation pipeline
     const inventoryPipeline = [...query];
 
-    // Add $lookup stages for populating createdBy and orders
+    // The list only needs package counts, not every embedded order (see attachFlightStats)
     inventoryPipeline.push(
       {
         $lookup: {
-          from: "users", // Replace with the actual collection name for createdBy
+          from: "users",
           localField: "createdBy",
           foreignField: "_id",
           as: "createdBy",
           pipeline: [
-            { $project: { username: 1, email: 1 } } // Fetch only necessary fields
+            { $project: { username: 1, firstName: 1, lastName: 1 } }
           ]
         }
       },
       {
-        $unwind: "$createdBy" // Flatten the array created by $lookup
+        $unwind: { path: "$createdBy", preserveNullAndEmptyArrays: true }
       },
       {
-        $lookup: {
-          from: "orders", // Replace with the actual collection name for orders
-          localField: "orders",
-          foreignField: "_id",
-          as: "orders",
-          pipeline: [
-            { $project: { orderId: 1, paymentList: 1 } } // Fetch only necessary fields
-          ]
-        }
+        $addFields: { packageIds: "$orders.paymentList._id" }
+      },
+      {
+        $project: { orders: 0, expenses: 0 }
       }
     );
 
     // Execute the aggregation query
-    let inventory = await Inventory.aggregate(inventoryPipeline);
+    let inventory = await attachFlightStats(await Inventory.aggregate(inventoryPipeline));
 
     // If no inventory found, return an error
     if (!inventory) {
@@ -182,33 +194,167 @@ module.exports.getInventory = async (req, res, next) => {
   }
 };
 
-module.exports.getInventoriesNotFinishCalculation = async (req, res, next) => {
-  try {
-    const skip = parseInt(req.query.skip) || 0;
-    const limit = parseInt(req.query.limit) || 10;
-    const shippingType = req.query.shippingType;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FLIGHT_TYPES = ['air', 'sea'];
+const STALE_OPEN_DAYS = 30;
+const EMPTY_FLIGHT_DAYS = 7;
 
-    const query = {
-      $or: [
-        { isCaclulationDone: { $exists: false } },
-        { isCaclulationDone: false },
-        { isCaclulationDone: null }
-      ],
-      inventoryType: 'inventoryGoods',
-      shippingType: shippingType || { $ne: 'domestic' }
+// Package counts and weights for each inventory, read from the live orders (the copies
+// embedded in inventory.orders go stale). Expects `packageIds` (orders.paymentList._id)
+// on every inventory and replaces it with `stats`.
+const attachFlightStats = async (inventories) => {
+  const ids = inventories.flatMap((inv) => inv.packageIds || []).filter((id) => id && ObjectId.isValid(id)).map((id) => new ObjectId(id));
+  const rows = ids.length ? await Orders.aggregate([
+    { $match: { 'paymentList._id': { $in: ids } } },
+    { $unwind: '$paymentList' },
+    { $match: { 'paymentList._id': { $in: ids } } },
+    { $project: {
+        _id: 0,
+        id: '$paymentList._id',
+        received: '$paymentList.status.received',
+        mark: '$paymentList.mark',
+        weight: '$paymentList.deliveredPackages.weight.total',
+        unit: '$paymentList.deliveredPackages.weight.measureUnit',
+    } },
+  ]) : [];
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+
+  return inventories.map(({ packageIds, ...inv }) => {
+    const packages = [...new Set((packageIds || []).filter(Boolean).map(String))].map((id) => byId.get(id)).filter(Boolean);
+    const stats = {
+      packagesCount: packages.length,
+      receivedCount: packages.filter((p) => p.received).length,
+      missingCount: packages.filter((p) => p.mark === 'missing').length,
+      totalKG: packages.filter((p) => p.unit === 'KG').reduce((sum, p) => sum + (p.weight || 0), 0),
+      totalCBM: packages.filter((p) => p.unit === 'CBM').reduce((sum, p) => sum + (p.weight || 0), 0),
     };
+    return { ...inv, stats };
+  });
+};
 
-    const inventories = await Inventory.find(query)
-      .populate('createdBy')
-      .sort({ createdAt: -1 }) // newest first
-      .skip(skip)
-      .limit(limit);
+// Expenses in USD; LYD expenses without an exchange rate are kept apart so nothing is guessed.
+const summarizeExpenses = (expenses = []) => {
+  let usd = 0;
+  let unconvertedLYD = 0;
+  expenses.forEach((exp) => {
+    if (exp.currency === 'USD') usd += exp.amount || 0;
+    else if (exp.rate > 0) usd += (exp.amount || 0) / exp.rate;
+    else unconvertedLYD += exp.amount || 0;
+  });
+  return { usd, unconvertedLYD, count: expenses.length };
+};
 
-    res.status(200).json({ results: inventories });
+// Things on an open flight that someone should look at. Each one is actionable.
+const flightFlags = (flight, now = Date.now()) => {
+  if (flight.status === 'finished') return [];
+  const flags = [];
+  const { stats } = flight;
+  const openedAt = new Date(flight.arrivalDate || flight.createdAt).getTime();
+
+  if (stats.packagesCount > 0 && stats.receivedCount === stats.packagesCount) flags.push('readyToClose');
+  if (stats.missingCount > 0) flags.push('missingPackages');
+  if (stats.packagesCount === 0 && now - new Date(flight.createdAt).getTime() > EMPTY_FLIGHT_DAYS * DAY_MS) flags.push('noPackages');
+  if (!flight.arrivalDate) flags.push('noArrivalDate');
+  if (!flight.expenses?.length) flags.push('noExpenses');
+  if (now - openedAt > STALE_OPEN_DAYS * DAY_MS) flags.push('openTooLong');
+  return flags;
+};
+
+const toFlight = (inv, now) => {
+  const money = summarizeExpenses(inv.expenses);
+  const unitWeight = inv.shippingType === 'sea' ? inv.stats.totalCBM : inv.stats.totalKG;
+  const openedAt = new Date(inv.arrivalDate || inv.createdAt).getTime();
+  return {
+    _id: inv._id,
+    voyage: inv.voyage,
+    shippingType: inv.shippingType,
+    shippedCountry: inv.shippedCountry,
+    inventoryPlace: inv.inventoryPlace,
+    status: inv.status,
+    arrivalDate: inv.arrivalDate,
+    inventoryFinishedDate: inv.inventoryFinishedDate,
+    createdAt: inv.createdAt,
+    note: inv.note,
+    attachmentsCount: inv.attachments?.length || 0,
+    stats: inv.stats,
+    expenses: money,
+    // Shipping cost per KG (air) or per CBM (sea), from the expenses recorded so far
+    costPerUnit: unitWeight > 0 && money.usd > 0 ? money.usd / unitWeight : null,
+    daysOpen: inv.status === 'finished' ? null : Math.max(0, Math.floor((now - openedAt) / DAY_MS)),
+    flags: flightFlags(inv, now),
+  };
+};
+
+// Admin flight board. Query: view (open | attention | finished), shippingType (air | sea),
+// office, search (voyage), skip, limit. Open flights are few, so they're always scored in
+// full to give the attention count; finished flights are paged in the database.
+module.exports.getFlights = async (req, res, next) => {
+  try {
+    const view = ['open', 'attention', 'finished'].includes(req.query.view) ? req.query.view : 'open';
+    const skip = Math.max(parseInt(req.query.skip, 10) || 0, 0);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+
+    const match = {
+      inventoryType: 'inventoryGoods',
+      shippingType: FLIGHT_TYPES.includes(req.query.shippingType) ? req.query.shippingType : { $in: FLIGHT_TYPES },
+    };
+    if (['tripoli', 'benghazi'].includes(req.query.office)) match.inventoryPlace = req.query.office;
+    const search = String(req.query.search || '').trim();
+    if (search) match.voyage = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+    const projection = { orders: 0 };
+    const withIds = (docs) => docs.map((doc) => ({ ...doc, packageIds: (doc.orderIds || []).map((o) => o?.paymentList?._id) }));
+    const load = (filter, options = {}) => Inventory.aggregate([
+      { $match: filter },
+      { $sort: options.sort || { createdAt: -1 } },
+      ...(options.skip ? [{ $skip: options.skip }] : []),
+      ...(options.limit ? [{ $limit: options.limit }] : []),
+      { $addFields: { orderIds: { $map: { input: { $ifNull: ['$orders', []] }, as: 'o', in: { paymentList: { _id: '$$o.paymentList._id' } } } } } },
+      { $project: projection },
+    ]);
+
+    const now = Date.now();
+    const openFlights = (await attachFlightStats(withIds(await load({ ...match, status: { $ne: 'finished' } }))))
+      .map((inv) => toFlight(inv, now))
+      // Longest-waiting first, so the oldest open flights are handled first
+      .sort((a, b) => (b.daysOpen || 0) - (a.daysOpen || 0));
+    const attention = openFlights.filter((f) => f.flags.length > 0);
+    const finishedCount = await Inventory.countDocuments({ ...match, status: 'finished' });
+
+    let results;
+    let total;
+    if (view === 'finished') {
+      const page = await load({ ...match, status: 'finished' }, { sort: { inventoryFinishedDate: -1, createdAt: -1 }, skip, limit });
+      results = (await attachFlightStats(withIds(page))).map((inv) => toFlight(inv, now));
+      total = finishedCount;
+    } else {
+      const list = view === 'attention' ? attention : openFlights;
+      results = list.slice(skip, skip + limit);
+      total = list.length;
+    }
+
+    const sum = (list, pick) => list.reduce((acc, f) => acc + (pick(f) || 0), 0);
+    res.status(200).json({
+      results,
+      total,
+      skip,
+      limit,
+      counts: { open: openFlights.length, attention: attention.length, finished: finishedCount },
+      // Totals across every open flight matching the type/office/search filters
+      openSummary: {
+        packages: sum(openFlights, (f) => f.stats.packagesCount),
+        received: sum(openFlights, (f) => f.stats.receivedCount),
+        totalKG: sum(openFlights, (f) => f.stats.totalKG),
+        totalCBM: sum(openFlights, (f) => f.stats.totalCBM),
+        expensesUSD: sum(openFlights, (f) => f.expenses.usd),
+        readyToClose: openFlights.filter((f) => f.flags.includes('readyToClose')).length,
+      },
+    });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(500, error.message));
   }
 };
+
 
 module.exports.createInventory = async (req, res, next) => {
   try {
