@@ -629,7 +629,10 @@ const deliveredInRange = (start, end, extra = {}) => ({
   ...extra,
 });
 
-const sumMeasure = (groups, unit) => groups.filter(g => (g._id.unit ?? g._id) === unit).reduce((sum, g) => sum + (g.totalWeight || 0), 0);
+// Groups are keyed either by the unit itself or by { office, unit }. Packages saved without a
+// measure unit come back with a null key, so read it defensively (they count as packages only).
+const unitOf = (group) => (group._id && typeof group._id === 'object' ? group._id.unit : group._id);
+const sumMeasure = (groups, unit) => groups.filter(g => unitOf(g) === unit).reduce((sum, g) => sum + (g.totalWeight || 0), 0);
 const sumPackages = (groups) => groups.reduce((sum, g) => sum + (g.packagesCount || 0), 0);
 
 // Delivered KG/CBM/packages between start and end
