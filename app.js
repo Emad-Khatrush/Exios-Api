@@ -862,27 +862,52 @@ async function sendMessage(waClient, jid, text) {
 /**
  * Saves the number as a contact on the linked phone (synced to its address
  * book) under the given name. Skipped when it's already saved under any name,
- * so existing names are kept. Failures are logged and ignored so the message
- * still goes out.
+ * so existing names are kept. After saving, it re-reads the contact until
+ * WhatsApp confirms it is saved, retrying the save a few times. If it still
+ * can't be confirmed, that's logged and ignored so the message still goes out.
  * @param {Client} waClient
  * @param {string} jid - Target WhatsApp ID (phone_number@c.us)
  * @param {string} name - Contact name (the customerId)
  */
+const CONTACT_SAVE_ATTEMPTS = 3;
+const CONTACT_CONFIRM_CHECKS = 5;
+const CONTACT_CONFIRM_INTERVAL_MS = 2000;
+
+async function isSavedContact(waClient, jid) {
+    const contact = await waClient.getContactById(jid).catch(() => null);
+    return contact?.isMyContact && contact.name ? contact : null;
+}
+
 async function saveContact(waClient, jid, name) {
     if (!waClient || !isWhatsAppReady) {
         throw new Error('whatsup-auth-not-found');
     }
-    try {
-        const existing = await waClient.getContactById(jid).catch(() => null);
-        if (existing?.isMyContact && existing.name) {
-            console.log(`Contact already saved for ${jid} as "${existing.name}", skipping`);
-            return;
-        }
-        await waClient.saveOrEditAddressbookContact(jid.split('@')[0], `${name}`, '', true);
-        console.log(`Contact ${name} saved for ${jid}`);
-    } catch (error) {
-        console.error(`Failed to save contact ${name} for ${jid}:`, error.message);
+    const existing = await isSavedContact(waClient, jid);
+    if (existing) {
+        console.log(`Contact already saved for ${jid} as "${existing.name}", skipping`);
+        return true;
     }
+
+    for (let attempt = 1; attempt <= CONTACT_SAVE_ATTEMPTS; attempt++) {
+        try {
+            await waClient.saveOrEditAddressbookContact(jid.split('@')[0], `${name}`, '', true);
+        } catch (error) {
+            console.error(`Save contact ${name} for ${jid} failed (attempt ${attempt}):`, error.message);
+            continue;
+        }
+        for (let check = 0; check < CONTACT_CONFIRM_CHECKS; check++) {
+            await new Promise((resolve) => setTimeout(resolve, CONTACT_CONFIRM_INTERVAL_MS));
+            const saved = await isSavedContact(waClient, jid);
+            if (saved) {
+                console.log(`Contact ${name} saved and confirmed for ${jid} as "${saved.name}"`);
+                return true;
+            }
+        }
+        console.error(`Contact ${name} for ${jid} not confirmed after save (attempt ${attempt})`);
+    }
+
+    console.error(`Could not confirm contact ${name} for ${jid}, sending message anyway`);
+    return false;
 }
 
 // Identify the real image type from the file's first bytes, since URL
