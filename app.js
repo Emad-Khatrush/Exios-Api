@@ -593,7 +593,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
         })),
       });
 
-      // 5. Hand the list to the worker, which schedules 1 message per minute
+      // 5. Hand the list to the worker, which schedules messages 1-2 minutes apart
       await sendMessageQueue.add('send-large-messages', {
         imgUrl,
         content: rtlContent,
@@ -607,7 +607,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
     return res.status(200).json({
       success: true,
       campaignId: campaign?._id || null,
-      message: `Scheduling ${users.length} messages at 1 per minute (~${users.length} minutes, after any batch already queued)...`
+      message: `Scheduling ${users.length} messages 1-2 minutes apart (~${users.length}-${users.length * 2} minutes, after any batch already queued)...`
     });
 
   } catch (error) {
@@ -622,9 +622,13 @@ sendMessageQueue.process('resume-jobs', 1, async (job) => {
   console.log('Queue resumed.');
 })
 
-const CLIENT_MESSAGE_INTERVAL_MS = 60 * 1000; // 1 message per minute
+// Campaign messages go out 1-2 minutes apart, picked randomly per message.
+const CLIENT_MESSAGE_MIN_INTERVAL_MS = 60 * 1000;
+const CLIENT_MESSAGE_MAX_INTERVAL_MS = 120 * 1000;
+const randomClientInterval = () =>
+  CLIENT_MESSAGE_MIN_INTERVAL_MS + Math.floor(Math.random() * (CLIENT_MESSAGE_MAX_INTERVAL_MS - CLIENT_MESSAGE_MIN_INTERVAL_MS + 1));
 
-// Next free 1-per-minute send slot, worked out from the campaign messages
+// Next free send slot (1-2 minutes after the last one), worked out from the campaign messages
 // actually waiting in the queue (not a stored counter, which kept drifting
 // hours ahead when messages were retried or campaigns deleted). Campaigns
 // sent back-to-back still line up behind each other instead of overlapping.
@@ -636,7 +640,7 @@ async function getNextClientSlot() {
       last = Math.max(last, queued.timestamp + (queued.opts?.delay || 0));
     }
   }
-  return Math.max(Date.now(), last ? last + CLIENT_MESSAGE_INTERVAL_MS : 0);
+  return Math.max(Date.now(), last ? last + randomClientInterval() : 0);
 }
 
 // Schedules every message up front as a delayed job (persisted in Redis), so
@@ -646,6 +650,7 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
   let nextSlot = await getNextClientSlot();
   const firstSlot = nextSlot;
+  let lastSlot = nextSlot;
   let index = 0;
 
   for (const user of users) {
@@ -659,22 +664,23 @@ sendMessageQueue.process('send-large-messages', 1, async (job) => {
 
     index++;
     await sendMessageQueue.add('send-message',
-      { index, imgUrl, content: `\u202B${generatedContent}`, phone: validatePhoneNumber(user.phone), campaign: true, campaignId, userId: user._id ? String(user._id) : undefined },
+      { index, imgUrl, content: `\u202B${generatedContent}`, phone: validatePhoneNumber(user.phone), customerId: user?.customerId, campaign: true, campaignId, userId: user._id ? String(user._id) : undefined },
       { delay: Math.max(0, nextSlot - Date.now()), removeOnComplete: true }
     );
-    nextSlot += CLIENT_MESSAGE_INTERVAL_MS;
+    lastSlot = nextSlot;
+    nextSlot += randomClientInterval();
   }
 
   if (campaignId && index > 0) {
     await Campaign.updateOne(
       { _id: campaignId },
-      { $set: { firstMessageAt: new Date(firstSlot), lastMessageAt: new Date(nextSlot - CLIENT_MESSAGE_INTERVAL_MS) } }
+      { $set: { firstMessageAt: new Date(firstSlot), lastMessageAt: new Date(lastSlot) } }
     ).catch((error) => console.error('Failed to save campaign schedule:', error));
   }
-  console.log(`Scheduled ${index} client messages, 1 per minute, from ${new Date(firstSlot).toISOString()} to ${new Date(nextSlot - CLIENT_MESSAGE_INTERVAL_MS).toISOString()}`);
+  console.log(`Scheduled ${index} client messages, 1-2 minutes apart, from ${new Date(firstSlot).toISOString()} to ${new Date(lastSlot).toISOString()}`);
 });
 
-// Delay from now until the next free 1-per-minute slot.
+// Delay from now until the next free send slot.
 async function claimNextClientSlot() {
   return (await getNextClientSlot()) - Date.now();
 }
@@ -711,9 +717,14 @@ async function updateCampaignProgress(campaignId, userId, status) {
 }
 
 sendMessageQueue.process('send-message', 1, async (job) => {
-  const { index, imgUrl, content, phone, campaign, campaignId, userId, retries = 0 } = job.data;
+  const { index, imgUrl, content, phone, customerId, campaign, campaignId, userId, retries = 0 } = job.data;
 
   try {
+    // Campaign recipients are saved as a phone contact named by their
+    // customerId before messaging them.
+    if (campaign && customerId) {
+      await saveContact(client, validatePhoneNumber(phone), customerId);
+    }
     if (imgUrl) {
       await sendPhoto(client, validatePhoneNumber(phone), imgUrl);
     }
@@ -735,7 +746,7 @@ sendMessageQueue.process('send-message', 1, async (job) => {
     }
 
     // Client campaign retries take the next free slot so they never break
-    // the 1-per-minute rate; other messages keep a short fixed backoff.
+    // the 1-2 minute spacing; other messages keep a short fixed backoff.
     const delay = campaign ? await claimNextClientSlot() : 30000;
     console.log(`Error sending message ${index} (${error?.message}), retrying in ${Math.round(delay / 1000)}s`);
     await sendMessageQueue.add('send-message',
@@ -845,6 +856,32 @@ async function sendMessage(waClient, jid, text) {
     } catch (error) {
         console.error('Failed to send message:', error);
         throw error;
+    }
+}
+
+/**
+ * Saves the number as a contact on the linked phone (synced to its address
+ * book) under the given name. Skipped when it's already saved under any name,
+ * so existing names are kept. Failures are logged and ignored so the message
+ * still goes out.
+ * @param {Client} waClient
+ * @param {string} jid - Target WhatsApp ID (phone_number@c.us)
+ * @param {string} name - Contact name (the customerId)
+ */
+async function saveContact(waClient, jid, name) {
+    if (!waClient || !isWhatsAppReady) {
+        throw new Error('whatsup-auth-not-found');
+    }
+    try {
+        const existing = await waClient.getContactById(jid).catch(() => null);
+        if (existing?.isMyContact && existing.name) {
+            console.log(`Contact already saved for ${jid} as "${existing.name}", skipping`);
+            return;
+        }
+        await waClient.saveOrEditAddressbookContact(jid.split('@')[0], `${name}`, '', true);
+        console.log(`Contact ${name} saved for ${jid}`);
+    } catch (error) {
+        console.error(`Failed to save contact ${name} for ${jid}:`, error.message);
     }
 }
 
