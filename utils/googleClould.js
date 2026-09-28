@@ -56,4 +56,15 @@ const uploadToGoogleCloud = async (file, folderName) => {
   }
 };
 
-module.exports = { uploadToGoogleCloud };
+// Removes an object previously returned by uploadToGoogleCloud, given its public URL.
+const deleteFromGoogleCloud = async (publicUrl) => {
+  const prefix = `https://storage.googleapis.com/${bucket.name}/`;
+  if (typeof publicUrl !== 'string' || !publicUrl.startsWith(prefix)) return;
+  try {
+    await bucket.file(publicUrl.substring(prefix.length)).delete({ ignoreNotFound: true });
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+module.exports = { uploadToGoogleCloud, deleteFromGoogleCloud };

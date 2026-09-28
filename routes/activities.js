@@ -7,4 +7,7 @@ const router  = express.Router();
 router.route('/activities')
       .get(protect, isAdmin, ativities.getActivities);
 
+router.route('/activities/users')
+      .get(protect, isAdmin, ativities.getActivityUsers);
+
 module.exports = router;

@@ -185,10 +185,27 @@ module.exports.getLatestStatements = async (req, res, next) => {
     const totalCount = await UserStatement.countDocuments(query);
     const hasMore = limit === 0 ? false : (skip + statements.length < totalCount);
 
-    // 5. Send response
+    // 5. Optional totals for the whole filtered range (not just this page), per direction and currency
+    let summary;
+    if (req.query.withSummary === 'true') {
+      const groups = await UserStatement.aggregate([
+        { $match: query },
+        { $group: { _id: { type: '$calculationType', currency: '$currency' }, amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+      ]);
+      const pick = (type, currency) => groups.find((g) => g._id.type === type && g._id.currency === currency);
+      summary = {
+        count: totalCount,
+        deposits: { USD: pick('+', 'USD')?.amount || 0, LYD: pick('+', 'LYD')?.amount || 0, count: groups.filter((g) => g._id.type === '+').reduce((s, g) => s + g.count, 0) },
+        payments: { USD: pick('-', 'USD')?.amount || 0, LYD: pick('-', 'LYD')?.amount || 0, count: groups.filter((g) => g._id.type === '-').reduce((s, g) => s + g.count, 0) },
+      };
+    }
+
+    // 6. Send response
     res.status(200).json({
       statements,
-      hasMore
+      hasMore,
+      total: totalCount,
+      summary
     });
 
   } catch (error) {
@@ -634,7 +651,19 @@ module.exports.getAllActiveWallets = async (req, res, next) => {
           as: "user"
         }
       },
-      { $unwind: "$user" }
+      { $unwind: "$user" },
+      // Only what the wallet lists show - never the password hash.
+      { $project: {
+          lydBalance: 1,
+          usdBalance: 1,
+          'user._id': 1,
+          'user.firstName': 1,
+          'user.lastName': 1,
+          'user.customerId': 1,
+          'user.phone': 1,
+          'user.imgUrl': 1,
+          'user.city': 1,
+      } },
     ]);
 
     res.status(200).json({ results: wallets });

@@ -21,4 +21,8 @@ const activitySchema = new Schema({
   timestamps: true
 })
 
+// The activities page always sorts newest first and filters by date, type or person.
+activitySchema.index({ createdAt: -1 });
+activitySchema.index({ user: 1, createdAt: -1 });
+
 module.exports = mongoose.model("Activity", activitySchema);

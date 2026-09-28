@@ -38,6 +38,7 @@ const marketing = require('./routes/marketing');
 const popupAds = require('./routes/popupAds');
 const analytics = require('./routes/analytics');
 const campaigns = require('./routes/campaigns');
+const companyNotes = require('./routes/companyNotes');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -430,6 +431,7 @@ app.use('/api', marketing);
 app.use('/api', popupAds);
 app.use('/api', analytics);
 app.use('/api', campaigns);
+app.use('/api', companyNotes);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {
