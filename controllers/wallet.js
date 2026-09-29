@@ -756,6 +756,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       actionType,
       office,
       attachments: files,
+      ...(currency === 'LYD' && Number(rate) > 0 && { rate: Number(rate) }),
     });
 
     const order = await Order.findOne({ orderId }).populate('user');

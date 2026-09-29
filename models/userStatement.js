@@ -14,6 +14,8 @@ const userStatementSchema = new Schema({
   amount: { type: Number, required: true },
   currency: { type: String, enum: ['USD', 'LYD'], required: true },
   total: { type: Number, required: true },
+  // Exchange rate used when an LYD payment was made
+  rate: Number,
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
