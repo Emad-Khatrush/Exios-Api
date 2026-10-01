@@ -5,6 +5,7 @@ const { JournalEntry, CurrencyRate } = require('../../models');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
 const User = require('../../../models/user');
+const Balance = require('../../../models/balance');
 const { getConfig } = require('../config');
 const { resolveAccount } = require('../roles');
 
@@ -16,7 +17,7 @@ async function yearlyResults() {
     { $unwind: '$lines' },
     { $group: { _id: { year: { $substr: ['$day', 0, 4] }, accountId: '$lines.accountId' }, net: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
   ]);
-  const costRoles = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices'];
+  const costRoles = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices', 'cost_remittance'];
   const { settings } = await getConfig();
   const costIds = new Set(costRoles.map((role) => String(settings.accountRoles?.[role])));
   const years = new Map();
@@ -76,9 +77,37 @@ async function purchasesWithoutCost() {
 }
 
 async function tripsWithoutCost() {
-  const trips = await Inventory.find({ inventoryType: 'inventoryGoods', 'orders.0': { $exists: true } }).select('voyage shippingType arrivalDate createdAt').lean();
+  // Domestic trips are a lump-sum transport cost, not shared over packages: only air and sea count
+  const trips = await Inventory.find({ inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' }, 'orders.0': { $exists: true } }).select('voyage shippingType arrivalDate createdAt').lean();
   const withCost = new Set((await JournalEntry.distinct('lines.tripId', { 'lines.tripId': { $in: trips.map((t) => t._id) } })).map(String));
   return trips.filter((t) => !withCost.has(String(t._id))).map((t) => ({ tripId: t._id, voyage: t.voyage, shippingType: t.shippingType, date: t.arrivalDate || t.createdAt }));
+}
+
+// Old "credit" balances (balanceType 'credit', replaced by the wallet long ago): not posted; listed
+// with their amounts so the owner decides what to do with any that are not zero (owner's decision)
+async function creditBalances() {
+  const rows = await Balance.find({ balanceType: 'credit', amount: { $ne: 0 } }).select('owner amount initialAmount currency status notes createdAt').populate('owner', 'firstName lastName customerId').sort({ createdAt: 1 }).lean();
+  const totals = {};
+  rows.forEach((row) => { totals[row.currency] = Math.round(((totals[row.currency] || 0) + Number(row.amount || 0)) * 1000) / 1000; });
+  return {
+    count: rows.length,
+    totals,
+    list: rows.slice(0, LIST_LIMIT).map((row) => ({
+      balanceId: row._id, customer: row.owner, amount: row.amount, initialAmount: row.initialAmount, currency: row.currency, status: row.status, notes: row.notes, createdAt: row.createdAt,
+    })),
+  };
+}
+
+// Supplier refunds credited to wallets (spec E4): linked to an order (lower its sale) or not (520200)
+async function refundsSummary(runId) {
+  const [receivable, refunds] = await Promise.all([resolveAccount('customer_receivable'), resolveAccount('customer_refunds')]);
+  const rows = await JournalEntry.aggregate([
+    { $match: { migrationRunId: runId, eventType: 'REFUND' } }, { $unwind: '$lines' },
+    { $match: { 'lines.accountId': { $in: [receivable._id, refunds._id] } } },
+    { $group: { _id: '$lines.accountId', count: { $sum: 1 }, usd: { $sum: '$lines.debit' } } },
+  ]);
+  const of = (account) => rows.find((row) => String(row._id) === String(account._id)) || { count: 0, usd: 0 };
+  return { linkedToOrders: { count: of(receivable).count, usd: of(receivable).usd }, toRefundsExpense: { count: of(refunds).count, usd: of(refunds).usd } };
 }
 
 async function buildReport(run, result) {
@@ -138,6 +167,12 @@ async function buildReport(run, result) {
     purchasesWithoutCost: (await purchasesWithoutCost()).slice(0, LIST_LIMIT),
     tripsWithoutCost: (await tripsWithoutCost()).slice(0, LIST_LIMIT),
     openingCash: result.openingCash,
+    creditBalances: await creditBalances(),
+    refunds: await refundsSummary(run.runId),
+    debtsWithoutSource: (await JournalEntry.aggregate([
+      { $match: { migrationRunId: run.runId, eventType: 'GENERAL_DEBT' } },
+      { $group: { _id: null, count: { $sum: 1 }, usd: { $sum: '$totalDebit' } } },
+    ]))[0] || { count: 0, usd: 0 },
     problemsCount: run.problems.length,
   };
 }

@@ -10,6 +10,8 @@ const ErrorHandler = require('../utils/errorHandler');
 const { errorMessages } = require('../constants/errorTypes');
 const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { emitAccountingEvent } = require('../accounting/services/events');
+const { debtSource } = require('../accounting/services/moneyAccounts');
+const { assertOpenPeriod } = require('../accounting/services/periodGuard');
 
 module.exports.getBalances = async (req, res, next) => {
   try {
@@ -154,6 +156,17 @@ module.exports.createBalance = async (req, res, next) => {
       if (!user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
     }
 
+    // A debt is real money owed: it says where the money came from (a cash box, or a partner who
+    // paid for us). A debt that only reminds of an order's own claim needs no source.
+    let source;
+    if (balanceType === 'debt') {
+      try {
+        source = await debtSource({ accountId: req.body.sourceAccountId, currency, orderLinked: !!order && debtType !== 'general' });
+      } catch (error) {
+        return next(new ErrorHandler(400, error.message));
+      }
+    }
+
     const balance = await Balance.create({
       balanceType,
       amount,
@@ -166,6 +179,7 @@ module.exports.createBalance = async (req, res, next) => {
       initialAmount: amount,
       debtType,
       followsOrder: !!order,
+      source,
     })
     await emitAccountingEvent('balance', balance._id, {}, req.user);
     
@@ -185,6 +199,11 @@ module.exports.createPaymentHistory = async (req, res, next) => {
 
     if (!createdAt || !rate || !amount || !currency) {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
+    }
+    try {
+      await assertOpenPeriod(req.user, createdAt);
+    } catch (error) {
+      return next(error);
     }
 
     const existingBalance = await Balance.findOne({ _id: id }).populate(['owner', 'order']);
@@ -581,6 +600,11 @@ module.exports.deleteBalance = async (req, res, next) => {
 
     if ((balance.paymentHistory || []).length > 0) {
       return next(new ErrorHandler(400, errorMessages.BALANCE_HAS_PAYMENTS));
+    }
+    try {
+      await assertOpenPeriod(req.user, balance.createdAt);
+    } catch (error) {
+      return next(error);
     }
 
     await Balance.deleteOne({ _id: id });

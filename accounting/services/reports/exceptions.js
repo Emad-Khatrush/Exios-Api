@@ -8,6 +8,9 @@ const Wallet = require('../../../models/wallet');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
 const User = require('../../../models/user');
+const UserStatement = require('../../../models/userStatement');
+const OrderPaymentHistory = require('../../../models/orderPaymentHistory');
+const Balance = require('../../../models/balance');
 const { getConfig } = require('../config');
 const { accountTotals } = require('../balances');
 const { today, addDays, monthOf } = require('../dates');
@@ -200,6 +203,101 @@ const CHECKS = {
     const items = archived.filter((a) => (totals.get(String(a._id))?.closingUsd || 0) !== 0)
       .map((a) => ({ label: `${a.code} ${a.name}`, usd: totals.get(String(a._id)).closingUsd, url: `/accounting/accounts/${a._id}` }));
     return result('archivedBalances', 'warn', 'حساب مؤرشف عليه رصيد', 'حوّل رصيده لحساب نشط بقيد.', items);
+  },
+
+  // 27. Every wallet deduction (statement '-') has exactly one entry in effect, and nothing is
+  // posted from a delivery invoice (spec E8: the statement line is the only source)
+  async walletDeductions() {
+    const { settings } = await getConfig();
+    const title = 'خصم من المحفظة بلا قيد أو بأكثر من قيد';
+    if (!settings?.migrationDate) return result('walletDeductions', 'error', title, '', []);
+    const [statements, posted, fromInvoices] = await Promise.all([
+      UserStatement.find({ calculationType: '-', amount: { $gt: 0 }, 'accountingSource.model': { $exists: false } }).select('_id user amount currency createdAt description').lean(),
+      JournalEntry.aggregate([
+        { $match: { 'source.model': 'UserStatement', status: 'posted', reversalOf: null } },
+        { $group: { _id: '$source.id', count: { $sum: 1 } } },
+      ]),
+      JournalEntry.countDocuments({ 'source.model': 'Invoice' }),
+    ]);
+    const counts = new Map(posted.map((row) => [String(row._id), row.count]));
+    const items = statements.filter((s) => (counts.get(String(s._id)) || 0) !== 1).map((s) => ({
+      label: `${s.description || ''} · ${s.amount} ${s.currency}`, day: s.createdAt, note: counts.get(String(s._id)) ? `${counts.get(String(s._id))} قيود` : 'بلا قيد', url: `/user/${s.user}`,
+    }));
+    if (fromInvoices) items.unshift({ label: `${fromInvoices} قيد مصدره فاتورة تسليم (Invoice)`, note: 'لا يجوز: الخصم يُرحَّل من سطر الكشف' });
+    return result('walletDeductions', 'error', title, 'كل خصم من المحفظة يُرحَّل مرة واحدة من سطر الكشف نفسه. راجع العمليات الفاشلة.', items);
+  },
+
+  // 28. Everything the system created after the cutoff was recorded for live posting (spec 19.11)
+  async liveCoverage() {
+    const { settings } = await getConfig();
+    const title = 'عملية بعد لحظة الانتقال لم تُسجَّل للترحيل';
+    if (!settings?.cutoffAt) return result('liveCoverage', 'error', title, '', []);
+    const after = { createdAt: { $gt: settings.cutoffAt } };
+    const [statements, cashPayments, orders, debts] = await Promise.all([
+      UserStatement.find({ ...after, 'accountingSource.model': { $exists: false } }).select('_id description amount currency user createdAt').lean(),
+      OrderPaymentHistory.find({ ...after, paymentType: 'cash' }).select('_id receivedAmount currency createdAt').lean(),
+      Order.find({ ...after, unsureOrder: { $ne: true } }).select('_id orderId createdAt').lean(),
+      Balance.find({ ...after, balanceType: 'debt' }).select('_id notes createdAt').lean(),
+    ]);
+    const recorded = new Set((await AccountingEvent.distinct('refId', { createdAt: { $gt: settings.cutoffAt } })).map(String));
+    const items = [
+      ...statements.filter((s) => !recorded.has(String(s._id))).map((s) => ({ label: `كشف: ${s.description || ''} · ${s.amount} ${s.currency}`, day: s.createdAt, url: `/user/${s.user}` })),
+      ...cashPayments.filter((p) => !recorded.has(String(p._id))).map((p) => ({ label: `دفع نقدي: ${p.receivedAmount} ${p.currency}`, day: p.createdAt })),
+      ...orders.filter((o) => !recorded.has(String(o._id))).map((o) => ({ label: `طلب ${o.orderId}`, day: o.createdAt, url: `/invoice/${o._id}/edit` })),
+      ...debts.filter((d) => !recorded.has(String(d._id))).map((d) => ({ label: `دين: ${d.notes || ''}`, day: d.createdAt })),
+    ];
+    return result('liveCoverage', 'error', title, 'كل كشف ودفعة وطلب ودين بعد لحظة الانتقال يُسجَّل حدثاً للترحيل. افتح العملية واحفظها، أو أبلغ المبرمج.', items);
+  },
+
+  // 2. What the books say is still owed on each order equals what the order screen says (the
+  // order total, or the packages' weight x price, less the payments on the order at their rates)
+  async claimsVsSystem() {
+    const { settings } = await getConfig();
+    const title = 'المتبقي على طلب في الدفاتر يختلف عن المنظومة';
+    if (!settings?.migrationDate) return result('claimsVsSystem', 'warn', title, '', []);
+    const tolerance = Math.max(settings.recognitionToleranceCents ?? 200, 100);
+    const roles = await roleIds(['customer_receivable']);
+    const receivable = oid(roles.customer_receivable);
+    const ledger = await JournalEntry.aggregate([
+      { $match: { 'lines.accountId': receivable } }, { $unwind: '$lines' },
+      { $match: { 'lines.accountId': receivable, 'lines.orderId': { $ne: null }, 'lines.arKey': { $ne: null } } },
+      { $group: { _id: { orderId: '$lines.orderId', kind: { $substrCP: ['$lines.arKey', 0, 3] } }, open: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+    ]);
+    const byOrder = new Map();
+    ledger.forEach((row) => {
+      const entry = byOrder.get(String(row._id.orderId)) || { PUR: 0, SHP: 0 };
+      entry[row._id.kind] = (entry[row._id.kind] || 0) + row.open;
+      byOrder.set(String(row._id.orderId), entry);
+    });
+    const ids = [...byOrder.keys()].filter(mongoose.isValidObjectId).map(oid);
+    const [orders, payments] = await Promise.all([
+      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean(),
+      OrderPaymentHistory.find({ order: { $in: ids } }).select('order category currency receivedAmount rate').lean(),
+    ]);
+    const paid = new Map();
+    payments.forEach((p) => {
+      const amount = Number(p.receivedAmount || 0);
+      const usd = p.currency === 'USD' ? amount : Number(p.rate) > 0 ? amount / Number(p.rate) : 0;
+      const key = `${p.order}|${p.category === 'receivedGoods' ? 'SHP' : 'PUR'}`;
+      paid.set(key, (paid.get(key) || 0) + Math.round(usd * 100));
+    });
+    const items = [];
+    orders.forEach((order) => {
+      const books = byOrder.get(String(order._id));
+      const system = {
+        PUR: order.isPayment ? Math.round(Number(order.totalInvoice || 0) * 100) - (paid.get(`${order._id}|PUR`) || 0) : 0,
+        SHP: (order.paymentList || []).reduce((sum, pkg) => sum + Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100), 0)
+          - (paid.get(`${order._id}|SHP`) || 0),
+      };
+      ['PUR', 'SHP'].forEach((kind) => {
+        const difference = (books[kind] || 0) - system[kind];
+        if (Math.abs(difference) > tolerance) {
+          items.push({ label: `${order.orderId} · ${kind === 'PUR' ? 'فاتورة شراء' : 'شحن'}`, usd: difference, note: `الدفاتر ${(books[kind] || 0) / 100}$ · المنظومة ${system[kind] / 100}$`, url: `/invoice/${order._id}/edit` });
+        }
+      });
+    });
+    items.sort((a, b) => Math.abs(b.usd) - Math.abs(a.usd));
+    return result('claimsVsSystem', 'warn', title, 'السبب المعتاد: دفعة بالدينار بلا سعر، أو دين مرتبط بالطلب دُفع معه، أو تعديل على الطلب لم يُرحَّل.', items);
   },
 
   // 19. Entry numbers have no gaps

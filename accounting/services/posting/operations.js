@@ -12,8 +12,7 @@ const { walletRole, resolveCashAccount } = require('../roles');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
 const { purchaseKey, shipmentKey, generalDebtKey } = require('../claims/keys');
-const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount } = require('./common');
-const { roundHalfAway } = require('../money');
+const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount } = require('./common');const { roundHalfAway } = require('../money');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const CURRENCY_ALIASES = { EURO: 'EUR' };
@@ -139,6 +138,12 @@ async function postStatement(statementId, options = {}) {
   };
   // Cash box of the office/currency, or the suspense account when the statement has no office
   const cashAccount = async () => {
+    // The account chosen on the deposit screen (a bank, or a partner's current account like Wasl)
+    if (statement.accountId) {
+      const chosen = (await getConfig()).accountsById.get(String(statement.accountId));
+      if (chosen?.isCash && chosen.isActive && (chosen.currency || 'USD') === currency) return chosen;
+      fallbacks.push('الحساب المختار في الإيداع غير صالح لهذه العملة؛ استُخدمت خزينة المكتب');
+    }
     const account = statement.office && await resolveCashAccount(statement.office, currency);
     if (account) return account;
     fallbacks.push(statement.office ? `لا توجد خزينة ${currency} للمكتب ${statement.office}` : 'العملية بدون مكتب؛ سُجّلت في حساب المعلّق حتى يحددها المحاسب');
@@ -152,9 +157,13 @@ async function postStatement(statementId, options = {}) {
     lines.push(moneyLine(cash, 'debit', minor, usd, { office, label: statement.description }));
   } else if (kind === 'COMPENSATION' || kind === 'REFUND' || kind === 'SETTLEMENT_CANCEL') {
     const usd = await walletIn();
-    const keys = kind === 'SETTLEMENT_CANCEL' ? await resolveClaimKeys(options.target, session) : [];
+    // A refund tied to an order (money the supplier gave back, spec 19.6) lowers that order's sale:
+    // the claim line here, then the order sync bills the customer that much less
+    const linked = kind === 'SETTLEMENT_CANCEL' || (kind === 'REFUND' && (options.target?.orderId || options.target?.arKeys?.length));
+    const keys = linked ? await resolveClaimKeys(options.target, session) : [];
     if (keys.length) {
-      // Money given back for a payment: the claim is owed again
+      // Money given back for a payment: the claim is owed again (for a refund: until the sync
+      // lowers the claim by the same amount)
       const receivable = await resolveAccount('customer_receivable');
       const parts = [{ key: keys[0], usd }];
       claimLines(parts, 'debit', partnerId).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
@@ -299,14 +308,26 @@ async function postGeneralDebt(balanceId, options = {}) {
   const day = balance.createdAt || new Date();
   const usd = await rates.toUsd(minor, balance.currency, day);
   const key = generalDebtKey(balance._id);
+  const lines = [{ accountId: (await resolveAccount('customer_receivable'))._id, debit: usd, partnerId: oid(balance.owner), arKey: key, office }];
+  const fallbacks = [];
+  // The money of the debt left a cash box, or a partner paid it for us on their current account
+  // (spec 19.8). A debt with no recorded source (all old ones) is money that left some box nobody
+  // recorded: the suspense account, folded into the opening balance with the rest of history.
+  const from = balance.source?.accountId && (await getConfig()).accountsById.get(String(balance.source.accountId));
+  if (from && (from.currency || 'USD') === balance.currency) {
+    const fromAccount = await getAccount(from._id, 'مصدر الدين');
+    const out = await valueOut(fromAccount, minor, { day, rates });
+    lines.push(moneyLine(fromAccount, 'credit', minor, out, { office: fromAccount.office || office, label: `دين على العميل: ${balance.notes}` }));
+    await addFxLine(lines, office);
+  } else {
+    fallbacks.push('دين بلا مصدر مسجل؛ سُجّل مقابل حساب المعلّق');
+    lines.push({ accountId: (await resolveAccount('migration_suspense'))._id, credit: usd, label: balance.notes });
+  }
   await postEntry({
     eventType: 'GENERAL_DEBT', eventKey, date: day, description: `دين على العميل: ${balance.notes}`,
     source: { model: 'Balance', id: balance._id }, isHistorical: !!options.isHistorical, migrationRunId: options.migrationRunId,
-    fallbacks: rates.fallbacks,
-    lines: [
-      { accountId: (await resolveAccount('customer_receivable'))._id, debit: usd, partnerId: oid(balance.owner), arKey: key },
-      { accountId: (await resolveAccount('general_debt_contra'))._id, credit: usd, office, arKey: key },
-    ],
+    fallbacks: [...rates.fallbacks, ...fallbacks],
+    lines,
   }, { session, user: options.user });
   await rates.lock();
   return { posted: true };

@@ -270,7 +270,18 @@ test('odoo export screen: overview, mapping, export and undo through the API', a
 
 describe('accounting access', () => {
   const OWNERS = process.env.ACCOUNTING_OWNER_IDS;
-  afterEach(() => { if (OWNERS === undefined) delete process.env.ACCOUNTING_OWNER_IDS; else process.env.ACCOUNTING_OWNER_IDS = OWNERS; });
+  afterEach(() => {
+    if (OWNERS === undefined) delete process.env.ACCOUNTING_OWNER_IDS; else process.env.ACCOUNTING_OWNER_IDS = OWNERS;
+    process.env.ACCOUNTING_DEV_ALL_ADMINS = 'true';
+  });
+
+  test('a database without any owner account is closed to every admin unless ACCOUNTING_DEV_ALL_ADMINS is set', async () => {
+    delete process.env.ACCOUNTING_DEV_ALL_ADMINS;
+    expect((await api('get', '/access/me')).status).toBe(403);
+    expect((await api('get', '/dashboard')).status).toBe(403);
+    process.env.ACCOUNTING_DEV_ALL_ADMINS = 'true';
+    expect((await api('get', '/access/me')).body.isOwner).toBe(true);
+  });
 
   test('only the owner accounts manage access; another admin sees only what they were given', async () => {
     const owner = await makeUser(10, { isAdmin: true });

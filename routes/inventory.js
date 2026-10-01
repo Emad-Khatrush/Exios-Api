@@ -39,10 +39,10 @@ router.route('/inventory/:id')
     .get(protect, allowAdminsAndEmployee, inventory.getSingleInventory)
     .delete(protect, isAdmin, inventory.deleteInventory)
 
+// A trip's costs are supplier bills now (POST /api/acc/trips/:tripId/costs), so they reach the
+// books; the old expenses list on the trip is read-only and moved by the historical migration
 router.route('/inventory/:inventoryId/expenses')
-    .post(protect, allowAdminsAndEmployee, inventory.addExpenseToInventory)
-    .put(protect, allowAdminsAndEmployee, inventory.updateExpenseOfInventory)
-    .delete(protect, allowAdminsAndEmployee, inventory.deleteExpenseOfInventory)
+    .all(protect, allowAdminsAndEmployee, (req, res) => res.status(410).json({ message: 'Trip expenses are now added from the trip page as supplier bills (Accounting).' }))
 
 router.route('/warehouse/:office/goods')
     .get(protect, allowAdminsAndEmployee, inventory.getWarehouseInventory)

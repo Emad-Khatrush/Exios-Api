@@ -15,6 +15,8 @@ const statements = require('./controllers/statements');
 const odoo = require('./controllers/odoo');
 const access = require('./controllers/access');
 const { loadAccess, can, ownerOnly, KEYS } = require('./services/access');
+const staffOps = require('./services/staffOperations');
+const { handle } = require('./controllers/util');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -29,6 +31,11 @@ const P = Object.fromEntries(KEYS.map((key) => [key, can(key)]));
 router.get('/access/me', access.me);
 router.get('/access/members', ownerOnly, access.members);
 router.put('/access/members/:userId', ownerOnly, access.saveMember);
+// The office each staff member works in (their expenses are recorded on it)
+router.get('/access/staff', ownerOnly, handle(async (req, res) => res.json({ results: await staffOps.staffOffices() })));
+router.put('/access/staff/:userId', ownerOnly, handle(async (req, res) => res.json(await staffOps.setStaffOffice(req.params.userId, req.body?.office || null))));
+// Office expenses entered by staff on the system's Expenses screen, from every office
+router.get('/office-expenses', can('purchases', 'reports'), handle(async (req, res) => res.json(await staffOps.reviewOfficeExpenses(req.query))));
 
 router.get('/setup/status', ANY, settings.setupStatus);
 router.post('/setup/run', P.setup, settings.runSetup);
@@ -77,7 +84,7 @@ router.post('/migration/runs/:runId/commit', P.setup, migration.commit);
 router.get('/entries/event-types', ANY, entries.eventTypes);
 router.route('/entries').get(P.entries, entries.list).post(P.entries, entries.createManual);
 router.get('/entries/:id', can('entries', 'reports'), entries.get);
-router.post('/entries/:id/cancel', P.entries, entries.cancel);
+router.post('/entries/:id/cancel', P.entries, P.cancel, entries.cancel);
 
 router.get('/reports/trial-balance', P.reports, reports.trialBalance);
 router.get('/reports/account-ledger/:id', can('reports', 'treasury'), reports.accountLedger);
@@ -141,7 +148,7 @@ const MODEL_PERMISSIONS = {
   AccountingSalaryPayment: 'payroll', AccountingFixedAsset: 'assets', AccountingPrepaidExpense: 'assets', AccountingEquityTransaction: 'assets', AccountingNetting: 'assets',
 };
 const byModel = (req, res, next) => can(MODEL_PERMISSIONS[req.params.model] || 'setup')(req, res, next);
-router.post('/documents/:model/:id/cancel', byModel, documents.cancel);
+router.post('/documents/:model/:id/cancel', byModel, P.cancel, documents.cancel);
 router.post('/documents/:model/:id/attachments', byModel, upload.array('files'), documents.addAttachments);
 
 router.get('/assets', P.assets, documents.listAssets);
@@ -164,7 +171,7 @@ router.post('/bank/import', P.treasury, documents.importBankLines);
 router.post('/bank/auto-match', P.treasury, documents.autoMatchBank);
 router.post('/bank/lines/:id/match', P.treasury, documents.matchBankLine);
 router.post('/bank/lines/:id/entry', P.treasury, documents.bankLineEntry);
-router.post('/bank/lines/:id/cancel-entry', P.treasury, documents.cancelBankLineEntry);
+router.post('/bank/lines/:id/cancel-entry', P.treasury, P.cancel, documents.cancelBankLineEntry);
 router.post('/bank/lines/:id/ignore', P.treasury, documents.ignoreBankLine(true));
 router.post('/bank/lines/:id/unignore', P.treasury, documents.ignoreBankLine(false));
 router.delete('/bank/lines/:id', P.treasury, documents.deleteBankLine);

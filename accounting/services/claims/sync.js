@@ -17,7 +17,6 @@ const { toMinor } = require('../money');
 const { purchaseKey, shipmentKey, CLAIM_EVENTS } = require('./keys');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
-const idsOf = (list) => list.flatMap((id) => [String(id), oid(id)]);
 
 // Package charge in cents: weight x unit price (exiosPrice is per KG or CBM)
 const packageCharge = (pkg) => toMinor(Number(pkg?.deliveredPackages?.weight?.total || 0) * Number(pkg?.deliveredPackages?.exiosPrice || 0), 2);
@@ -39,52 +38,52 @@ async function roleIds() {
     'customer_receivable', 'deferred_shipping_revenue', 'deferred_purchase_revenue', 'trip_cost_wip', 'purchase_cost_wip',
     'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices',
     'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices',
+    'revenue_remittance', 'cost_remittance',
   ];
   const accounts = {};
   for (const role of roles) accounts[role] = await resolveAccount(role);
   return accounts;
 }
 
-// Trips (not warehouses) a package travelled on: normally one flight, plus a domestic leg
-async function tripsOfPackage(packageId, ctx) {
-  const key = String(packageId);
+// The air or sea trip that carried a package (Order.paymentList[].tripId, spec 4.3). A domestic
+// trip is not returned: it only tracks what was sent on, its cost is posted straight to expense.
+async function internationalTrip(pkg, ctx) {
+  if (!pkg?.tripId) return null;
+  const key = String(pkg.tripId);
   if (!ctx.packageTrips.has(key)) {
-    const trips = await Inventory.find({ inventoryType: 'inventoryGoods', 'orders.paymentList._id': { $in: idsOf([packageId]) } })
-      .select('shippingType status inventoryPlace').session(ctx.session).lean();
-    ctx.packageTrips.set(key, trips);
+    const trip = await Inventory.findById(pkg.tripId).select('shippingType status inventoryPlace inventoryType').session(ctx.session).lean();
+    ctx.packageTrips.set(key, trip && trip.inventoryType === 'inventoryGoods' && trip.shippingType !== 'domestic' ? trip : null);
   }
   return ctx.packageTrips.get(key);
 }
 
-// How a trip's total cost splits over its packages (spec 6.3, by charge or weight)
+// How an air or sea trip's cost splits over its packages: by weight, always (owner's decision;
+// air in KG, sea in CBM, one unit per trip). Packages of cancelled orders take no share; if no
+// package has a weight the cost is split evenly.
 async function tripAllocation(tripId, ctx) {
   const key = String(tripId);
   if (ctx.allocations.has(key)) return ctx.allocations.get(key);
 
-  const trip = await Inventory.findById(tripId).select('orders.paymentList._id shippingType').session(ctx.session).lean();
-  const packageIds = (trip?.orders || []).map((o) => o?.paymentList?._id).filter(Boolean).map(String);
-  const costAccounts = [ctx.accounts.trip_cost_wip, ctx.accounts.cost_shipping_air, ctx.accounts.cost_shipping_sea, ctx.accounts.cost_shipping_domestic].map((a) => a._id);
-  const [cost] = await JournalEntry.aggregate([
-    { $match: { 'lines.tripId': oid(tripId) } },
-    { $unwind: '$lines' },
-    { $match: { 'lines.tripId': oid(tripId), 'lines.accountId': { $in: costAccounts } } },
-    { $group: { _id: null, usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
-  ]).session(ctx.session);
+  const trip = await Inventory.findById(tripId).select('shippingType inventoryType').session(ctx.session).lean();
+  const international = trip && trip.inventoryType === 'inventoryGoods' && trip.shippingType !== 'domestic';
+  let result = { total: 0, shares: new Map(), shippingType: trip?.shippingType };
+  if (international) {
+    const costAccounts = [ctx.accounts.trip_cost_wip, ctx.accounts.cost_shipping_air, ctx.accounts.cost_shipping_sea].map((a) => a._id);
+    const [cost] = await JournalEntry.aggregate([
+      { $match: { 'lines.tripId': oid(tripId) } },
+      { $unwind: '$lines' },
+      { $match: { 'lines.tripId': oid(tripId), 'lines.accountId': { $in: costAccounts } } },
+      { $group: { _id: null, usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+    ]).session(ctx.session);
 
-  const orders = packageIds.length
-    ? await Order.find({ 'paymentList._id': { $in: packageIds.map(oid) } }).select('paymentList._id paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice isCanceled').session(ctx.session).lean()
-    : [];
-  const packages = new Map();
-  orders.filter((o) => !o.isCanceled).forEach((o) => (o.paymentList || []).forEach((p) => { if (packageIds.includes(String(p._id))) packages.set(String(p._id), p); }));
-
-  const ids = [...packages.keys()];
-  const byWeight = ctx.settings.tripCostAllocationBase === 'weight';
-  const weights = ids.map((id) => {
-    const pkg = packages.get(id);
-    return byWeight ? Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * 1000) : packageCharge(pkg);
-  });
-  const shares = allocate(cost?.usd || 0, weights);
-  const result = { total: cost?.usd || 0, shares: new Map(ids.map((id, i) => [id, shares[i]])), shippingType: trip?.shippingType };
+    const orders = await Order.find({ 'paymentList.tripId': oid(tripId), isCanceled: { $ne: true } })
+      .select('paymentList._id paymentList.tripId paymentList.deliveredPackages.weight').session(ctx.session).lean();
+    const packages = [];
+    orders.forEach((o) => (o.paymentList || []).forEach((p) => { if (String(p.tripId) === key) packages.push(p); }));
+    const weights = packages.map((pkg) => Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * 1000));
+    const shares = allocate(cost?.usd || 0, weights);
+    result = { total: cost?.usd || 0, shares: new Map(packages.map((pkg, i) => [String(pkg._id), shares[i]])), shippingType: trip.shippingType };
+  }
   ctx.allocations.set(key, result);
   return result;
 }
@@ -100,6 +99,7 @@ async function orderLedger(orderId, ctx) {
         _id: {
           arKey: '$lines.arKey', accountId: '$lines.accountId', partnerId: '$lines.partnerId',
           packageId: '$lines.packageId', tripId: '$lines.tripId', claim: { $in: ['$eventType', CLAIM_EVENTS] },
+          refund: { $eq: ['$eventType', 'REFUND'] },
         },
         net: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } },
       },
@@ -108,22 +108,25 @@ async function orderLedger(orderId, ctx) {
 
   const a = ctx.accounts;
   const is = (row, account) => String(row._id.accountId) === String(account._id);
-  const revenueIds = new Set(['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices'].map((r) => String(a[r]._id)));
+  const revenueIds = new Set(['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices', 'revenue_remittance'].map((r) => String(a[r]._id)));
   const shippingCostIds = new Set(['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'].map((r) => String(a[r]._id)));
 
   const state = {
-    ar: new Map(), arByPartner: new Map(), billed: new Map(), recognized: new Map(),
-    shipCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0,
+    ar: new Map(), arByPartner: new Map(), billed: new Map(), recognized: new Map(), refunded: new Map(),
+    shipCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0, remittanceCostRecognized: 0,
   };
   const add = (map, key, value) => map.set(key, (map.get(key) || 0) + value);
 
   rows.forEach((row) => {
-    const { arKey, partnerId, packageId, tripId, claim } = row._id;
+    const { arKey, partnerId, packageId, tripId, claim, refund } = row._id;
     if (is(row, a.customer_receivable) && arKey) {
       add(state.ar, arKey, row.net);
       if (!state.arByPartner.has(arKey)) state.arByPartner.set(arKey, new Map());
       add(state.arByPartner.get(arKey), String(partnerId || ''), row.net);
       if (claim) add(state.billed, arKey, row.net);
+      // Money given back to the customer on this claim (a refund from the supplier, spec 19.6):
+      // the customer is billed that much less
+      if (refund) add(state.refunded, arKey, row.net);
     }
     if (arKey && revenueIds.has(String(row._id.accountId))) {
       if (!state.recognized.has(arKey)) state.recognized.set(arKey, new Map());
@@ -132,9 +135,10 @@ async function orderLedger(orderId, ctx) {
     if (shippingCostIds.has(String(row._id.accountId)) && packageId && tripId) {
       add(state.shipCost, `${packageId}|${tripId}`, row.net);
     }
-    if (is(row, a.purchase_cost_wip) || is(row, a.cost_purchase_invoices)) {
+    if (is(row, a.purchase_cost_wip) || is(row, a.cost_purchase_invoices) || is(row, a.cost_remittance)) {
       state.purchaseCostTotal += row.net;
-      if (is(row, a.cost_purchase_invoices)) state.purchaseCostRecognized += row.net;
+      if (!is(row, a.purchase_cost_wip)) state.purchaseCostRecognized += row.net;
+      if (is(row, a.cost_remittance)) state.remittanceCostRecognized += row.net;
     }
   });
   return state;
@@ -160,9 +164,8 @@ const move = (amount, debitLine, creditLine) => (amount > 0
   ? [{ ...debitLine, debit: amount }, { ...creditLine, credit: amount }]
   : [{ ...creditLine, debit: -amount }, { ...debitLine, credit: -amount }]);
 
-const revenueRoleFor = (pkg, trips, order) => {
-  const international = trips.find((t) => t.shippingType !== 'domestic');
-  const method = international?.shippingType || pkg?.deliveredPackages?.shipmentMethod || order.shipment?.method;
+const revenueRoleFor = (pkg, trip, order) => {
+  const method = trip?.shippingType || pkg?.deliveredPackages?.shipmentMethod || order.shipment?.method;
   if (method === 'air') return { role: 'revenue_shipping_air' };
   if (method === 'sea') return { role: 'revenue_shipping_sea' };
   return { role: 'revenue_other', fallback: 'طريقة شحن الطرد غير معروفة؛ سُجّل الإيراد في إيرادات أخرى' };
@@ -204,6 +207,10 @@ async function syncOrder(orderId, options = {}) {
   packages.forEach((pkg, id) => {
     const charge = active ? packageCharge(pkg) : 0;
     if (charge > 0) desired.set(shipmentKey(order._id, id), charge);
+  });
+  // A refund given to the customer on a claim lowers what they are billed (never below zero)
+  state.refunded.forEach((refunded, key) => {
+    if (desired.has(key)) desired.set(key, Math.max(desired.get(key) - refunded, 0));
   });
   const keys = new Set([...desired.keys(), ...state.billed.keys()]);
 
@@ -265,15 +272,15 @@ async function syncOrder(orderId, options = {}) {
     let revenueAccount;
     if (want > have) {
       if (packageId) {
-        const trips = await tripsOfPackage(packageId, ctx);
-        const { role, fallback } = revenueRoleFor(pkg, trips, order);
+        const { role, fallback } = revenueRoleFor(pkg, await internationalTrip(pkg, ctx), order);
         revenueAccount = a[role];
         if (fallback) fallbacks.push(fallback);
         // The historical replay had to guess this package's delivery date (spec 6-أ.5)
         const dateFallback = options.deliveries?.get(String(packageId))?.fallback;
         if (dateFallback) fallbacks.push(dateFallback);
       } else {
-        revenueAccount = a.revenue_purchase_invoices;
+        // A purchase invoice marked as an Alipay transfer is remittance revenue (spec 19.5)
+        revenueAccount = order.isRemittance ? a.revenue_remittance : a.revenue_purchase_invoices;
       }
     } else {
       // Taking revenue back: from the account that holds it
@@ -293,9 +300,13 @@ async function syncOrder(orderId, options = {}) {
   const purchaseWant = purchaseRecognized ? state.purchaseCostTotal : 0;
   if (purchaseWant !== state.purchaseCostRecognized) {
     const dims = { orderId: order._id, office, arKey: purchaseKey(order._id) };
+    // New cost follows the order's kind; cost taken back leaves the account that holds it
+    const costAccount = purchaseWant > state.purchaseCostRecognized
+      ? (order.isRemittance ? a.cost_remittance : a.cost_purchase_invoices)
+      : (state.remittanceCostRecognized > 0 ? a.cost_remittance : a.cost_purchase_invoices);
     posted.push(await post(ctx, 'COST_RECOGNITION', purchaseKey(order._id), `تكلفة فاتورة شراء - طلب ${order.orderId}`, move(
       purchaseWant - state.purchaseCostRecognized,
-      { accountId: a.cost_purchase_invoices._id, ...dims },
+      { accountId: costAccount._id, ...dims },
       { accountId: a.purchase_cost_wip._id, ...dims },
     )));
   }
@@ -303,8 +314,8 @@ async function syncOrder(orderId, options = {}) {
   const packageIds = new Set([...packages.keys(), ...[...state.shipCost.keys()].map((k) => k.split('|')[0])]);
   for (const packageId of packageIds) {
     const recognized = recognizedNow.get(shipmentKey(order._id, packageId)) > 0;
-    const trips = await tripsOfPackage(packageId, ctx);
-    const tripIds = new Set([...trips.map((t) => String(t._id)), ...[...state.shipCost.keys()].filter((k) => k.startsWith(`${packageId}|`)).map((k) => k.split('|')[1])]);
+    const trip = await internationalTrip(packages.get(packageId), ctx);
+    const tripIds = new Set([...(trip ? [String(trip._id)] : []), ...[...state.shipCost.keys()].filter((k) => k.startsWith(`${packageId}|`)).map((k) => k.split('|')[1])]);
     for (const tripId of tripIds) {
       const allocation = await tripAllocation(tripId, ctx);
       const want = recognized ? (allocation.shares.get(packageId) || 0) : 0;
@@ -328,14 +339,12 @@ async function syncOrder(orderId, options = {}) {
 async function syncTrip(tripId, options = {}) {
   const { settings } = await getConfig();
   if (!settings?.liveEnabled && !options.migration) return { skipped: 'live posting is off' };
-  const trip = await Inventory.findById(tripId).select('orders.paymentList._id inventoryType').session(options.session || null).lean();
+  const trip = await Inventory.findById(tripId).select('inventoryType').session(options.session || null).lean();
   // Warehouses only track packages; they never carry costs (spec 4.3)
   if (trip && trip.inventoryType !== 'inventoryGoods') return { skipped: 'not a trip' };
-  const packageIds = (trip?.orders || []).map((o) => o?.paymentList?._id).filter(Boolean);
   const withCost = await JournalEntry.distinct('lines.orderId', { 'lines.tripId': oid(tripId), eventType: 'COST_RECOGNITION' }).session(options.session || null);
-  const orders = packageIds.length
-    ? await Order.find({ 'paymentList._id': { $in: packageIds.map(oid) } }).select('_id').session(options.session || null).lean()
-    : [];
+  const orders = await Order.find({ $or: [{ 'paymentList.tripId': oid(tripId) }, { 'paymentList.domesticTripId': oid(tripId) }] })
+    .select('_id').session(options.session || null).lean();
   const orderIds = [...new Set([...orders.map((o) => String(o._id)), ...withCost.filter(Boolean).map(String)])];
   const shared = { ...options, accounts: await roleIds(), allocations: new Map(), packageTrips: new Map() };
   let posted = 0;

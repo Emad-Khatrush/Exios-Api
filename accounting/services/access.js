@@ -24,6 +24,8 @@ const PERMISSIONS = [
   { key: 'closing', label: 'الإقفال', hint: 'إقفال الشهر والسنة' },
   { key: 'setup', label: 'الإعدادات والترحيل', hint: 'شجرة الحسابات، المكاتب، الدفاتر، الترحيل التاريخي، معالج البدء، التصدير لأودو' },
   { key: 'audit', label: 'سجل التدقيق', hint: 'من غيّر ماذا ومتى' },
+  // Separate from entering documents (owner's decision): only the owner and the accountant cancel
+  { key: 'cancel', label: 'إلغاء المستندات المُرحَّلة', hint: 'إلغاء فاتورة أو دفعة أو قيد مُرحَّل بقيد عكسي. الإلغاء في فترة مقفلة للمالك فقط' },
 ];
 const KEYS = PERMISSIONS.map((p) => p.key);
 
@@ -41,8 +43,16 @@ const DEFAULT_OWNERS = ['62bb47b22aabe070791f8278', '632aeb399aefb9b93b7a7527', 
 const ownerIds = () => (process.env.ACCOUNTING_OWNER_IDS ? process.env.ACCOUNTING_OWNER_IDS.split(',') : DEFAULT_OWNERS)
   .map((id) => id.trim()).filter((id) => mongoose.isValidObjectId(id));
 
-// A database where none of the owner accounts exists (a local copy, the tests) would lock
-// everyone out; there every admin counts as an owner. Checked once a minute.
+// A database where none of the owner accounts exists is closed to everyone (owner's decision): a
+// copy of production with other ids must set ACCOUNTING_OWNER_IDS. Only for local work,
+// ACCOUNTING_DEV_ALL_ADMINS=true makes every admin an owner there. Checked once a minute.
+const devAllAdmins = () => process.env.ACCOUNTING_DEV_ALL_ADMINS === 'true';
+let warned = false;
+const warnDevMode = () => {
+  if (warned || process.env.NODE_ENV === 'test') return;
+  warned = true;
+  console.warn('[accounting] ACCOUNTING_DEV_ALL_ADMINS=true and no owner account in this database: every admin is an owner. Never set this in production.');
+};
 let ownersPresent = null;
 let checkedAt = 0;
 let checkedFor = '';
@@ -60,7 +70,9 @@ async function ownersExist() {
 async function isOwner(user) {
   if (!user) return false;
   if (ownerIds().includes(String(user._id))) return true;
-  return !!user.roles?.isAdmin && !(await ownersExist());
+  if (!devAllAdmins() || !user.roles?.isAdmin || (await ownersExist())) return false;
+  warnDevMode();
+  return true;
 }
 
 // { isOwner, permissions: [...] } for a signed-in user; no permissions = no access

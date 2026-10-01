@@ -90,6 +90,13 @@ const balanceSchema = new mongoose.Schema({
     description: String
   }],
   debtPriority: String,
+  // Where the money of the debt came from (spec 19.8): 'cash' = paid out of a cash box or bank,
+  // 'partner' = paid for us by a partner on their current account (e.g. Aswaq), 'order' = a
+  // reminder of the order's own claim (no new entry). Old debts have none.
+  source: {
+    kind: { type: String, enum: ['cash', 'partner', 'order'] },
+    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'AccountingAccount' },
+  },
   // Set when an admin/accountant closes a debt by hand (e.g. 0.1$ left over).
   // The written-off remainder is moved to a separate 'lost' balance.
   manualClosure: {

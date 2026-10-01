@@ -20,6 +20,9 @@ const userStatementSchema = new Schema({
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
   office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank', 'bank'] },
+  // The account the money went into (or came out of), chosen on the deposit screen: a cash box,
+  // a bank or a partner's current account such as Wasl (spec 19.4). Without it, the office's box.
+  accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   editHistory: [{
     editedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     editedAt: Date,

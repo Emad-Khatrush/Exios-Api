@@ -23,7 +23,6 @@ const Campaign = require('./models/campaign');
 const orders = require('./routes/orders');
 const users = require('./routes/users');
 const expenses = require('./routes/expenses');
-const incomes = require('./routes/incomes');
 const activities = require('./routes/activities');
 const offices = require('./routes/offices');
 const sendMessages = require('./routes/sendMessages');
@@ -39,7 +38,7 @@ const popupAds = require('./routes/popupAds');
 const analytics = require('./routes/analytics');
 const campaigns = require('./routes/campaigns');
 const companyNotes = require('./routes/companyNotes');
-const { routes: accountingRoutes, initAccounting } = require('./accounting');
+const { routes: accountingRoutes, systemRoutes: accountingSystemRoutes, initAccounting } = require('./accounting');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -419,12 +418,13 @@ process.on('SIGUSR2', () => shutdownWhatsAppClient('SIGUSR2'));
 
 // render routes
 app.use('/api/accounting', accountingRoutes);
+// Trip costs, order purchases and office expenses entered from the system's own screens
+app.use('/api', accountingSystemRoutes);
 app.use('/api', users);
 app.use('/api', orders);
 app.use('/api', expenses);
 app.use('/api', activities);
 app.use('/api', offices);
-app.use('/api', incomes);
 app.use('/api', sendMessages);
 app.use('/api', resetToken);
 app.use('/api', tasks);

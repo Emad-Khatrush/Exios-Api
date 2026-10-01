@@ -74,8 +74,11 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   // event type -> journal code, or '@cash' for the journal of the cash account on the entry
   eventJournals: { type: Schema.Types.Mixed, default: {} },
   fiscalYearStartMonth: { type: Number, default: 1, min: 1, max: 12 },
-  // 'charge' = weight x exiosPrice of the package, 'weight' = its weight
-  tripCostAllocationBase: { type: String, enum: ['charge', 'weight'], default: 'charge' },
+  // The exact instant history ended and live posting began: everything created before it was
+  // posted by the historical migration, everything after by live posting (spec 19.11)
+  cutoffAt: { type: Date, default: null },
+  // Delivered and unpaid for longer than this many days: listed for a write-off decision (spec 19.7)
+  writeOffAfterDays: { type: Number, default: 180 },
   timezone: { type: String, default: 'Africa/Tripoli' },
   // Live posting of the system's own operations (deposits, orders, deliveries...). Off until the
   // historical migration is committed, so history and live never overlap.
@@ -115,7 +118,8 @@ const accountingEventSchema = new Schema({
   type: { type: String, required: true },
   refId: { type: Schema.Types.ObjectId, required: true },
   payload: { type: Schema.Types.Mixed, default: {} },
-  status: { type: String, enum: ['pending', 'done', 'failed', 'skipped'], default: 'pending' },
+  // 'covered': recorded before the historical migration read the data, so the migration posted it
+  status: { type: String, enum: ['pending', 'done', 'failed', 'skipped', 'covered'], default: 'pending' },
   attempts: { type: Number, default: 0 },
   lastError: String,
   result: Schema.Types.Mixed,

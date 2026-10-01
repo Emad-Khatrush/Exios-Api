@@ -9,6 +9,7 @@ const { syncOrder } = require('../services/claims/sync');
 const operations = require('../services/posting/operations');
 const payables = require('../services/posting/payables');
 const events = require('../services/events');
+const { refreshTripPackages } = require('../services/tripLinks');
 const Order = require('../../models/order');
 const Inventory = require('../../models/inventory');
 const UserStatement = require('../../models/userStatement');
@@ -52,10 +53,15 @@ async function newOrder({ user, isPayment = false, totalInvoice = 0, packages = 
   return { _id: insertedId, packageIds: paymentList.map((p) => p._id) };
 }
 
-const newTrip = async (packageIds, shippingType = 'air') => (await Inventory.collection.insertOne({
-  voyage: 'AIR-TEST', inventoryType: 'inventoryGoods', shippingType, inventoryPlace: 'tripoli', status: 'processing',
-  orders: packageIds.map((id) => ({ paymentList: { _id: id } })),
-})).insertedId;
+// A trip holding these packages; their trip links follow, as the trip screens do
+const newTrip = async (packageIds, shippingType = 'air') => {
+  const { insertedId } = await Inventory.collection.insertOne({
+    voyage: 'AIR-TEST', inventoryType: 'inventoryGoods', shippingType, inventoryPlace: 'tripoli', status: 'processing',
+    orders: packageIds.map((id) => ({ paymentList: { _id: id } })), createdAt: new Date(),
+  });
+  await refreshTripPackages(insertedId);
+  return insertedId;
+};
 
 const statement = (user, fields) => UserStatement.create({
   user, createdBy: oid(), description: 'حركة', total: 0, paymentType: 'wallet', createdAt: new Date('2026-01-05'), ...fields,
@@ -274,14 +280,20 @@ test('general debts: claim, paid from the wallet, remainder written off', async 
   expect(await balanceOf('520100')).toBe(10);
 });
 
-test('the outbox records nothing while live posting is off, and posts in order when on', async () => {
+test('the outbox records events while live posting is off, posts nothing until it is on, then posts in order', async () => {
   const user = await newCustomer();
   await setLive(false);
   const dep = await deposit(user, 100, 'USD');
   await events.emitAccountingEvent('statement', dep._id);
-  expect(await AccountingEvent.countDocuments()).toBe(0);
+  expect(await AccountingEvent.countDocuments({ status: 'pending' })).toBe(1);
+  expect((await events.processQueue()).processed).toBe(0);
+  expect(await JournalEntry.countDocuments()).toBe(0);
   const order = await newOrder({ user, packages: [{ weight: 10, price: 10, received: true }] });
   expect((await sync(order._id)).skipped).toBeTruthy();
+
+  // Recorded before the migration read the data: covered by it, never posted live
+  expect(await events.markCovered(new Date())).toBe(1);
+  expect(await AccountingEvent.countDocuments({ status: 'covered' })).toBe(1);
 
   await setLive(true);
   await events.emitAccountingEvent('order', order._id);

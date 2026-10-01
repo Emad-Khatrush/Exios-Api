@@ -29,7 +29,7 @@ const norm = (value) => String(value ?? '').trim().toLowerCase();
 async function loadSources(cutoff) {
   const upTo = { $lte: cutoff };
   const [orders, trips, statements, payments, invoices, balances, expenses, incomes] = await Promise.all([
-    Order.find({ createdAt: upTo, unsureOrder: { $ne: true } }).select('orderId user placedAt isPayment isShipment unsureOrder isCanceled totalInvoice editedAmounts paymentList shipment activity isFinished purchaseItems receivedUSD receivedLYD receivedShipmentUSD receivedShipmentLYD createdAt updatedAt').lean(),
+    Order.find({ createdAt: upTo, unsureOrder: { $ne: true } }).select('orderId user placedAt isPayment isShipment isRemittance unsureOrder isCanceled totalInvoice editedAmounts paymentList shipment activity isFinished purchaseItems receivedUSD receivedLYD receivedShipmentUSD receivedShipmentLYD createdAt updatedAt').lean(),
     Inventory.find({ inventoryType: 'inventoryGoods', createdAt: upTo }).select('voyage shippingType inventoryPlace status expenses orders.paymentList._id createdAt arrivalDate').lean(),
     UserStatement.find({ createdAt: upTo }).lean(),
     OrderPaymentHistory.find({ createdAt: upTo }).lean(),
@@ -158,6 +158,14 @@ async function loadSources(cutoff) {
       const order = ordersByNumber.get(String(statement.note || '').match(CANCELLATION_ORDER)?.[1] || '');
       const pkg = packageByTracking(order, refund[1].trim());
       if (order) return { orderId: order._id, packageIds: pkg ? [pkg._id] : undefined, category: 'receivedGoods' };
+    }
+    // A refund from a supplier credited to the wallet (spec E4): when its note names the order
+    // ("Order Id (X)" or just the order number) it lowers that order's sale; otherwise 520200
+    if (statement.actionType === 'refund') {
+      const note = String(statement.note || '');
+      const number = note.match(MANUAL_ORDER)?.[1]?.trim() || text.match(MANUAL_ORDER)?.[1]?.trim() || note.trim();
+      const order = number && ordersByNumber.get(number);
+      return order ? { orderId: order._id } : null;
     }
     const cancel = text.match(PAYMENT_CANCEL);
     if (cancel) {

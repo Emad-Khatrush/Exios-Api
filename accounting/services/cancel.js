@@ -7,6 +7,7 @@ const Wallet = require('../../models/wallet');
 const { reverseEntry } = require('./ledger');
 const { logAudit } = require('./audit');
 const { moveWallet } = require('./posting/people');
+const { assertOwnerIfLocked } = require('./periodGuard');
 
 const fail = (message) => new ErrorHandler(400, message);
 
@@ -33,7 +34,7 @@ const RULES = {
     async cascade(bill, context) {
       // The payment made on the spot with the bill goes with it
       const auto = await docs.SupplierPayment.findOne({ autoFromBillId: bill._id, status: ACTIVE }).session(context.session);
-      if (auto) await cancelDocument('AccountingSupplierPayment', auto._id, { ...context, reason: `${context.reason} (مع الفاتورة ${bill.number})` });
+      if (auto) await cancelDocument('AccountingSupplierPayment', auto._id, { ...context, cascaded: true, reason: `${context.reason} (مع الفاتورة ${bill.number})` });
       await docs.FixedAsset.updateMany({ sourceBillId: bill._id, status: ACTIVE }, { $set: { status: 'canceled', canceledAt: new Date(), cancelReason: context.reason } }, { session: context.session });
       await docs.PrepaidExpense.updateMany({ sourceBillId: bill._id, status: ACTIVE }, { $set: { status: 'canceled', canceledAt: new Date(), cancelReason: context.reason } }, { session: context.session });
     },
@@ -99,6 +100,8 @@ async function cancelDocument(modelName, id, context) {
   if (!doc) throw new ErrorHandler(404, 'المستند غير موجود');
   if (doc.status === 'draft') throw fail('المسودة تُحذف ولا تُلغى');
   if (doc.status === 'canceled') throw fail('المستند مُلغى مسبقاً');
+  // A document of a closed period is cancelled by the owner only (spec 19.12)
+  if (!context.cascaded) await assertOwnerIfLocked(req?.user, doc.day);
   if (rule.check) await rule.check(doc, context);
 
   // Claims the document first: a second cancel at the same moment conflicts here and fails

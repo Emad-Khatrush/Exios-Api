@@ -16,7 +16,7 @@ const accountSchema = new Schema({
   currency: { type: String, default: null },
   // Cash box, bank or e-wallet: shows up in payment screens and has its own journal
   isCash: { type: Boolean, default: false },
-  cashKind: { type: String, enum: ['cash', 'bank', 'ewallet', null], default: null },
+  cashKind: { type: String, enum: ['cash', 'bank', 'ewallet', 'current', null], default: null },
   // AccountingOffice.code the cash account belongs to
   office: { type: String, default: null },
   // Dimensions every line on this account must carry: partner, vendor, employee, trip, order, package, office

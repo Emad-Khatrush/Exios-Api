@@ -85,6 +85,12 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
   migrationRunId: String,
   // Entered through the quick expense screen
   isQuickExpense: { type: Boolean, default: false },
+  // Entered by office staff on the system's Expenses screen (spec 19.1): their office, the type
+  officeExpense: { type: Boolean, default: false },
+  office: String,
+  expenseTypeId: { type: Schema.Types.ObjectId, ref: 'AccountingExpenseType' },
+  // Entered from an operations screen (trip page, order page) rather than the accounting section
+  enteredFrom: { type: String, enum: ['accounting', 'trip', 'order', 'officeExpense', null], default: null },
 }));
 
 const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycle({

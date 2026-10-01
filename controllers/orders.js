@@ -17,6 +17,7 @@ const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
 const { emitAccountingEvent, emitOrdersByNumber } = require('../accounting/services/events');
+const { refreshPackageTrips } = require('../accounting/services/tripLinks');
 const { deleteOrder: deleteOrderWithLedger } = require('../accounting/services/orderDeletion');
 const { syncOrderDebtsOwner } = require('../utils/debts');
 const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
@@ -669,7 +670,16 @@ module.exports.createOrder = async (req, res, next) => {
     const items = JSON.parse(req.body.items);
     const totalInvoice = calculateTotalInvoice(items);
 
-    const paymentList = JSON.parse(req.body.paymentList).map(data => ({
+    // Money received is recorded as a payment on the order (Payments tab) or a wallet deposit, so it
+    // reaches the books; the old "received" amounts on the order itself are no longer accepted
+    const parsedPackages = JSON.parse(req.body.paymentList);
+    const receivedOnOrder = ['receivedUSD', 'receivedLYD', 'receivedShipmentUSD', 'receivedShipmentLYD'].some((field) => Number(req.body[field]) > 0)
+      || parsedPackages.some((data) => Number(data?.deliveredPackages?.receivedShipmentUSD) > 0 || Number(data?.deliveredPackages?.receivedShipmentLYD) > 0);
+    if (receivedOnOrder) {
+      return next(new ErrorHandler(400, 'Amounts received can no longer be typed on the order. Record them as a payment on the order or a wallet deposit.'));
+    }
+
+    const paymentList = parsedPackages.map(data => ({
       link: data.paymentLink,
       status: {
         arrived: data.arrived,
@@ -1054,6 +1064,8 @@ module.exports.updateOrder = async (req, res, next) => {
       },
       changedFields
     });
+    // Saving the order rewrites its packages; their trip links are worked out again
+    await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id));
     await emitAccountingEvent('order', newOrder._id, {}, req.user);
     res.status(200).json(newOrder);
   } catch (error) {
@@ -1091,6 +1103,8 @@ module.exports.updateSinglePackage = async (req, res, next) => {
     if (user && !user._id.equals(oldOrder.user)) {
       await syncOrderDebtsOwner(newOrder._id, user._id);
     }
+    // Saving the order rewrites its packages; their trip links are worked out again
+    await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id));
     await emitAccountingEvent('order', newOrder._id, {}, req.user);
 
     res.status(200).json(newOrder);

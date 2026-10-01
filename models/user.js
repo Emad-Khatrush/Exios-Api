@@ -31,6 +31,11 @@ const userSchema = new Schema({
   city: {
     type: String,
   },
+  // The office a staff member works in (an accounting office code): their expenses are recorded on
+  // that office and paid from its cash box. Set by the owner in Accounting > Access.
+  office: {
+    type: String,
+  },
   password: {
     type: String,
     required: true,

@@ -3,6 +3,7 @@ const { handle, badRequest, notFound } = require('./util');
 const { runInTransaction } = require('../services/transaction');
 const { logAudit } = require('../services/audit');
 const { isDay, today } = require('../services/dates');
+const { recordSettingsRate } = require('../services/settingsRate');
 
 module.exports.list = handle(async (req, res) => {
   const query = {};
@@ -36,6 +37,11 @@ module.exports.upsert = handle(async (req, res) => {
   if (!(rate > 0)) throw badRequest('السعر يجب أن يكون أكبر من صفر');
   const known = await Currency.findOne({ code: currency, isActive: true }).lean();
   if (!known || known.isBase) throw badRequest('العملة غير متاحة');
+  // Today's dinar rate is the settings rate: both are written together (spec 2.1)
+  if (currency === 'LYD' && day === today()) {
+    res.json(await recordSettingsRate(rate, { req }));
+    return;
+  }
 
   const result = await runInTransaction(async (session) => {
     const existing = await CurrencyRate.findOne({ currency, day }).session(session);

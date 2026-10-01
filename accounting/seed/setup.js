@@ -6,8 +6,8 @@ const UserStatement = require('../../models/userStatement');
 const defaults = require('./defaults');
 const { invalidateConfig } = require('../services/config');
 
-const CASH_JOURNAL_TYPES = { cash: 'cash', bank: 'bank', ewallet: 'ewallet' };
-const JOURNAL_KIND_PREFIX = { cash: 'CASH', bank: 'BANK', ewallet: 'EWAL' };
+const CASH_JOURNAL_TYPES = { cash: 'cash', bank: 'bank', ewallet: 'ewallet', current: 'bank' };
+const JOURNAL_KIND_PREFIX = { cash: 'CASH', bank: 'BANK', ewallet: 'EWAL', current: 'CUR' };
 
 const officeShort = (code) => defaults.OFFICES.find((office) => office.code === code)?.short
   || String(code || 'GEN').slice(0, 3).toUpperCase();
@@ -198,6 +198,9 @@ async function runSetup({ user } = {}) {
   await settings.save();
 
   invalidateConfig();
+  // Every package already on a trip gets its trip links (they did not exist before)
+  const links = await require('../services/tripLinks').backfillTripLinks();
+  if (links.updated) created(`trip links on ${links.updated} package(s)`);
   report.ranBy = user?._id;
   return report;
 }

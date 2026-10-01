@@ -11,6 +11,8 @@ const { ObjectId } = mongoose.Types; // Import new ObjectId from mongoose
 const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { emitAccountingEvent } = require('../accounting/services/events');
 const { lydRateLimits } = require('../accounting/services/walletRate');
+const { assertOpenPeriod } = require('../accounting/services/periodGuard');
+const { moneyAccount } = require('../accounting/services/moneyAccounts');
 const { payOrderDebts, restoreOrderDebts } = require('../utils/debts');
 
 module.exports.getUserWallet = async (req, res, next) => {
@@ -24,7 +26,7 @@ module.exports.getUserWallet = async (req, res, next) => {
       results: wallet
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -232,6 +234,10 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, actionType, office } = req.body;
+    await assertOpenPeriod(req.user, createdAt || new Date());
+    // The account the money went into, when chosen (a bank, or a partner's current account such as Wasl)
+    let accountId;
+    if (req.body.accountId) accountId = (await moneyAccount(req.body.accountId, { currency, what: 'الحساب' }))._id;
 
     const existWallet = await Wallet.findOne({ user: id, currency });
 
@@ -286,6 +292,7 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       note,
       attachments: files,
       office,
+      accountId,
       actionType
     });
     await emitAccountingEvent('statement', userStatement._id, {}, req.user);
@@ -294,7 +301,7 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       createdAt: userStatement.createdAt
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -304,6 +311,7 @@ module.exports.cancelPayment = async (req, res, next) => {
 
   try {
     const savedPayment = await OrderPaymentHistory.findById(payment._id).lean();
+    await assertOpenPeriod(req.user, savedPayment?.createdAt);
     if (payment.paymentType !== 'wallet') {
       await emitAccountingEvent('cashPaymentDeleted', payment._id, {}, req.user);
       await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
@@ -349,7 +357,7 @@ module.exports.cancelPayment = async (req, res, next) => {
       createdAt: userStatement.createdAt
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -365,7 +373,7 @@ module.exports.getUserStatement = async (req, res, next) => {
       results: userStatement
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -382,7 +390,7 @@ module.exports.verifyStatement = async (req, res, next) => {
       results: userStatement
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -424,6 +432,7 @@ module.exports.deleteStatement = async (req, res, next) => {
     if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
     // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
     if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
+    await assertOpenPeriod(req.user, statement.createdAt);
 
     const { currency } = statement;
     const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 });
@@ -506,6 +515,9 @@ module.exports.updateStatement = async (req, res, next) => {
     if (!Object.keys(changes).length) {
       return res.status(200).json({ results: statement });
     }
+    // Neither the old date nor a new one may be in a closed period (owner excepted)
+    await assertOpenPeriod(req.user, statement.createdAt);
+    if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt);
 
     if (!String(changes.description ?? statement.description).trim()) {
       return next(new ErrorHandler(400, 'Description is required'));
@@ -638,7 +650,7 @@ module.exports.getUnverifiedUsersStatement = async (req, res, next) => {
       results: userStatements
     });
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 

@@ -117,6 +117,12 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false
   },
+  // A purchase invoice that is an Alipay transfer for the customer (yuan sent to their supplier):
+  // its sale and cost are remittance revenue and cost in accounting (spec 19.5)
+  isRemittance: {
+    type: Boolean,
+    default: false,
+  },
   isPayment: {
     type: Boolean,
     default: false
@@ -211,6 +217,11 @@ const orderSchema = new Schema({
       type: String,
       default: ''
     },
+    // The air or sea trip that carried this package, and the domestic trip that took it on to
+    // another office (accounting reads these; kept in step with the trips' package lists by
+    // accounting/services/tripLinks.js). Warehouses never set them.
+    tripId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', default: null },
+    domesticTripId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', default: null },
     status: {
       arrived: {
         type: Boolean,
@@ -343,5 +354,8 @@ const orderSchema = new Schema({
     },
   }]
 }, { timestamps: true })
+
+orderSchema.index({ 'paymentList.tripId': 1 });
+orderSchema.index({ 'paymentList.domesticTripId': 1 });
 
 module.exports = mongoose.model("Order", orderSchema);

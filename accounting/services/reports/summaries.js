@@ -107,7 +107,6 @@ async function tripSummary(tripId) {
   // A warehouse only tracks packages: it has no costs, revenue or entries (spec 4.3)
   if (trip.inventoryType !== 'inventoryGoods') return { trip: { _id: trip._id, voyage: trip.voyage, inventoryType: trip.inventoryType }, isWarehouse: true };
 
-  const { settings } = await getConfig();
   const roles = await roleIds(ROLES);
   const packageIds = (trip.orders || []).map((o) => o?.paymentList?._id).filter(Boolean);
   const international = trip.shippingType !== 'domestic';
@@ -155,7 +154,8 @@ async function tripSummary(tripId) {
   const revenue = list.reduce((sum, p) => sum + p.revenue, 0);
   return {
     trip: { _id: trip._id, voyage: trip.voyage, shippingType: trip.shippingType, status: trip.status, inventoryType: trip.inventoryType },
-    allocationBase: settings.tripCostAllocationBase || 'charge', international,
+    // Air and sea trips share their cost by weight; a domestic trip's cost is a lump-sum expense
+    allocationBase: international ? 'weight' : 'none', international,
     totals: {
       revenue, cost, profit: revenue - cost, margin: revenue ? Math.round(((revenue - cost) / revenue) * 1000) / 10 : null,
       deferred: list.reduce((sum, p) => sum + p.deferred, 0), costInProgress, totalCost: cost + costInProgress,

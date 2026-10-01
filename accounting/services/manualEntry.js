@@ -86,6 +86,7 @@ async function cancelManualEntry(entryId, { reason, session, req }) {
   const entry = await JournalEntry.findById(entryId).session(session);
   if (!entry) throw new ErrorHandler(404, 'القيد غير موجود');
   if (entry.eventType !== 'MANUAL') throw new ErrorHandler(400, 'هذا قيد تلقائي؛ يُلغى بإلغاء مستنده');
+  await require('./periodGuard').assertOwnerIfLocked(req?.user, entry.day);
   const reversal = await reverseEntry(entry._id, {
     session, user: req?.user, reason, eventKey: `CANCEL:JournalEntry:${entry._id}`, eventType: 'CANCEL',
   });

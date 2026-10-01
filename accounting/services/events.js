@@ -1,9 +1,11 @@
 // Live posting of the system's own operations through an outbox.
 //
 // Existing screens (wallet, orders, debts, inventory) call emitAccountingEvent() after their
-// own writes. Nothing is recorded while live posting is off (before the historical migration),
-// and an accounting problem (a missing rate, say) never blocks the operation: the event waits
-// in the queue with its error until it is fixed and retried.
+// own writes. Events are recorded ALWAYS, also before live posting is on (spec 19.11); they are
+// only posted once it is. When the historical migration is committed, every event recorded before
+// the migration read the data is marked 'covered' (the migration posted that state already).
+// An accounting problem (a missing rate, say) never blocks the operation: the event waits in the
+// queue with its error until it is fixed and retried.
 const { AccountingEvent } = require('../models');
 const { getConfig } = require('./config');
 const { runInTransaction } = require('./transaction');
@@ -40,7 +42,6 @@ async function isLive() {
 async function emitAccountingEvent(type, refId, payload = {}, user) {
   try {
     if (!HANDLERS[type] || !refId) return null;
-    if (!(await isLive())) return null;
     return await AccountingEvent.create({ type, refId, payload, userId: user?._id });
   } catch (error) {
     console.error(`[accounting] could not record ${type} ${refId}:`, error.message);
@@ -51,7 +52,6 @@ async function emitAccountingEvent(type, refId, payload = {}, user) {
 // For screens that only know the visible order number (orderId), not the document _id
 async function emitOrdersByNumber(orderNumbers, user) {
   try {
-    if (!(await isLive())) return;
     const Order = require('../../models/order');
     const orders = await Order.find({ orderId: { $in: [...new Set(orderNumbers.filter(Boolean).map(String))] } }).select('_id').lean();
     for (const order of orders) await emitAccountingEvent('order', order._id, {}, user);
@@ -78,6 +78,7 @@ async function processEvent(event) {
 
 // Oldest first, so a deposit is always posted before the payment that spends it
 async function processQueue({ limit = BATCH } = {}) {
+  if (!(await isLive())) return { processed: 0, done: 0, waiting: 'live posting is off' };
   const events = await AccountingEvent.find({ $or: [{ status: 'pending' }, { status: 'failed', attempts: { $lt: MAX_ATTEMPTS } }] })
     .sort({ createdAt: 1 }).limit(limit);
   let done = 0;
@@ -106,4 +107,13 @@ function startWorker(intervalMs = 10000) {
   if (timer.unref) timer.unref();
 }
 
-module.exports = { emitAccountingEvent, emitOrdersByNumber, processQueue, processEvent, startWorker, HANDLERS };
+// At the commit: events recorded up to the moment the migration read the data are covered by it
+async function markCovered(upTo) {
+  const result = await AccountingEvent.updateMany(
+    { status: { $in: ['pending', 'failed'] }, createdAt: { $lte: upTo } },
+    { $set: { status: 'covered', processedAt: new Date(), lastError: undefined } },
+  );
+  return result.modifiedCount || 0;
+}
+
+module.exports = { markCovered, emitAccountingEvent, emitOrdersByNumber, processQueue, processEvent, startWorker, HANDLERS };

@@ -3,7 +3,7 @@
 // the run wrote disappears and numbering goes back) or commits (catch-up + live posting on).
 const crypto = require('crypto');
 const ErrorHandler = require('../../../utils/errorHandler');
-const { JournalEntry, Journal, Counter, CurrencyRate, MigrationRun, AccountingSettings, Voucher } = require('../../models');
+const { JournalEntry, Journal, Counter, CurrencyRate, MigrationRun, AccountingSettings, Voucher, AccountingEvent } = require('../../models');
 const docs = require('../../models/documents');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
@@ -16,6 +16,8 @@ const { invalidateConfig } = require('../config');
 const { toDay } = require('../dates');
 const { replay } = require('./replay');
 const { buildReport } = require('./report');
+const { markCovered } = require('../events');
+const { backfillTripLinks } = require('../tripLinks');
 
 const ACTIVE = ['running', 'review', 'committing'];
 const fail = (message) => new ErrorHandler(400, message);
@@ -31,6 +33,9 @@ const inProcess = new Set();
 async function execute(run) {
   inProcess.add(run.runId);
   try {
+    // Packages carried by a trip before the trip links existed get them first (spec 4.3)
+    await MigrationRun.updateOne({ _id: run._id }, { $set: { progress: { phase: 'links', done: 0, total: 0 } } });
+    await backfillTripLinks();
     const result = await replay(run);
     const fresh = await MigrationRun.findById(run._id);
     const report = await buildReport(fresh, result);
@@ -125,22 +130,28 @@ async function commitRun(runId, { user } = {}) {
   if (run.status !== 'review') throw fail('يُعتمد التشغيل بعد انتهائه ومراجعة تقريره فقط');
   run.status = 'committing';
   await run.save();
+  const since = run.cutoff;
   try {
-    const since = run.cutoff;
     run.cutoff = new Date();
-    await setSettings({ liveEnabled: true, migrationGuardDay: null, historyStartDate: toDay(run.historyStart || since), migrationDate: toDay(run.cutoff) });
+    // cutoffAt: created before it = posted by the migration (dry run + catch-up), after it = live
+    await setSettings({ liveEnabled: true, migrationGuardDay: null, cutoffAt: run.cutoff, historyStartDate: toDay(run.historyStart || since), migrationDate: toDay(run.cutoff) });
+    // Events recorded before the dry run read the data describe states it already posted. Later
+    // ones (an old statement edited during the review, say) stay in the queue and are posted.
+    const covered = await markCovered(since);
     const catchUp = await replay(run, { since });
     run.status = 'committed';
     run.committedAt = new Date();
     run.message = `اعتُمد؛ أُضيفت ${catchUp.events} عملية حدثت أثناء المراجعة`;
-    run.report = { ...(run.report || {}), catchUp: { events: catchUp.events, walletDifferences: catchUp.walletDifferences.length }, committedBy: user?._id };
+    run.report = { ...(run.report || {}), catchUp: { events: catchUp.events, walletDifferences: catchUp.walletDifferences.length, coveredEvents: covered }, committedBy: user?._id };
     await run.save();
     return run;
   } catch (error) {
+    run.cutoff = since;
     run.status = 'review';
     run.message = `تعذّر الاعتماد: ${error.message}`;
     await run.save();
-    await setSettings({ liveEnabled: false, migrationDate: null, migrationGuardDay: toDay(run.cutoff) });
+    await setSettings({ liveEnabled: false, migrationDate: null, cutoffAt: null, migrationGuardDay: toDay(run.cutoff) });
+    await AccountingEvent.updateMany({ status: 'covered', createdAt: { $lte: since } }, { $set: { status: 'pending' } });
     throw error;
   }
 }

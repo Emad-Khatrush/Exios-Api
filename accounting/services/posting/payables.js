@@ -8,9 +8,10 @@ const { postEntry } = require('../ledger');
 const { isDay, monthOf } = require('../dates');
 const { logAudit } = require('../audit');
 const {
-  fail, currencyOf, getAccount, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine,
+  fail, currencyOf, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
   nextDocNumber, findExisting, officeExists, resolveAccount,
 } = require('./common');
+const { getBalance, valueOutflow } = require('../carrying');
 
 const TARGETS = ['order', 'trip', 'expense', 'asset', 'prepaid'];
 const MONTH = /^\d{4}-\d{2}$/;
@@ -107,8 +108,10 @@ async function costLine(bill, line, usd, session, user) {
     return { ...base, accountId: account._id, orderId: toId(line.orderId), office: order.placedAt };
   }
   if (line.target === 'trip') {
-    const trip = await Inventory.findById(line.tripId).select('inventoryPlace').session(session);
-    const account = await resolveAccount('trip_cost_wip');
+    const trip = await Inventory.findById(line.tripId).select('inventoryPlace shippingType').session(session);
+    // A domestic trip only tracks what was sent on to another office; its cost is a lump sum paid
+    // for the transport, an expense straight away, not shared over packages (owner's decision)
+    const account = await resolveAccount(trip.shippingType === 'domestic' ? 'cost_shipping_domestic' : 'trip_cost_wip');
     return { ...base, accountId: account._id, tripId: toId(line.tripId), office: trip.inventoryPlace };
   }
   if (line.target === 'expense') {
@@ -139,15 +142,36 @@ async function costLine(bill, line, usd, session, user) {
   return { ...base, accountId: account._id, prepaidId: line.prepaidId, office: line.office };
 }
 
+// { shares: USD cents per line } when the bill is valued at the paying account's average rate
+async function carriedValue(bill, session) {
+  if (!bill.paidImmediatelyFrom || bill.isHistorical || bill.isCreditNote || Number(bill.rate) > 0 || bill.currency === 'USD') return null;
+  const from = await getAccount(bill.paidImmediatelyFrom, 'حساب الدفع');
+  if (!from.isCash || currencyOf(from) !== bill.currency) return null;
+  const minors = [];
+  for (const line of bill.lines) minors.push(await toCurrencyMinor(line.amount, bill.currency));
+  const total = minors.reduce((sum, value) => sum + value, 0);
+  const usd = valueOutflow(await getBalance(from._id, { session }), total);
+  if (usd === null || usd <= 0) return null;
+  const { allocate } = require('../claims/sync');
+  // The rate shown on the bill and its payment: units of the currency for one dollar
+  bill.rate = Math.round(((total / 10 ** (await decimalsOf(bill.currency))) / (usd / 100)) * 1e6) / 1e6;
+  return { shares: allocate(usd, minors), total: usd };
+}
+
 async function postBill(bill, { session, user, sync }) {
   const vendor = await Vendor.findById(bill.vendorId).session(session);
   const rates = new RateBook(session);
   const lines = [];
   let totalUsd = 0;
 
-  for (const line of bill.lines) {
+  // Paid on the spot from a foreign-currency account (Alipay in yuan, a lira bank) with no rate
+  // typed: the cost is what the money is worth in that account, its average carrying rate (spec
+  // 2.4). The bill and its payment then carry the same dollars and no exchange difference appears.
+  const carried = await carriedValue(bill, session);
+
+  for (const [index, line] of bill.lines.entries()) {
     const minor = await toCurrencyMinor(line.amount, bill.currency);
-    const usd = await rates.toUsd(minor, bill.currency, bill.day, bill.rate);
+    const usd = carried ? carried.shares[index] : await rates.toUsd(minor, bill.currency, bill.day, bill.rate);
     if (usd <= 0) throw fail(`السطر "${line.description}": القيمة بالدولار صفر`);
     line.usd = usd;
     totalUsd += usd;
@@ -219,7 +243,7 @@ async function postBill(bill, { session, user, sync }) {
   return bill;
 }
 
-const BILL_FIELDS = ['vendorId', 'vendorRef', 'day', 'currency', 'rate', 'lines', 'isCreditNote', 'originalBillId', 'paidImmediatelyFrom', 'employeeId', 'note', 'attachments', 'isQuickExpense', 'isHistorical', 'migrationRunId'];
+const BILL_FIELDS = ['vendorId', 'vendorRef', 'day', 'currency', 'rate', 'lines', 'isCreditNote', 'originalBillId', 'paidImmediatelyFrom', 'employeeId', 'note', 'attachments', 'isQuickExpense', 'isHistorical', 'migrationRunId', 'officeExpense', 'office', 'expenseTypeId', 'enteredFrom', 'replaces'];
 
 // `sync` carries the historical replay's context (as-of view of orders) to the order/trip sync
 async function createBill(input, { session, req, asDraft = false, sync }) {
@@ -324,7 +348,8 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     // Allowing a little over the day's value: a bill paid in its own currency closes in full
     // even when the rate moved since the bill
     if (allocated > Math.round(atRate * 1.1) + 100) throw fail('المبالغ المخصصة أكبر من قيمة الدفعة');
-    const advance = Math.max(atRate - allocated, 0);
+    // The payment made with its bill pays exactly that bill: a cent of rounding is not an advance
+    const advance = input.autoFromBillId ? 0 : Math.max(atRate - allocated, 0);
     if (advance > 0) lines.push({ accountId: payable._id, debit: advance, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'دفعة مقدمة للمورد' });
     lines.push(moneyLine(from, 'credit', minor, outUsd, { label: `دفعة للمورد ${vendor.name}`, ...(isEmployeeAdvance && { employeeId: toId(input.employeeId) }) }));
     office = from.office || undefined;

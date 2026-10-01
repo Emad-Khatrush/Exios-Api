@@ -7,6 +7,8 @@ const mongodb = require('mongodb');
 const Activities = require("../models/activities");
 const ReturnedPayments = require("../models/returnedPayments");
 const { emitAccountingEvent } = require('../accounting/services/events');
+const { tripDeletionBlockers } = require('../accounting/services/tripGuards');
+const { refreshTripPackages } = require('../accounting/services/tripLinks');
 const Users = require("../models/user");
 const PackageDeletion = require("../models/packageDeletion");
 const WarehouseCheck = require("../models/warehouseCheck");
@@ -451,6 +453,11 @@ module.exports.getSingleInventory = async (req, res, next) => {
 module.exports.deleteInventory = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const existing = await Inventory.findById(id).select('inventoryType orders.paymentList._id expenses').lean();
+    if (!existing) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    // A trip with costs or packages is never deleted: its accounting history would be lost
+    const blockers = await tripDeletionBlockers(existing);
+    if (blockers.length) return next(new ErrorHandler(400, `This trip cannot be deleted: ${blockers.join('; ')}.`));
     const inventory = await Inventory.findByIdAndDelete(id);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     await emitAccountingEvent('trip', inventory._id, {}, req.user);
@@ -460,120 +467,6 @@ module.exports.deleteInventory = async (req, res, next) => {
     return next(new ErrorHandler(404, error.message));
   }
 }
-
-module.exports.addExpenseToInventory = async (req, res, next) => {
-  try {
-    const { inventoryId } = req.params; // e.g. /inventory/:inventoryId/expenses
-    const { description, amount, currency, rate, date } = req.body;
-
-    // 1️⃣ Find the inventory document
-    const inventory = await Inventory.findById(inventoryId);
-    if (!inventory) {
-      return res.status(404).json({ message: 'Inventory not found' });
-    }
-
-    // 2️⃣ Create the expense object
-    const expense = {
-      description,
-      amount,
-      currency,
-      rate: rate || 0,
-      date: date || new Date()
-    };
-
-    // 3️⃣ Push the expense to the expenses array
-    inventory.expenses.push(expense);
-
-    // 4️⃣ Save the document
-    await inventory.save();
-
-    // 5️⃣ Return updated inventory or expenses list
-    res.status(200).json({
-      message: 'Expense added successfully',
-      expenses: inventory.expenses
-    });
-
-  } catch (error) {
-    return next(new ErrorHandler(500, error.message));
-  }
-};
-
-module.exports.deleteExpenseOfInventory = async (req, res, next) => {
-  try {
-    const { inventoryId } = req.params;  // from URL
-    const { expenseId } = req.body;      // from request body
-
-    // 1. Find inventory by ID
-    const inventory = await Inventory.findById(inventoryId);
-    if (!inventory) {
-      return next(new ErrorHandler(404, 'Inventory not found'));
-    }
-
-    // 2. Remove expense from expenses array
-    const initialLength = inventory.expenses.length;
-    inventory.expenses = inventory.expenses.filter(exp => exp._id.toString() !== expenseId);
-
-    if (inventory.expenses.length === initialLength) {
-      return next(new ErrorHandler(404, 'Expense not found in this inventory'));
-    }
-
-    // 3. Save updated inventory
-    await inventory.save();
-
-    // 4. Return updated expenses list
-    res.status(200).json({
-      message: 'Expense deleted successfully',
-      expenses: inventory.expenses
-    });
-
-  } catch (error) {
-    return next(new ErrorHandler(500, error.message));
-  }
-};
-
-module.exports.updateExpenseOfInventory = async (req, res, next) => {
-  try {
-    const { inventoryId } = req.params; // from URL, e.g. /inventory/:inventoryId/expenses
-    const { editingId, description, amount, currency, date, rate } = req.body;
-
-    if (!editingId) {
-      return next(new ErrorHandler(400, 'editingId (expense id) is required'));
-    }
-
-    // Find the inventory by id
-    const inventory = await Inventory.findById(inventoryId);
-    if (!inventory) {
-      return next(new ErrorHandler(404, 'Inventory not found'));
-    }
-
-    // Find the expense by editingId inside expenses array
-    const expenseIndex = inventory.expenses.findIndex(exp => exp._id.toString() === editingId);
-    if (expenseIndex === -1) {
-      return next(new ErrorHandler(404, 'Expense not found'));
-    }
-
-    // Update the expense fields
-    inventory.expenses[expenseIndex] = {
-      ...inventory.expenses[expenseIndex]._doc, // preserve other fields
-      description,
-      amount,
-      currency,
-      date,
-      rate
-    };
-
-    // Save updated inventory
-    await inventory.save();
-
-    res.status(200).json({
-      message: 'Expense updated successfully',
-      expense: inventory.expenses[expenseIndex]
-    });
-
-  } catch (error) {
-    return next(new ErrorHandler(500, error.message));
-  }
-};
 
 module.exports.getInventoryOrders = async (req, res, next) => {
   try {
@@ -665,6 +558,8 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
     .populate(['createdBy', 'orders'])
 
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    // The packages' trip links follow the trip's list (accounting reads them)
+    await refreshTripPackages(inventory._id);
     await emitAccountingEvent('trip', inventory._id, {}, req.user);
     const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
     
@@ -721,6 +616,8 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
 
     const inventory = await Inventory.findById(req.query.id).populate(['createdBy', 'orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    // The packages' trip links follow the trip's list (accounting reads them)
+    await refreshTripPackages(inventory._id);
     await emitAccountingEvent('trip', inventory._id, {}, req.user);
 
     res.status(200).json(inventory);
@@ -1026,6 +923,8 @@ module.exports.updateInventory = async (req, res, next) => {
     }
 
     const updatedInventory = await Inventory.updateOne({ _id: id }, update, { new: true });
+    // The packages' trip links follow the trip's list (accounting reads them)
+    await refreshTripPackages(id);
     await emitAccountingEvent('trip', id, {}, req.user);
 
     res.status(200).json(updatedInventory);
@@ -1222,6 +1121,8 @@ module.exports.createInternalShipping = async (req, res, next) => {
       ],
     });
 
+    // The packages' trip links follow the trip's list (accounting reads them)
+    await refreshTripPackages(shipment._id);
     await emitAccountingEvent('trip', shipment._id, {}, req.user);
     res.status(200).json({ _id: shipment._id, voyage: shipment.voyage, movedCount: requested.length });
   } catch (error) {

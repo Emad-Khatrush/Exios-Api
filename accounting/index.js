@@ -1,4 +1,5 @@
 const routes = require('./routes');
+const systemRoutes = require('./systemRoutes');
 const { runSetup, isSetupDone } = require('./seed/setup');
 const { startWorker } = require('./services/events');
 
@@ -13,6 +14,11 @@ async function initAccounting() {
     }
   } catch (error) {
     console.error('[accounting] default setup failed:', error.message);
+  }
+  try {
+    await require('./services/settingsRate').syncSettingsRate();
+  } catch (error) {
+    console.error('[accounting] could not align the settings rate:', error.message);
   }
   startWorker();
   startDailyReconciliation();
@@ -59,4 +65,4 @@ async function runMonthlySchedules() {
   }
 }
 
-module.exports = { routes, initAccounting, runMonthlySchedules };
+module.exports = { routes, systemRoutes, initAccounting, runMonthlySchedules };

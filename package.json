@@ -12,7 +12,9 @@
     "start": "node app.js",
     "app": "nodemon app.js",
     "postinstall": "npx puppeteer browsers install chrome",
-    "accounting:setup": "node accounting/scripts/setup.js"
+    "accounting:setup": "node accounting/scripts/setup.js",
+    "db:backup": "node accounting/scripts/backup.js",
+    "db:restore-local": "node accounting/scripts/restoreLocal.js"
   },
   "keywords": [],
   "author": "",
@@ -62,6 +64,9 @@
     "roots": [
       "<rootDir>/accounting"
     ],
-    "testTimeout": 60000
+    "testTimeout": 60000,
+    "setupFiles": [
+      "<rootDir>/accounting/tests/env.js"
+    ]
   }
 }
