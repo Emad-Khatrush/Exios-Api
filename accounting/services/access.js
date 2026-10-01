@@ -37,9 +37,10 @@ const PRESETS = [
   { key: 'auditor', label: 'مراجع (عرض فقط)', permissions: ['dashboard', 'reports', 'entries', 'audit'] },
 ];
 
-// The owner's two accounts. ACCOUNTING_OWNER_IDS (comma separated) replaces them, e.g. on a copy
-// of the database where the accounts have other ids.
-const DEFAULT_OWNERS = ['62bb47b22aabe070791f8278', '632aeb399aefb9b93b7a7527', '6aa99588ae35416174639238'];
+// The owner accounts. The first is emadkhatrush on the production database (MONGO_URL_2); the
+// others are the owner accounts of the test database (MONGO_URL), where the ids differ.
+// ACCOUNTING_OWNER_IDS (comma separated) replaces the list.
+const DEFAULT_OWNERS = ['69deb74c4b5e921e7416ea11', '62bb47b22aabe070791f8278', '632aeb399aefb9b93b7a7527', '6aa99588ae35416174639238'];
 const ownerIds = () => (process.env.ACCOUNTING_OWNER_IDS ? process.env.ACCOUNTING_OWNER_IDS.split(',') : DEFAULT_OWNERS)
   .map((id) => id.trim()).filter((id) => mongoose.isValidObjectId(id));
 
