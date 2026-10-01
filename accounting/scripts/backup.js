@@ -18,14 +18,16 @@ if (!uri) {
   console.error('Set BACKUP_URI (or MONGO_URL) to the database to back up.');
   process.exit(1);
 }
-const database = (uri.match(/\/([^/?]+)(\?|$)/) || [])[1] || 'database';
+// A URI with no database name (as on Atlas here) uses MongoDB's default database, "test": that is
+// where the system's data lives. Only that one database is dumped, so the file says what it holds.
+const database = process.env.BACKUP_DB || (uri.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^/?]+)/) || [])[1] || 'test';
 const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
 const dir = path.resolve(process.env.BACKUP_DIR || 'backups');
 fs.mkdirSync(dir, { recursive: true });
 const file = path.join(dir, `${database}-${stamp}.archive.gz`);
 
 console.log(`Backing up ${database} to ${file} ...`);
-const result = spawnSync(findTool('mongodump') || 'mongodump', [`--uri=${uri}`, `--archive=${file}`, '--gzip'], { stdio: 'inherit' });
+const result = spawnSync(findTool('mongodump') || 'mongodump', [`--uri=${uri}`, `--db=${database}`, `--archive=${file}`, '--gzip'], { stdio: 'inherit' });
 if (result.error || result.status !== 0) {
   console.error(result.error?.code === 'ENOENT' ? 'mongodump was not found: install the MongoDB Database Tools.' : 'mongodump failed.');
   process.exit(1);

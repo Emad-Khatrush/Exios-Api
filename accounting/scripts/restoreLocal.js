@@ -27,7 +27,10 @@ if (!/^mongodb:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(uri)) {
 const target = process.env.RESTORE_DB || 'exios-restore-test';
 // The database the backup came from: in the file name made by db:backup (<database>-<date>-<time>),
 // or RESTORE_FROM_DB
-const source = process.env.RESTORE_FROM_DB || (require('path').basename(archive).match(/^(.+)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.archive\.gz$/) || [])[1];
+const named = (require('path').basename(archive).match(/^(.+)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.archive\.gz$/) || [])[1];
+// Backups taken before the database name was read correctly are called "database-..." and hold
+// the default database, "test"
+const source = process.env.RESTORE_FROM_DB || (named === 'database' ? 'test' : named);
 if (!source) {
   console.error('Set RESTORE_FROM_DB to the name of the database inside the backup.');
   process.exit(1);
