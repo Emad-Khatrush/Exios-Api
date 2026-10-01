@@ -31,7 +31,7 @@ const userStatementSchema = new Schema({
   accountingSource: {
     model: String,
     id: Schema.Types.ObjectId,
-  },
+  }, 
   review: {
     receivedDate: Date,
     isAdminConfirmed: Boolean
