@@ -19,13 +19,19 @@ const userStatementSchema = new Schema({
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
-  office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank'] },
+  office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank', 'bank'] },
   editHistory: [{
     editedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     editedAt: Date,
     // Previous values of the fields that were changed
     before: Schema.Types.Mixed,
   }],
+  // Set when the accounting section wrote this line itself (e.g. a netting credit), so its own
+  // journal entry is the only one and it is never posted again as a deposit
+  accountingSource: {
+    model: String,
+    id: Schema.Types.ObjectId,
+  },
   review: {
     receivedDate: Date,
     isAdminConfirmed: Boolean
