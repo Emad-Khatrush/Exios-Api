@@ -16,6 +16,8 @@ const Inventory = require('../models/inventory');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const Balances = require('../models/balance');
 const Invoices = require('../models/invoice');
+const { emitAccountingEvent, emitOrdersByNumber } = require('../accounting/services/events');
+const { deleteOrder: deleteOrderWithLedger } = require('../accounting/services/orderDeletion');
 const { syncOrderDebtsOwner } = require('../utils/debts');
 const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
 
@@ -638,6 +640,8 @@ module.exports.createOrder = async (req, res, next) => {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
     const { fullName, email, customerId, phone, fromWhere, toWhere, method, exiosShipmentPrice, originShipmentPrice, weight, packageCount, netIncome, currency, creditCurrency, debt, credit } = req.body;
+    // Only admins choose the invoice date, and only for a purchase; otherwise it is the moment of creation
+    if (!req.user.roles?.isAdmin || String(req.body.isPayment) !== 'true' || Number.isNaN(new Date(req.body.createdAt).getTime())) delete req.body.createdAt;
     const orderId = orderid.generate().slice(7, 17);
     const isOrderIdTaken = await Orders.findOne({ orderId });
     if (!!isOrderIdTaken) {
@@ -686,9 +690,12 @@ module.exports.createOrder = async (req, res, next) => {
         containerInfo: {
           billOfLading: data.deliveredPackages?.containerInfo?.billOfLading
         },
-        shipmentMethod: data.deliveredPackages.shipmentMethod,
+        // An empty method is not one of the allowed values; leave it unset instead
+        shipmentMethod: data.deliveredPackages.shipmentMethod || undefined,
         receiptNo: data.deliveredPackages.receiptNo,
-        boxesCount: data.deliveredPackages.boxesCount
+        boxesCount: data.deliveredPackages.boxesCount,
+        locationPlace: data.deliveredPackages.locationPlace,
+        ...(data.deliveredPackages.arrivedAt && { arrivedAt: data.deliveredPackages.arrivedAt }),
       },
       note: data.note,
     }))
@@ -742,6 +749,7 @@ module.exports.createOrder = async (req, res, next) => {
         actionId: order._id
       }
     })
+    await emitAccountingEvent('order', order._id, {}, req.user);
 
     let totalIncreaseOfDollar = (order.receivedShipmentUSD + order.receivedUSD) || 0;
     let totalIncreaseOfDinnar = (order.receivedShipmentLYD + order.receivedLYD) || 0;
@@ -852,11 +860,29 @@ module.exports.cancelOrder = async (req, res, next) => {
     const order = await Orders.findOneAndUpdate(query, updateQuery, { new: true }).populate('madeBy');
 
     if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+    await emitAccountingEvent('order', order._id, {}, req.user);
     
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));
+  }
+}
+
+// Removes an order for good (admins only, see the route). Refused while anything hangs on the
+// order; the accounting side is settled in the same step.
+module.exports.deleteOrder = async (req, res, next) => {
+  try {
+    const result = await deleteOrderWithLedger(req.params.id, req.user);
+    await Activities.create({
+      user: req.user,
+      details: { path: '/invoices', status: 'deleted', type: 'order', actionId: req.params.id },
+      changedFields: [{ label: 'orderId', value: result.orderId, changedFrom: result.orderId, changedTo: 'deleted' }],
+    });
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -872,6 +898,20 @@ module.exports.updateOrder = async (req, res, next) => {
     }
 
     const oldOrder = await Orders.findOne({ _id: String(id) });
+    if (!oldOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
+    // The invoice date: admins only, and only until the invoice is confirmed
+    let invoiceDate;
+    if (req.body.createdAt !== undefined) {
+      invoiceDate = new Date(req.body.createdAt);
+      delete req.body.createdAt;
+      if (Number.isNaN(invoiceDate.getTime())) return next(new ErrorHandler(400, 'Invalid invoice date'));
+      if (invoiceDate.getTime() === new Date(oldOrder.createdAt).getTime()) invoiceDate = undefined;
+      // A shipment's invoice is final from the moment it is created; only a purchase has a date to set
+      else if (!(req.body.isPayment ?? oldOrder.isPayment)) invoiceDate = undefined;
+      else if (!req.user.roles?.isAdmin) return next(new ErrorHandler(403, 'Only admins can change the invoice date'));
+      else if (oldOrder.invoiceConfirmed) return next(new ErrorHandler(400, 'The invoice is confirmed; its date can no longer be changed'));
+    }
 
     if (req.body.credit && req.body.credit.creditCurrency) {
       req.body.credit.currency = req.body.credit.creditCurrency;
@@ -901,6 +941,9 @@ module.exports.updateOrder = async (req, res, next) => {
     const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true }).populate('user');
     if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
+    // createdAt is a timestamp Mongoose never rewrites, so it is set straight in the collection
+    if (invoiceDate) await Orders.collection.updateOne({ _id: newOrder._id }, { $set: { createdAt: invoiceDate } });
+
     // The order moved to another customer: its unpaid debts move with it
     if (user && !user._id.equals(oldOrder.user)) {
       await syncOrderDebtsOwner(newOrder._id, user._id);
@@ -917,9 +960,13 @@ module.exports.updateOrder = async (req, res, next) => {
     let totalIncreaseOfDinnar = dinnarDifference + dinnarShipmentDifference;
 
     // calculate received shipment for each package
-    for (let i = 0; i < newOrder.paymentList?.length; i++) {
-      totalIncreaseOfDollar += (newOrder.paymentList[i]?.deliveredPackages?.receivedShipmentUSD - (oldOrder.paymentList[i]?.deliveredPackages?.receivedShipmentUSD || 0)) || 0;
-      totalIncreaseOfDinnar += (newOrder.paymentList[i]?.deliveredPackages?.receivedShipmentLYD - (oldOrder.paymentList[i]?.deliveredPackages?.receivedShipmentLYD || 0)) || 0;
+    // Each package is compared with itself before the update (by id, not by position: a package
+    // removed from the middle of the list shifts every position after it)
+    const oldPackages = new Map((oldOrder.paymentList || []).map((orderPackage) => [String(orderPackage._id), orderPackage]));
+    for (const orderPackage of newOrder.paymentList || []) {
+      const before = oldPackages.get(String(orderPackage._id))?.deliveredPackages;
+      totalIncreaseOfDollar += (orderPackage?.deliveredPackages?.receivedShipmentUSD - (before?.receivedShipmentUSD || 0)) || 0;
+      totalIncreaseOfDinnar += (orderPackage?.deliveredPackages?.receivedShipmentLYD - (before?.receivedShipmentLYD || 0)) || 0;
     }
     const updateQuery = {};
 
@@ -1007,6 +1054,7 @@ module.exports.updateOrder = async (req, res, next) => {
       },
       changedFields
     });
+    await emitAccountingEvent('order', newOrder._id, {}, req.user);
     res.status(200).json(newOrder);
   } catch (error) {
     console.log(error);
@@ -1043,6 +1091,7 @@ module.exports.updateSinglePackage = async (req, res, next) => {
     if (user && !user._id.equals(oldOrder.user)) {
       await syncOrderDebtsOwner(newOrder._id, user._id);
     }
+    await emitAccountingEvent('order', newOrder._id, {}, req.user);
 
     res.status(200).json(newOrder);
   } catch (error) {
@@ -1305,6 +1354,34 @@ module.exports.createOrderActivity = async (req, res, next) => {
   }
 }
 
+// Removes one activity from an order's timeline (admins only, see the route)
+module.exports.deleteOrderActivity = async (req, res, next) => {
+  try {
+    const { id, activityId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(activityId)) return next(new ErrorHandler(400, 'Invalid activity'));
+    const order = await Orders.findOneAndUpdate(
+      { _id: id, 'activity._id': activityId },
+      { $pull: { activity: { _id: activityId } } },
+      { new: true }
+    );
+    if (!order) return next(new ErrorHandler(404, 'Activity not found'));
+
+    await Activities.create({
+      user: req.user,
+      details: {
+        path: '/invoices',
+        status: 'deleted',
+        type: 'activity',
+        actionId: order._id
+      }
+    });
+    res.status(200).json(order);
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(400, error.message));
+  }
+}
+
 module.exports.updateStatusOfOrder = async (req, res, next) => {
   try {
     const { statusType, data, value, inventoryId } = req.body;
@@ -1365,6 +1442,7 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
         [`orders.$.paymentList.status.${statusType}`]: value,
       }
     }, { new: true });
+    await emitOrdersByNumber(orders.map(order => order?.orderId), req.user);
 
     res.status(200).json(response);
   } catch (error) {
@@ -1680,6 +1758,7 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
     await createInvoice(req.user, id, selectedPackages, payment, totalCost);
 
     await cleanUpInventory(selectedPackages);
+    await emitOrdersByNumber(selectedPackages.map(pkg => pkg.orderId), req.user);
 
     return res.status(200).json({ done: new Date() });
 
@@ -1724,6 +1803,7 @@ module.exports.cancelInvoice = async (req, res, next) => {
 
     const cancellation = await cancelInvoicePackages(req.user, invoice);
     await Invoices.updateOne({ _id: invoice._id }, { $set: { cancellation } });
+    await emitOrdersByNumber((invoice.list || []).map(pkg => pkg.orderId), req.user);
 
     res.status(200).json({ results: cancellation });
   } catch (error) {
@@ -1949,6 +2029,7 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       }
     }
     const payment = await OrderPaymentHistory.create(data);
+    if (payment.paymentType === 'cash') await emitAccountingEvent('cashPayment', payment._id, { office: req.body.office }, req.user);
 
     res.status(200).json(payment);
   } catch (error) {
@@ -2021,6 +2102,7 @@ module.exports.confirmItemsChanges = async (req, res, next) => {
     }
 
     await Orders.findOneAndUpdate({ _id: id }, update);
+    if (status === 'accepted') await emitAccountingEvent('order', id, {}, req.user);
     res.status(200).json({ success: true });
   } catch (error) {
     console.log(error);

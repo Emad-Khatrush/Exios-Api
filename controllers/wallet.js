@@ -9,6 +9,9 @@ const ErrorHandler = require('../utils/errorHandler');
 const mongoose = require('mongoose');
 const { ObjectId } = mongoose.Types; // Import new ObjectId from mongoose
 const { uploadToGoogleCloud } = require('../utils/googleClould');
+const { emitAccountingEvent } = require('../accounting/services/events');
+const { lydRateLimits } = require('../accounting/services/walletRate');
+const { payOrderDebts, restoreOrderDebts } = require('../utils/debts');
 
 module.exports.getUserWallet = async (req, res, next) => {
   try {
@@ -285,6 +288,7 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       office,
       actionType
     });
+    await emitAccountingEvent('statement', userStatement._id, {}, req.user);
 
     res.status(200).json({
       createdAt: userStatement.createdAt
@@ -299,7 +303,9 @@ module.exports.cancelPayment = async (req, res, next) => {
   const { payment } = req.body;
 
   try {
+    const savedPayment = await OrderPaymentHistory.findById(payment._id).lean();
     if (payment.paymentType !== 'wallet') {
+      await emitAccountingEvent('cashPaymentDeleted', payment._id, {}, req.user);
       await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
       return res.status(200).json({
         createdAt: new Date()
@@ -333,6 +339,11 @@ module.exports.cancelPayment = async (req, res, next) => {
       attachments: payment.attachments,
       actionType: 'cancellation',
     });
+    await emitAccountingEvent('statement', userStatement._id, {
+      reverses: savedPayment?.statementId,
+      target: { orderId: savedPayment?.order, category: savedPayment?.category, packageIds: (savedPayment?.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
+    }, req.user);
+    await restoreOrderDebts(savedPayment?.debtPayments);
     await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
     res.status(200).json({
       createdAt: userStatement.createdAt
@@ -434,6 +445,7 @@ module.exports.deleteStatement = async (req, res, next) => {
     });
 
     await UserStatement.deleteOne({ _id: statement._id });
+    await emitAccountingEvent('statementDeleted', statement._id, {}, req.user);
 
     // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
     const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement));
@@ -522,6 +534,7 @@ module.exports.updateStatement = async (req, res, next) => {
       openingBalance
     );
 
+    await emitAccountingEvent('statementUpdated', statement._id, {}, req.user);
     const updated = await UserStatement.findById(statement._id).populate('user');
     res.status(200).json({ results: updated });
   } catch (error) {
@@ -683,10 +696,29 @@ module.exports.getAllActiveWallets = async (req, res, next) => {
   }
 };
 
+// The accountant's dinar rate and the lowest rate a payment may use, for the wallet dialog
+module.exports.getPaymentRate = async (req, res, next) => {
+  try {
+    res.status(200).json({ limits: await lydRateLimits(req.query.date) });
+  } catch (error) {
+    return next(new ErrorHandler(500, error.message));
+  }
+};
+
 module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
+
+    // Dinars paid on an order are counted at a rate that may not be lower than the accountant's
+    // rate by more than the tolerance
+    if (category && currency === 'LYD') {
+      if (!(Number(rate) > 0)) return next(new ErrorHandler(400, 'Enter the exchange rate the dinars are counted at.'));
+      const limits = await lydRateLimits(createdAt);
+      if (limits && Number(rate) < limits.minimum - 1e-9) {
+        return next(new ErrorHandler(400, `The rate ${Number(rate)} is too low. The accountant's rate is ${limits.rate}, so the lowest allowed is ${limits.minimum}.`));
+      }
+    }
 
     const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
 
@@ -697,7 +729,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
 
     if (wallet.balance < amount) {
-      throw next(new ErrorHandler(400, 'Insufficient wallet balance'));
+      return next(new ErrorHandler(400, 'Insufficient wallet balance'));
     }
 
     let list = [];
@@ -780,8 +812,16 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
         }
       }
 
+      data.statementId = userStatement._id;
+      // A debt opened on this order for the same thing is paid down by this payment too
+      if (category) {
+        data.debtPayments = await payOrderDebts({ orderId: order._id, category, amount: data.receivedAmount, currency, rate: data.rate, createdAt, orderNumber: order.orderId });
+      }
       await OrderPaymentHistory.create(data);
     }
+    await emitAccountingEvent('statement', userStatement._id, {
+      target: { orderId: order?._id, category, packageIds: (list || []).map((p) => p?._id || p?.id).filter(Boolean) },
+    }, req.user);
 
     res.status(200).json({
       createdAt: userStatement.createdAt

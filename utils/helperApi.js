@@ -8,6 +8,7 @@ const Invoices = require('../models/invoice');
 const UserStatement = require('../models/userStatement');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const mongodb = require('mongodb');
+const { emitAccountingEvent } = require('../accounting/services/events');
 
 const { ObjectId } = mongodb;
 
@@ -245,9 +246,11 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
         rate: Number(rate) || 0,
         category: 'receivedGoods',
         list: [pkg],
-        note: `(Prev Balance: ${previousTotal} ${currency})`
+        note: `(Prev Balance: ${previousTotal} ${currency})`,
+        statementId: userStatement._id,
       });
     }
+    await emitAccountingEvent('statement', userStatement._id, { target: { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) } }, req.user);
 
     return userStatement;
   } catch (error) {
@@ -367,7 +370,7 @@ async function refundWalletPayment(user, payment, description, note) {
   const lastUserStatement = await UserStatement.find({ user: customerId, currency }).sort({ _id: -1 }).limit(1);
   const previousTotal = lastUserStatement.length > 0 ? Number(lastUserStatement[0].total || 0) : 0;
 
-  await UserStatement.create({
+  const refundStatement = await UserStatement.create({
     user: customerId,
     createdBy: user,
     calculationType: '+',
@@ -381,6 +384,10 @@ async function refundWalletPayment(user, payment, description, note) {
     actionType: 'cancellation',
   });
 
+  await emitAccountingEvent('statement', refundStatement._id, {
+    reverses: payment.statementId,
+    target: { orderId: payment.order, category: payment.category, packageIds: (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
+  }, user);
   await OrderPaymentHistory.deleteOne({ _id: payment._id });
   return amount;
 }

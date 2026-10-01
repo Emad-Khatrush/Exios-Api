@@ -1,0 +1,233 @@
+const ErrorHandler = require('../../utils/errorHandler');
+const { JournalEntry, Journal } = require('../models');
+const { getConfig } = require('./config');
+const { resolveAccount } = require('./roles');
+const { assertInTransaction } = require('./transaction');
+const { nextSeq } = require('./counter');
+const { isDay, toDay, dayStart, addDays, yearOf } = require('./dates');
+const { USD } = require('./money');
+
+// Up to 5 cents of imbalance (from converting currencies) goes to the rounding account;
+// anything bigger is a bug in the caller and the entry is refused.
+const MAX_ROUNDING_CENTS = 5;
+
+const DIMENSION_FIELDS = {
+  partner: 'partnerId',
+  vendor: 'vendorId',
+  employee: 'employeeId',
+  trip: 'tripId',
+  order: 'orderId',
+  package: 'packageId',
+  office: 'office',
+};
+
+const LINE_FIELDS = ['partnerId', 'vendorId', 'orderId', 'packageId', 'tripId', 'employeeId', 'assetId', 'prepaidId', 'office', 'tags', 'arKey', 'apKey', 'label'];
+
+const isCents = (value) => Number.isInteger(value) && value >= 0;
+
+async function resolveLineAccount(line, accountsById, accountsByCode) {
+  let account;
+  if (line.accountId) account = accountsById.get(String(line.accountId));
+  else if (line.role) account = await resolveAccount(line.role);
+  else if (line.accountCode) account = accountsByCode.get(line.accountCode);
+  if (!account) {
+    throw new ErrorHandler(400, `حساب غير موجود في سطر القيد (${line.accountId || line.role || line.accountCode})`);
+  }
+  return account;
+}
+
+async function buildLine(line, index, config) {
+  const { accountsById, accountsByCode, offices } = config;
+  const account = await resolveLineAccount(line, accountsById, accountsByCode);
+  const where = `السطر ${index + 1} (${account.code} ${account.name})`;
+
+  if (account.isGroup) throw new ErrorHandler(400, `${where}: لا يمكن الترحيل على حساب مجموعة`);
+  if (!account.isActive) throw new ErrorHandler(400, `${where}: الحساب مؤرشف`);
+
+  const debit = line.debit || 0;
+  const credit = line.credit || 0;
+  if (!isCents(debit) || !isCents(credit)) throw new ErrorHandler(400, `${where}: المبلغ يجب أن يكون عدداً صحيحاً موجباً بالسنت`);
+  if (debit > 0 && credit > 0) throw new ErrorHandler(400, `${where}: السطر لا يكون مديناً ودائناً معاً`);
+
+  const built = { accountId: account._id, accountCode: account.code, debit, credit };
+  LINE_FIELDS.forEach((field) => {
+    if (line[field] !== undefined && line[field] !== null && line[field] !== '') built[field] = line[field];
+  });
+
+  if (account.currency && account.currency !== USD) {
+    if (line.currency !== account.currency) {
+      throw new ErrorHandler(400, `${where}: عملة السطر يجب أن تكون ${account.currency}`);
+    }
+    const amount = line.amountCurrency;
+    if (!Number.isInteger(amount)) throw new ErrorHandler(400, `${where}: المبلغ بالعملة مطلوب`);
+    if ((debit > 0 && amount < 0) || (credit > 0 && amount > 0)) {
+      throw new ErrorHandler(400, `${where}: إشارة المبلغ بالعملة لا توافق جهة السطر`);
+    }
+    built.currency = account.currency;
+    built.amountCurrency = amount;
+    if (line.rate) built.rate = line.rate;
+  } else {
+    built.currency = USD;
+    built.amountCurrency = debit - credit;
+  }
+
+  if (debit === 0 && credit === 0 && !built.amountCurrency) {
+    throw new ErrorHandler(400, `${where}: سطر بدون مبلغ`);
+  }
+
+  (account.requires || []).forEach((dimension) => {
+    const field = DIMENSION_FIELDS[dimension];
+    if (field && !built[field]) throw new ErrorHandler(400, `${where}: البُعد "${dimension}" إلزامي على هذا الحساب`);
+  });
+  if (built.office && !offices.has(built.office)) {
+    throw new ErrorHandler(400, `${where}: المكتب "${built.office}" غير معرّف`);
+  }
+
+  return built;
+}
+
+async function resolveJournal({ journalId, journalCode, eventType }, lines, config, session) {
+  if (journalId) return Journal.findById(journalId).session(session);
+
+  let code = journalCode || config.settings?.eventJournals?.[eventType] || 'GEN';
+  if (code === '@cash') {
+    const cashLine = lines.find((line) => config.accountsById.get(String(line.accountId))?.isCash);
+    const journal = cashLine && await Journal.findOne({ defaultAccountId: cashLine.accountId, isActive: true }).session(session);
+    if (journal) return journal;
+    code = 'GEN';
+  }
+  return Journal.findOne({ code }).session(session);
+}
+
+// Validates and saves one journal entry inside the caller's transaction.
+// Posting the same eventKey twice returns the first entry instead of creating a second one.
+async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
+  assertInTransaction(session);
+  if (!input.eventType) throw new Error('eventType is required');
+  if (!input.eventKey) throw new Error('eventKey is required');
+
+  const existing = await JournalEntry.findOne({ eventKey: input.eventKey }).session(session);
+  if (existing) return existing;
+
+  const config = await getConfig();
+  if (!config.settings) throw new ErrorHandler(400, 'النظام المحاسبي غير مُعدّ بعد. شغّل الإعداد أولاً.');
+
+  if (!Array.isArray(input.lines) || input.lines.length < 2) {
+    throw new ErrorHandler(400, 'القيد يحتاج سطرين على الأقل');
+  }
+  const lines = [];
+  for (let i = 0; i < input.lines.length; i++) {
+    lines.push(await buildLine(input.lines[i], i, config));
+  }
+
+  const totalDebit = lines.reduce((sum, line) => sum + line.debit, 0);
+  const totalCredit = lines.reduce((sum, line) => sum + line.credit, 0);
+  const difference = totalDebit - totalCredit;
+  if (difference !== 0) {
+    if (Math.abs(difference) > MAX_ROUNDING_CENTS) {
+      throw new ErrorHandler(400, `القيد غير متوازن: المدين ${totalDebit / 100} والدائن ${totalCredit / 100}`);
+    }
+    const rounding = await resolveAccount('rounding');
+    const office = lines.find((line) => line.office)?.office;
+    lines.push({
+      accountId: rounding._id,
+      accountCode: rounding.code,
+      debit: difference < 0 ? -difference : 0,
+      credit: difference > 0 ? difference : 0,
+      currency: USD,
+      amountCurrency: -difference,
+      label: 'فرق تقريب',
+      ...(office && { office }),
+    });
+  }
+
+  const notes = [...(input.notes || [])];
+  const inputDate = input.date || new Date();
+  let day = toDay(inputDate);
+  // A plain day is stored as the start of that day in Libya; an instant keeps its time
+  let date = isDay(inputDate) ? dayStart(day) : new Date(inputDate);
+  const { lockDate, migrationGuardDay } = config.settings;
+  // A migration dry run is waiting for review: the historical period belongs to it
+  if (migrationGuardDay && !input.migrationRunId && day <= migrationGuardDay) {
+    throw new ErrorHandler(400, `الفترة حتى ${migrationGuardDay} محجوزة للترحيل التاريخي قيد المراجعة. اعتمده أو ألغِه أولاً.`);
+  }
+  // 'allow' is for the year-closing entry only, which belongs on the last day of a locked year
+  if (lockDate && day <= lockDate && onLocked !== 'allow') {
+    if (onLocked === 'reject') throw new ErrorHandler(400, `الفترة مقفلة حتى ${lockDate}`);
+    notes.push(`تاريخ العملية ${day} في فترة مقفلة، رُحِّل بأول يوم مفتوح`);
+    day = addDays(lockDate, 1);
+    date = dayStart(day);
+  }
+
+  const journal = await resolveJournal(input, lines, config, session);
+  if (!journal) throw new ErrorHandler(400, 'الدفتر غير موجود');
+  if (!journal.isActive) throw new ErrorHandler(400, `الدفتر ${journal.code} مؤرشف`);
+
+  const year = yearOf(day);
+  const counterKey = journal.sequenceResetYearly ? `JE:${journal.code}:${year}` : `JE:${journal.code}`;
+  const seq = await nextSeq(counterKey, session);
+  const padded = String(seq).padStart(6, '0');
+  const number = journal.sequenceResetYearly ? `${journal.sequencePrefix}/${year}/${padded}` : `${journal.sequencePrefix}/${padded}`;
+
+  const [entry] = await JournalEntry.create([{
+    number,
+    journalId: journal._id,
+    date,
+    day,
+    description: input.description,
+    eventType: input.eventType,
+    eventKey: input.eventKey,
+    source: input.source,
+    reversalOf: input.reversalOf,
+    lines,
+    totalDebit: Math.max(totalDebit, totalCredit),
+    attachments: input.attachments,
+    notes,
+    createdBy: user?._id,
+    isHistorical: !!input.isHistorical,
+    migrationRunId: input.migrationRunId,
+    fallbacks: input.fallbacks,
+  }], { session });
+
+  return entry;
+}
+
+// Cancels an entry with its mirror image. Dated like the original while that period is open,
+// otherwise on the first open day. A reversal is never reversed itself.
+async function reverseEntry(entryId, { session, user, reason, eventKey, eventType = 'REVERSAL', onLocked = 'shift' } = {}) {
+  assertInTransaction(session);
+  const original = await JournalEntry.findById(entryId).session(session);
+  if (!original) throw new ErrorHandler(404, 'القيد غير موجود');
+  if (original.reversalOf) throw new ErrorHandler(400, 'القيد العكسي لا يُلغى. لتصحيحه أنشئ مستنداً جديداً.');
+
+  const key = eventKey || `REVERSE:${original._id}`;
+  const already = await JournalEntry.findOne({ eventKey: key }).session(session);
+  if (already) return already;
+  if (original.status === 'reversed') throw new ErrorHandler(400, 'القيد مُلغى مسبقاً');
+
+  const reversal = await postEntry({
+    journalId: original.journalId,
+    eventType,
+    eventKey: key,
+    date: original.day,
+    description: `إلغاء القيد ${original.number}${reason ? ` - ${reason}` : ''}`,
+    source: original.source,
+    reversalOf: original._id,
+    lines: original.lines.map((line) => {
+      const plain = line.toObject ? line.toObject() : { ...line };
+      return {
+        ...plain,
+        debit: plain.credit,
+        credit: plain.debit,
+        amountCurrency: plain.amountCurrency ? -plain.amountCurrency : plain.amountCurrency,
+      };
+    }),
+  }, { session, user, onLocked });
+
+  original.status = 'reversed';
+  original.reversedBy = reversal._id;
+  await original.save({ session });
+  return reversal;
+}
+
+module.exports = { postEntry, reverseEntry, MAX_ROUNDING_CENTS };

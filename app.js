@@ -39,6 +39,7 @@ const popupAds = require('./routes/popupAds');
 const analytics = require('./routes/analytics');
 const campaigns = require('./routes/campaigns');
 const companyNotes = require('./routes/companyNotes');
+const { routes: accountingRoutes, initAccounting } = require('./accounting');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -90,6 +91,9 @@ mongoose.connect(connectionUrl, {
   useUnifiedTopology: true,
 });
 
+// Accounting receives whole files as rows (a bank statement, a migration's cost list), larger than
+// the 100kb default; parsed here first, the general parser below leaves those requests alone
+app.use('/api/accounting', bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(morgan('tiny'));
@@ -390,6 +394,7 @@ async function initializeWhatsAppClient() {
 
 db.once("open", () => {
   console.log('MongoDB connected');
+  initAccounting();
   initializeWhatsAppClient();
 });
 
@@ -413,6 +418,7 @@ process.on('SIGINT', () => shutdownWhatsAppClient('SIGINT'));
 process.on('SIGUSR2', () => shutdownWhatsAppClient('SIGUSR2'));
 
 // render routes
+app.use('/api/accounting', accountingRoutes);
 app.use('/api', users);
 app.use('/api', orders);
 app.use('/api', expenses);

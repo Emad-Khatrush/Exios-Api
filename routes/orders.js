@@ -54,7 +54,8 @@ router.route('/order/deleteFiles')
 
 router.route('/order/:id')
       .get(protect, allowAdminsAndEmployee, orders.getOrder)
-      .put(protect, allowAdminsAndEmployee, orders.updateOrder);
+      .put(protect, allowAdminsAndEmployee, orders.updateOrder)
+      .delete(protect, isAdmin, orders.deleteOrder);
 
 router.route('/order/:id/package')
       .put(protect, allowAdminsAndEmployee, orders.updateSinglePackage);
@@ -67,6 +68,9 @@ router.route('/order/:id/cancel')
 
 router.route('/order/:id/addActivity')
       .post(protect, allowAdminsAndEmployee, orders.createOrderActivity)
+
+router.route('/order/:id/activity/:activityId')
+      .delete(protect, isAdmin, orders.deleteOrderActivity)
 
 // X-Tracking > مراقبة الطلبيات: every open package with its stage and automatic checks (read-only)
 router.route('/orders/control')

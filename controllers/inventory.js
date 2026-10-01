@@ -6,6 +6,7 @@ const { errorMessages } = require("../constants/errorTypes");
 const mongodb = require('mongodb');
 const Activities = require("../models/activities");
 const ReturnedPayments = require("../models/returnedPayments");
+const { emitAccountingEvent } = require('../accounting/services/events');
 const Users = require("../models/user");
 const PackageDeletion = require("../models/packageDeletion");
 const WarehouseCheck = require("../models/warehouseCheck");
@@ -452,6 +453,7 @@ module.exports.deleteInventory = async (req, res, next) => {
     const { id } = req.params;
     const inventory = await Inventory.findByIdAndDelete(id);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    await emitAccountingEvent('trip', inventory._id, {}, req.user);
 
     res.status(200).json({ message: 'Inventory deleted successfully' });
   } catch (error) {
@@ -663,6 +665,7 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
     .populate(['createdBy', 'orders'])
 
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    await emitAccountingEvent('trip', inventory._id, {}, req.user);
     const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
     
     let updatedOrders = await Orders.aggregate([
@@ -718,6 +721,7 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
 
     const inventory = await Inventory.findById(req.query.id).populate(['createdBy', 'orders']);
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    await emitAccountingEvent('trip', inventory._id, {}, req.user);
 
     res.status(200).json(inventory);
   } catch (error) {
@@ -1022,6 +1026,7 @@ module.exports.updateInventory = async (req, res, next) => {
     }
 
     const updatedInventory = await Inventory.updateOne({ _id: id }, update, { new: true });
+    await emitAccountingEvent('trip', id, {}, req.user);
 
     res.status(200).json(updatedInventory);
   } catch (error) {
@@ -1217,6 +1222,7 @@ module.exports.createInternalShipping = async (req, res, next) => {
       ],
     });
 
+    await emitAccountingEvent('trip', shipment._id, {}, req.user);
     res.status(200).json({ _id: shipment._id, voyage: shipment.voyage, movedCount: requested.length });
   } catch (error) {
     console.log(error);

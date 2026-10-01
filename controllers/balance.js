@@ -9,6 +9,7 @@ const Activities = require('../models/activities');
 const ErrorHandler = require('../utils/errorHandler');
 const { errorMessages } = require('../constants/errorTypes');
 const { uploadToGoogleCloud } = require('../utils/googleClould');
+const { emitAccountingEvent } = require('../accounting/services/events');
 
 module.exports.getBalances = async (req, res, next) => {
   try {
@@ -166,6 +167,7 @@ module.exports.createBalance = async (req, res, next) => {
       debtType,
       followsOrder: !!order,
     })
+    await emitAccountingEvent('balance', balance._id, {}, req.user);
     
     res.status(200).json(balance);
   } catch (error) {
@@ -278,7 +280,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         ? 'بضاعة مستلمة'
         : 'دين عام';
 
-    await UserStatement.create({
+    const debtStatement = await UserStatement.create({
       user: existingBalance.owner._id,
       createdBy: req.user,
       calculationType: '-',
@@ -306,9 +308,11 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         rate: Number(rate) || 0,
         note: `(Wallet was ${truncateToTwo(previousTotal)} ${currency})`,
         category: existingBalance.debtType,
+        statementId: debtStatement._id,
       };
       await OrderPaymentHistory.create(data);
     }
+    await emitAccountingEvent('statement', debtStatement._id, { target: { balanceId: existingBalance._id } }, req.user);
 
     res.status(200).json(balance);
   } catch (error) {
@@ -557,6 +561,7 @@ module.exports.closeDebtManually = async (req, res, next) => {
 
       closedBalance.manualClosure.lostBalance = lostBalance._id;
       await closedBalance.save();
+      await emitAccountingEvent('balanceWriteOff', closedBalance._id, {}, req.user);
     }
 
     res.status(200).json(closedBalance);
@@ -579,6 +584,7 @@ module.exports.deleteBalance = async (req, res, next) => {
     }
 
     await Balance.deleteOne({ _id: id });
+    await emitAccountingEvent('balanceDeleted', balance._id, {}, req.user);
 
     // A debt closed by hand has a matching 'lost' remainder; it goes with it.
     // Deleting that 'lost' remainder instead leaves the closed debt, but drops its link.

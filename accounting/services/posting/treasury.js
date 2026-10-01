@@ -1,0 +1,145 @@
+// Treasury transfers, currency exchange, Alipay top-ups (E16) and cash counts (E17)
+const mongoose = require('mongoose');
+const { TreasuryTransfer, CashCount } = require('../../models/documents');
+const { postEntry } = require('../ledger');
+const { getBalance } = require('../carrying');
+const { isDay } = require('../dates');
+const { roundHalfAway } = require('../money');
+const { logAudit } = require('../audit');
+const {
+  fail, currencyOf, isForeign, getAccount, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine,
+  nextDocNumber, findExisting, resolveAccount,
+} = require('./common');
+
+const toId = (value) => new mongoose.Types.ObjectId(String(value));
+
+async function treasuryAccount(id, what, employeeId) {
+  const account = await getAccount(id, what);
+  const advances = await resolveAccount('employee_advances');
+  const isAdvance = String(account._id) === String(advances._id);
+  if (!account.isCash && !isAdvance) throw fail(`${what}: اختر خزينة أو بنكاً أو محفظة إلكترونية أو عهدة موظف`);
+  if (isAdvance && !employeeId) throw fail('اختر الموظف صاحب العهدة');
+  return { account, isAdvance };
+}
+
+// Money leaves `from` at its average rate. The receiving account gets:
+// - a USD account: exactly the dollars received (any difference is an exchange gain/loss);
+// - any other account: the dollar value that left, so its own average rate is what the
+//   currency really cost (71,000 CNY bought with 10,000$ is carried at 7.1).
+async function createTransfer(input, { session, req }) {
+  const existing = await findExisting(TreasuryTransfer, input.idempotencyKey, session);
+  if (existing) return existing;
+  if (!isDay(input.day)) throw fail('التاريخ غير صالح');
+  const { account: from, isAdvance: fromAdvance } = await treasuryAccount(input.fromAccountId, 'الحساب المرسل', input.employeeId);
+  const { account: to, isAdvance: toAdvance } = await treasuryAccount(input.toAccountId, 'الحساب المستلم', input.employeeId);
+  if (String(from._id) === String(to._id)) throw fail('الحساب المرسل والمستلم متطابقان');
+
+  const fromMinor = await toCurrencyMinor(input.fromAmount, currencyOf(from));
+  const feesMinor = input.fees ? await toCurrencyMinor(input.fees, currencyOf(from)) : 0;
+  if (!fromMinor) throw fail('المبلغ المرسل مطلوب');
+
+  const rates = new RateBook(session);
+  const outUsd = await valueOut(from, fromMinor + feesMinor, { day: input.day, docRate: input.rate, rates });
+  const feesUsd = feesMinor ? roundHalfAway((outUsd * feesMinor) / (fromMinor + feesMinor)) : 0;
+  const sentUsd = outUsd - feesUsd;
+
+  let toMinor;
+  let toUsd;
+  if (!to.currency || toAdvance) {
+    // Employee advances are kept in USD: they receive the dollar value sent
+    toMinor = sentUsd;
+    toUsd = sentUsd;
+  } else {
+    toMinor = await toCurrencyMinor(input.toAmount, currencyOf(to));
+    if (!toMinor) throw fail('المبلغ المستلم مطلوب');
+    toUsd = isForeign(to) ? sentUsd : toMinor;
+  }
+
+  const [doc] = await TreasuryTransfer.create([{
+    day: input.day, fromAccountId: from._id, fromAmount: Number(input.fromAmount), toAccountId: to._id,
+    toAmount: toAdvance || !to.currency ? toMinor / 100 : Number(input.toAmount), fees: Number(input.fees || 0),
+    employeeId: input.employeeId || undefined, note: input.note, attachments: input.attachments,
+    idempotencyKey: input.idempotencyKey, createdBy: req?.user?._id, status: 'posted',
+    number: await nextDocNumber('TRF', input.day, session),
+  }], { session });
+
+  const employee = input.employeeId ? { employeeId: toId(input.employeeId) } : {};
+  const lines = [
+    moneyLine(to, 'debit', toMinor, toUsd, { label: `تحويل من ${from.name}`, ...(toAdvance && employee) }),
+    moneyLine(from, 'credit', fromMinor + feesMinor, outUsd, { label: `تحويل إلى ${to.name}`, ...(fromAdvance && employee) }),
+  ];
+  if (feesUsd) {
+    const feesAccount = input.feesAccountId ? await getAccount(input.feesAccountId, 'حساب الرسوم') : await resolveAccount('bank_fees');
+    lines.push({ accountId: feesAccount._id, debit: feesUsd, office: from.office || to.office, label: 'رسوم التحويل' });
+    doc.feesAccountId = feesAccount._id;
+  }
+  await addFxLine(lines, from.office || to.office);
+
+  const entry = await postEntry({
+    eventType: 'TRANSFER',
+    eventKey: `TRANSFER:${doc._id}`,
+    date: input.day,
+    description: `تحويل ${doc.number}: ${from.name} ← ${to.name}${input.note ? ` - ${input.note}` : ''}`,
+    source: { model: 'AccountingTreasuryTransfer', id: doc._id },
+    fallbacks: rates.fallbacks,
+    lines,
+  }, { session, user: req?.user });
+  await rates.lock();
+  doc.entryId = entry._id;
+  await doc.save({ session });
+  await logAudit({ req, action: 'transfer.post', model: 'AccountingTreasuryTransfer', docId: doc._id, after: doc }, session);
+  return doc;
+}
+
+// Counted cash vs the books; the difference goes to cash over/short. A shortage leaves at the
+// box's average rate, an overage comes in at it (or at the day's rate if the box is empty).
+async function createCashCount(input, { session, req }) {
+  const existing = await findExisting(CashCount, input.idempotencyKey, session);
+  if (existing) return existing;
+  if (!isDay(input.day)) throw fail('التاريخ غير صالح');
+  const account = await getAccount(input.accountId, 'الخزينة');
+  if (!account.isCash) throw fail('اختر خزينة أو بنكاً');
+  const currency = currencyOf(account);
+  const counted = await toCurrencyMinor(input.countedAmount, currency);
+  const balance = await getBalance(account._id, { session });
+  const difference = counted - balance.foreign;
+
+  const [doc] = await CashCount.create([{
+    day: input.day, accountId: account._id, countedAmount: Number(input.countedAmount),
+    systemAmount: balance.foreign, difference, note: input.note, idempotencyKey: input.idempotencyKey,
+    createdBy: req?.user?._id, status: 'posted', number: await nextDocNumber('CNT', input.day, session),
+  }], { session });
+
+  if (difference !== 0) {
+    const rates = new RateBook(session);
+    const overShort = await resolveAccount('cash_over_short');
+    const office = account.office;
+    let usd;
+    if (difference < 0) {
+      usd = await valueOut(account, -difference, { day: input.day, rates });
+    } else if (isForeign(account) && balance.foreign > 0 && balance.usd > 0) {
+      usd = roundHalfAway((difference * balance.usd) / balance.foreign);
+    } else {
+      usd = await rates.toUsd(difference, currency, input.day);
+    }
+    const lines = difference < 0
+      ? [{ accountId: overShort._id, debit: usd, office, label: 'عجز جرد' }, moneyLine(account, 'credit', -difference, usd, { label: 'عجز جرد' })]
+      : [moneyLine(account, 'debit', difference, usd, { label: 'زيادة جرد' }), { accountId: overShort._id, credit: usd, office, label: 'زيادة جرد' }];
+    const entry = await postEntry({
+      eventType: 'CASHCOUNT',
+      eventKey: `CASHCOUNT:${doc._id}`,
+      date: input.day,
+      description: `جرد ${doc.number} - ${account.name}`,
+      source: { model: 'AccountingCashCount', id: doc._id },
+      fallbacks: rates.fallbacks,
+      lines,
+    }, { session, user: req?.user });
+    await rates.lock();
+    doc.entryId = entry._id;
+    await doc.save({ session });
+  }
+  await logAudit({ req, action: 'cashcount.post', model: 'AccountingCashCount', docId: doc._id, after: doc }, session);
+  return doc;
+}
+
+module.exports = { createTransfer, createCashCount };

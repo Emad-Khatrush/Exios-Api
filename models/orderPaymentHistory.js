@@ -49,7 +49,18 @@ const orderPaymentHistorySchema = new Schema({
     description: String
   }],
   list: [],
-  note: String
+  note: String,
+  // For wallet payments: the customer statement line that took the money, so cancelling the
+  // payment can reverse exactly that accounting entry
+  statementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
+  // Debts of the order that this payment paid down, so cancelling the payment reopens them:
+  // the debt, what was taken off it (in the debt's currency) and the line added to its history
+  debtPayments: [{
+    _id: false,
+    balance: { type: Schema.Types.ObjectId, ref: 'Balance' },
+    amount: Number,
+    historyId: Schema.Types.ObjectId,
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model("OrderPaymentHistory", orderPaymentHistorySchema);
