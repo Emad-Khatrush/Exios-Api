@@ -11,6 +11,7 @@ if (process.env.NODE_ENV !== 'production') require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { findTool } = require('./mongoTools');
 
 const uri = process.env.BACKUP_URI || process.env.MONGO_URL_2 || process.env.MONGO_URL;
 if (!uri) {
@@ -24,7 +25,7 @@ fs.mkdirSync(dir, { recursive: true });
 const file = path.join(dir, `${database}-${stamp}.archive.gz`);
 
 console.log(`Backing up ${database} to ${file} ...`);
-const result = spawnSync('mongodump', [`--uri=${uri}`, `--archive=${file}`, '--gzip'], { stdio: 'inherit', shell: process.platform === 'win32' });
+const result = spawnSync(findTool('mongodump') || 'mongodump', [`--uri=${uri}`, `--archive=${file}`, '--gzip'], { stdio: 'inherit' });
 if (result.error || result.status !== 0) {
   console.error(result.error?.code === 'ENOENT' ? 'mongodump was not found: install the MongoDB Database Tools.' : 'mongodump failed.');
   process.exit(1);

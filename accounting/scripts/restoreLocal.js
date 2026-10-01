@@ -10,6 +10,7 @@
 // collection for a quick comparison with the source.
 const fs = require('fs');
 const { spawnSync } = require('child_process');
+const { findTool } = require('./mongoTools');
 const mongoose = require('mongoose');
 
 const archive = process.argv[2];
@@ -23,12 +24,19 @@ if (!/^mongodb:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(uri)) {
   process.exit(1);
 }
 const target = process.env.RESTORE_DB || 'exios-restore-test';
+// The database the backup came from: in the file name made by db:backup (<database>-<date>-<time>),
+// or RESTORE_FROM_DB
+const source = process.env.RESTORE_FROM_DB || (require('path').basename(archive).match(/^(.+)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.archive\.gz$/) || [])[1];
+if (!source) {
+  console.error('Set RESTORE_FROM_DB to the name of the database inside the backup.');
+  process.exit(1);
+}
 
 (async () => {
-  // The archive holds one database: every collection of it is renamed into the target
-  const args = [`--uri=${uri}`, `--archive=${archive}`, '--gzip', '--drop', `--nsFrom=*.*`, `--nsTo=${target}.*`];
+  // Every collection of the source database is restored under the target name
+  const args = [`--uri=${uri}`, `--archive=${archive}`, '--gzip', '--drop', `--nsFrom=${source}.*`, `--nsTo=${target}.*`];
   console.log(`Restoring ${archive} into ${target} ...`);
-  const result = spawnSync('mongorestore', args, { stdio: 'inherit', shell: process.platform === 'win32' });
+  const result = spawnSync(findTool('mongorestore') || 'mongorestore', args, { stdio: 'inherit' });
   if (result.error || result.status !== 0) {
     console.error(result.error?.code === 'ENOENT' ? 'mongorestore was not found: install the MongoDB Database Tools.' : 'mongorestore failed.');
     process.exit(1);
