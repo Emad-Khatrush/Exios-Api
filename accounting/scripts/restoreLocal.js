@@ -6,6 +6,7 @@
 //   RESTORE_DB   the database name to restore into (default: exios-restore-test, so the working
 //                local copy is not replaced; set it to exios-admin to replace that one)
 //
+// The copy's WhatsApp session is removed (see below).
 // Needs the MongoDB Database Tools (mongorestore). Prints the number of documents restored per
 // collection for a quick comparison with the source.
 const fs = require('fs');
@@ -43,6 +44,16 @@ if (!source) {
   }
   const base = uri.replace(/\/(\?|$)/, `/${target}$1`);
   await mongoose.connect(base);
+  // A copy of production holds the company's WhatsApp session: a local server started on it would
+  // log in as the company number (and could send campaigns). It is removed from the copy unless
+  // RESTORE_KEEP_WHATSAPP=true.
+  if (process.env.RESTORE_KEEP_WHATSAPP !== 'true') {
+    const all = await mongoose.connection.db.listCollections().toArray();
+    for (const { name } of all.filter((c) => /^whatsapp/i.test(c.name))) {
+      await mongoose.connection.db.dropCollection(name);
+      console.log(`  removed ${name} (WhatsApp session of the source)`);
+    }
+  }
   const collections = await mongoose.connection.db.listCollections().toArray();
   for (const { name } of collections.sort((a, b) => a.name.localeCompare(b.name))) {
     console.log(`  ${name}: ${await mongoose.connection.db.collection(name).countDocuments()}`);
