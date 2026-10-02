@@ -517,7 +517,9 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
   if (line.paymentId) {
     const { cancelDocument } = require('../cancel');
     await cancelDocument('AccountingSupplierPayment', line.paymentId, { session, req, reason });
-    await cancelDocument('AccountingSupplierBill', line.billId, { session, req, reason });
+    // Several lines paying one purchase (a grouped link): the bill goes with the last of them
+    const others = await BankStatementLine.countDocuments({ billId: line.billId, lineStatus: 'created_entry', _id: { $ne: line._id } }).session(session);
+    if (!others) await cancelDocument('AccountingSupplierBill', line.billId, { session, req, reason });
     line.paymentId = undefined;
     line.billId = undefined;
   } else if ((await JournalEntry.findById(line.entryId).select('source').session(session).lean())?.source?.model === 'Balance') {
@@ -803,7 +805,102 @@ function rowsFromText(text) {
   }).filter((row) => row.amount);
 }
 
+// ---- Several statement lines for one purchase typed on an order (spec v8) ----
+// A website purchase typed once on the order (50$) that the bank charged in two payments (600 and
+// 1400 lira): the lines are linked to it together. One supplier bill for the purchase (in its own
+// currency at the bank's dollars) and one payment per line, each in the bank's currency.
+
+// The dollars a line is worth: the line itself on a dollar account, the dollars it printed, or the
+// bank's amount at the day's rate
+async function lineUsd(line, bank, session) {
+  const { currencies } = await getConfig();
+  const bankCurrency = currencyOf(bank);
+  const decimals = currencies.get(bankCurrency)?.decimals ?? 2;
+  const paid = Math.abs(line.amount) / 10 ** decimals;
+  const abroad = paidAbroad(line, bankCurrency);
+  if (bankCurrency === 'USD') return { paid, usd: paid };
+  if (abroad.currency === 'USD') return { paid, usd: Math.abs(abroad.amount) };
+  return { paid, usd: Math.round((paid / (await getRate(bankCurrency, line.day, { session })).rate) * 100) / 100 };
+}
+
+// The purchases typed on an order, for linking statement lines to one of them
+async function orderPurchaseItems(orderId) {
+  if (!mongoose.isValidObjectId(orderId)) throw fail('الطلب غير موجود');
+  const order = await Order.findById(orderId).select('orderId placedAt purchaseItems').lean();
+  if (!order) throw fail('الطلب غير موجود');
+  const used = new Set((await BankStatementLine.distinct('purchaseItemId', { orderId: order._id, lineStatus: 'created_entry' })).map(String));
+  return {
+    orderId: order._id, orderNumber: order.orderId,
+    items: (order.purchaseItems || []).map((item) => ({ _id: item._id, description: item.description, unitPrice: item.unitPrice, currency: item.currency || 'USD', date: item.date, linked: used.has(String(item._id)) })),
+  };
+}
+
+async function linkGroup(lineIds, input, { session, req }) {
+  const ids = [...new Set((lineIds || []).map(String))];
+  if (!ids.length) throw fail('اختر سطور الكشف');
+  const lines = await BankStatementLine.find({ _id: { $in: ids } }).sort({ day: 1 }).session(session);
+  if (lines.length !== ids.length || lines.some((l) => l.lineStatus !== 'unmatched')) throw fail('بعض السطور غير متاحة (مطابقة أو مرحَّلة)');
+  if (new Set(lines.map((l) => String(l.accountId))).size > 1) throw fail('السطور من حسابات مختلفة');
+  if (lines.some((l) => l.amount >= 0)) throw fail('الربط بالمشتريات للمبالغ الخارجة فقط');
+  const bank = await bankAccount(lines[0].accountId);
+  const order = await Order.findOne({ _id: input.orderId, 'purchaseItems._id': input.itemId }).select('orderId placedAt purchaseItems isCanceled').session(session).lean();
+  if (!order) throw fail('المشتريات غير موجودة في الطلب');
+  const item = order.purchaseItems.find((i) => String(i._id) === String(input.itemId));
+  if (await BankStatementLine.exists({ purchaseItemId: item._id, lineStatus: 'created_entry' }).session(session)) throw fail(`مشتريات الطلب ${order.orderId} مرتبطة بسطور كشف أخرى`);
+
+  const values = [];
+  for (const line of lines) values.push(await lineUsd(line, bank, session));
+  const totalUsd = Math.round(values.reduce((s, v) => s + v.usd, 0) * 100) / 100;
+  const itemCurrency = item.currency || 'USD';
+  // A dollar purchase that differs from the bank by more than 2% is refused unless confirmed
+  if (itemCurrency === 'USD' && Math.abs(totalUsd - Number(item.unitPrice)) > Number(item.unitPrice) * 0.02 && !input.confirmDifference) {
+    const error = new ErrorHandler(409, `مجموع السطور ${totalUsd}$ والمشتريات ${item.unitPrice}$ (فرق أكثر من 2%). أكّد إن كانت نفس العملية.`);
+    throw error;
+  }
+
+  // Already recorded by the historical migration as paid from suspense: the lines clear it
+  const recorded = await SupplierBill.findOne({ idempotencyKey: `MIG:PURCH:${item._id}`, status: { $ne: 'canceled' } }).session(session).lean();
+  if (recorded) {
+    const suspense = await resolveAccount('migration_suspense');
+    for (const line of lines) {
+      await createEntryForLine(line._id, { counterAccountId: suspense._id, confirmNotDuplicate: true, description: `${line.description} (مشتريات الطلب ${order.orderId})` }, { session, req });
+      await BankStatementLine.updateOne({ _id: line._id }, { $set: { orderId: order._id, purchaseItemId: item._id } }, { session });
+    }
+    return { linked: lines.length, cleared: 'suspense' };
+  }
+
+  const payables = require('./payables');
+  const { currencies } = await getConfig();
+  const inOwnCurrency = itemCurrency !== 'USD' && currencies.has(itemCurrency);
+  const vendor = await vendorNamed(input.vendorName || merchantOf(lines[0].description), session);
+  const description = input.description || item.description || `مشتريات الطلب ${order.orderId}`;
+  const bill = await payables.createBill({
+    vendorId: vendor._id, day: lines[0].day, currency: inOwnCurrency ? itemCurrency : 'USD',
+    ...(inOwnCurrency && { rate: Number(item.unitPrice) / totalUsd }),
+    note: `من كشف ${bank.name}: ${lines.length} عمليات`, idempotencyKey: `BANK_GROUP_BILL:${item._id}:${lines.map((l) => l._id).join(',')}`,
+    lines: [{ description, amount: inOwnCurrency ? Number(item.unitPrice) : totalUsd, target: 'order', orderId: order._id }],
+  }, { session, req });
+  // Each line pays its share of the bill's dollars; the last takes what rounding left
+  let left = bill.totalUsd;
+  for (const [index, line] of lines.entries()) {
+    const share = index === lines.length - 1 ? left : Math.round((bill.totalUsd * values[index].usd) / totalUsd);
+    left -= share;
+    const payment = await payables.createPayment({
+      vendorId: vendor._id, day: line.day, fromAccountId: bank._id, amount: values[index].paid,
+      rate: currencyOf(bank) === 'USD' ? undefined : values[index].paid / (share / 100),
+      allocations: [{ billId: bill._id, amountUsd: share }],
+      idempotencyKey: `BANK_GROUP_PAY:${line._id}`, note: `سداد ${bill.number} من كشف ${bank.name}`,
+    }, { session, req });
+    Object.assign(line, { entryId: payment.entryId, billId: bill._id, paymentId: payment._id, lineStatus: 'created_entry', orderId: order._id, purchaseItemId: item._id });
+    await line.save({ session });
+  }
+  await require('../claims/sync').syncOrder(order._id, { session, user: req?.user });
+  await logAudit({ req, action: 'bank.linkGroup', model: 'AccountingBankStatementLine', after: { lines: ids, billId: bill._id, orderId: order._id } }, session);
+  return { linked: lines.length, billId: bill._id, totalUsd };
+}
+
 module.exports = {
+  orderPurchaseItems, linkGroup,
   importLines, autoMatch, manualMatch, createEntryForLine, cancelLineEntry, setIgnored, deleteLine, unmatchedMovements,
   suggestions, classifyRows, listRules, saveRule, deleteRule, parsePdf, rowsFromText, isCreditCard, possibleDuplicates, normalize,
 };

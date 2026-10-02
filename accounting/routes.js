@@ -181,6 +181,9 @@ router.post('/bank/import', P.treasury, documents.importBankLines);
 router.post('/bank/auto-match', P.treasury, documents.autoMatchBank);
 router.post('/bank/lines/:id/match', P.treasury, documents.matchBankLine);
 router.post('/bank/lines/:id/entry', P.treasury, documents.bankLineEntry);
+// Several lines for one purchase typed on an order (spec v8)
+router.get('/bank/order-items/:orderId', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/posting/bank').orderPurchaseItems(req.params.orderId))));
+router.post('/bank/link-group', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/bank').linkGroup(req.body?.lineIds, req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/cancel-entry', P.treasury, P.cancel, documents.cancelBankLineEntry);
 router.post('/bank/lines/:id/ignore', P.treasury, documents.ignoreBankLine(true));
 router.post('/bank/lines/:id/unignore', P.treasury, documents.ignoreBankLine(false));

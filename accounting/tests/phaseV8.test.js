@@ -352,3 +352,35 @@ test('G. an Alipay transfer order: the yuan are sent in one step at the Alipay a
   expect((await alipay.remittanceStatus(orderId)).suggestedCny).toBe(0);
   await expect(tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 500, day: '2026-02-03' }, { session, req }))).rejects.toThrow('يوان فقط');
 });
+
+test('H. a purchase typed once (50$) that the bank charged in two lira payments is linked to both', async () => {
+  const bank = require('../services/posting/bank');
+  const { BankStatementLine } = require('../models/documents');
+  await CurrencyRate.create([{ currency: 'TRY', day: '2026-01-01', rate: 40 }]);
+  const lira = await account('110204');
+  const itemId = oid();
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'H-1', user: oid(), placedAt: 'tripoli', isPayment: true, totalInvoice: 70, unsureOrder: false, isCanceled: false, paymentList: [],
+    purchaseItems: [{ _id: itemId, date: new Date('2026-03-01'), description: 'Trendyol', unitPrice: 50, currency: 'USD' }], createdAt: new Date('2026-03-01'),
+  });
+  await tx((session) => bank.importLines(lira._id, [
+    { day: '2026-03-02', description: 'TRENDYOL 1', amount: -600 },
+    { day: '2026-03-02', description: 'TRENDYOL 2', amount: -1400 },
+  ], { session, req }));
+  const lines = await BankStatementLine.find({ accountId: lira._id }).lean();
+  expect((await bank.orderPurchaseItems(orderId)).items[0]).toMatchObject({ unitPrice: 50, linked: false });
+  await tx((session) => bank.linkGroup(lines.map((l) => l._id), { orderId, itemId }, { session, req }));
+  // 2000 lira at 40 = 50$: one bill on the order, two payments from the lira account
+  expect(await balanceOf('130200')).toBe(5000);
+  expect(await getBalance(lira._id)).toEqual({ usd: -5000, foreign: -200000 });
+  expect(await balanceOf('210200')).toBe(0);
+  expect((await BankStatementLine.find({ accountId: lira._id }).lean()).every((l) => l.lineStatus === 'created_entry')).toBe(true);
+  expect((await bank.orderPurchaseItems(orderId)).items[0].linked).toBe(true);
+
+  // Undoing one line keeps the bill for the other; undoing the second takes the bill away
+  await tx((session) => bank.cancelLineEntry(lines[0]._id, { session, req, reason: 'خطأ' }));
+  expect(await balanceOf('130200')).toBe(5000);
+  await tx((session) => bank.cancelLineEntry(lines[1]._id, { session, req, reason: 'خطأ' }));
+  expect(await balanceOf('130200')).toBe(0);
+  expect(await getBalance(lira._id)).toEqual({ usd: 0, foreign: 0 });
+});
