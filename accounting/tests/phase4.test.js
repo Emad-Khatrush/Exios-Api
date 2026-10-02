@@ -286,3 +286,33 @@ test('an old payment refund with no kind reverses the payment it undoes, not a n
   expect(await JournalEntry.countDocuments({ eventType: 'DEPOSIT' })).toBe(1);
   expect(await JournalEntry.countDocuments({ eventType: 'MIGRATION_ADJUST', eventKey: /^WALLET_ADJUST/ })).toBe(0);
 });
+
+// Owner's decisions on the production dry run (2026-10-02)
+test('old hand deductions: a withdrawal leaves the cash box, domestic transport is revenue, an unsure order earns nothing', async () => {
+  await resetDb();
+  await col('accountingcurrencyrates').insertOne({ currency: 'LYD', day: '2024-12-01', rate: 5, isUsed: false, source: 'entered' });
+  const clerk = (await col('users').insertOne({ firstName: 'موظف', lastName: 'بنغازي', customerId: 'E1', phone: 918000101, city: 'benghazi', roles: { isEmployee: true } })).insertedId;
+  const user = (await col('users').insertOne({ firstName: 'عميل', lastName: 'قديم', customerId: 'C9', phone: 918000102 })).insertedId;
+  const unsure = (await col('orders').insertOne({
+    orderId: '1790-9770', user, placedAt: 'tripoli', isPayment: true, unsureOrder: true, isCanceled: false, totalInvoice: 168, paymentList: [],
+    createdAt: d('2024-09-27T19:00:00Z'), updatedAt: d('2024-09-27T19:00:00Z'),
+  })).insertedId;
+  const statement = (fields) => col('userstatements').insertOne({ user, createdBy: clerk, paymentType: 'wallet', total: 0, ...fields });
+  // No office saved on the deposit: the clerk's city (Benghazi) is used
+  await statement({ calculationType: '+', amount: 500, currency: 'USD', description: 'تم اضافة رصيد', createdAt: d('2024-09-01T10:00:00Z') });
+  await statement({ calculationType: '-', amount: 100, currency: 'USD', description: 'تم خصم 100USD من المحفظة', note: 'Order Id (undefined) => تم سحب القيمة', createdAt: d('2024-09-02T10:00:00Z') });
+  await statement({ calculationType: '+', amount: 250, currency: 'LYD', description: 'تم اضافة رصيد', createdAt: d('2024-09-02T11:00:00Z') });
+  await statement({ calculationType: '-', amount: 50, currency: 'LYD', description: 'تم خصم 50LYD من المحفظة', note: 'Order Id (undefined) => النقل الداخلي', createdAt: d('2024-09-03T10:00:00Z') });
+  await statement({ calculationType: '-', amount: 168, currency: 'USD', description: 'تم خصم 168USD من المحفظة', note: 'Order Id (1790-9770) => ALIBABA', createdAt: d('2024-09-28T10:00:00Z') });
+  await col('wallets').insertMany([{ user, currency: 'USD', balance: 232 }, { user, currency: 'LYD', balance: 200 }]);
+
+  const run = await migration.startRun({ wait: true });
+  const report = (await MigrationRun.findById(run._id)).report;
+  expect(await balanceOf('110103')).toBe(40000); // Benghazi USD box: 500 in, 100 withdrawn
+  expect(await balanceOf('410500')).toBe(-1000); // 50 LYD domestic transport at 5
+  expect(await balanceOf('410300')).toBe(0); // the unsure order earns nothing
+  expect(await balanceOf('121000', { partnerId: user })).toBe(-16800); // its payment stays the customer's credit
+  expect(report.unsurePaid).toMatchObject({ count: 1, list: [expect.objectContaining({ orderNumber: '1790-9770', paid: 16800 })] });
+  expect(report.overpaidSettled.count).toBe(0);
+  expect(String((await JournalEntry.findOne({ 'lines.orderId': unsure, eventType: 'CLAIM' }))?._id || '')).toBe('');
+});

@@ -10,6 +10,7 @@ const { getConfig } = require('../config');
 const { resolveAccount } = require('../roles');
 
 const LIST_LIMIT = 200;
+const PAYMENT_EVENTS = ['WALLET_PAYMENT', 'CASH_PAYMENT', 'CANCEL', 'SETTLEMENT_CANCEL', 'REFUND'];
 
 async function yearlyResults() {
   const { accountsById } = await getConfig();
@@ -89,9 +90,11 @@ async function unsurePaidOrders() {
   const orders = await Order.find({ unsureOrder: true }).select('orderId user totalInvoice').lean();
   if (!orders.length) return { count: 0, list: [] };
   const paid = await JournalEntry.aggregate([
-    { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) } } }, { $unwind: '$lines' },
-    { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, 'lines.accountId': receivable._id, 'lines.credit': { $gt: 0 } } },
-    { $group: { _id: '$lines.orderId', paid: { $sum: '$lines.credit' } } },
+    // Payments only (and their reversals), not the claim entries of the order
+    { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, eventType: { $in: PAYMENT_EVENTS } } }, { $unwind: '$lines' },
+    { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, 'lines.accountId': receivable._id } },
+    { $group: { _id: '$lines.orderId', paid: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+    { $match: { paid: { $gt: 0 } } },
   ]);
   const byId = new Map(orders.map((o) => [String(o._id), o]));
   const list = paid.map((row) => ({ orderId: row._id, orderNumber: byId.get(String(row._id))?.orderId, totalInvoice: byId.get(String(row._id))?.totalInvoice, paid: row.paid }));

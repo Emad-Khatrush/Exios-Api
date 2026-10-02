@@ -199,6 +199,10 @@ async function loadSources(cutoff) {
       // A deduction typed by hand on the wallet screen with the order number in its note
       const manual = ordersByNumber.get(String(statement.note || '').match(MANUAL_ORDER)?.[1]?.trim() || '');
       if (manual) return { orderId: manual._id };
+      // A deduction typed by hand with no order: by what its note says (owner's decision 2026-10-02)
+      const note = String(statement.note || '');
+      if (/سحب/.test(note)) return { kind: 'WITHDRAWAL' }; // the customer took money out in cash
+      if (/نقل\s*داخلي|النقل\s*الداخلي|ديلفري|دليفري|delivery/i.test(note)) return { kind: 'SERVICE_FEE', revenueRole: 'revenue_shipping_domestic' };
       return null;
     }
     const refund = text.match(CANCELLATION_REFUND);

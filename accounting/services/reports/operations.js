@@ -51,7 +51,20 @@ async function tripProfitability({ status, search, shippingType } = {}) {
   if (status) query.status = status;
   if (shippingType) query.shippingType = shippingType;
   if (search) query.voyage = new RegExp(escapeRegex(search), 'i');
-  const trips = await Inventory.find(query).select('voyage shippingType status inventoryPlace arrivalDate createdAt orders.paymentList._id').sort({ createdAt: -1 }).limit(1000).lean();
+  const trips = await Inventory.find(query).select('voyage shippingType status inventoryPlace arrivalDate createdAt').sort({ createdAt: -1 }).limit(1000).lean();
+
+  // The packages of each trip, from their trip links: the air or sea trip that carried them, or
+  // the domestic trip that took them on. Packages of cancelled orders do not count.
+  const tripIds = trips.map((t) => t._id);
+  const orders = await Order.find({ isCanceled: { $ne: true }, $or: [{ 'paymentList.tripId': { $in: tripIds } }, { 'paymentList.domesticTripId': { $in: tripIds } }] })
+    .select('paymentList._id paymentList.tripId paymentList.domesticTripId paymentList.deliveredPackages.weight').lean();
+  const packagesOf = new Map();
+  const addPackage = (tripId, pkg) => {
+    if (!tripId) return;
+    if (!packagesOf.has(String(tripId))) packagesOf.set(String(tripId), []);
+    packagesOf.get(String(tripId)).push(pkg);
+  };
+  orders.forEach((order) => (order.paymentList || []).forEach((pkg) => { addPackage(pkg.tripId, pkg); addPackage(pkg.domesticTripId, pkg); }));
 
   const costIds = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'].map((r) => roles[r]);
   const revenueIds = ['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other'].map((r) => roles[r]);
@@ -60,9 +73,10 @@ async function tripProfitability({ status, search, shippingType } = {}) {
     netBy('packageId', idsOf({ deferred: roles.deferred_shipping_revenue, ...Object.fromEntries(revenueIds.map((id, i) => [i, id])) })),
   ]);
   const sum = (map, ids) => ids.reduce((total, id) => total + (map?.get(id) || 0), 0);
+  const perUnit = (cents, weight) => (weight > 0 ? Math.round(cents / weight) : null);
 
   const results = trips.map((trip) => {
-    const packageIds = (trip.orders || []).map((o) => o?.paymentList?._id).filter(Boolean).map(String);
+    const packages = packagesOf.get(String(trip._id)) || [];
     const ledger = byTrip.get(String(trip._id));
     const cost = sum(ledger, costIds);
     const costInProgress = ledger?.get(roles.trip_cost_wip) || 0;
@@ -71,23 +85,40 @@ async function tripProfitability({ status, search, shippingType } = {}) {
     let deferred = 0;
     let recognizedPackages = 0;
     if (international) {
-      packageIds.forEach((id) => {
-        const pkg = byPackage.get(id);
-        const earned = -sum(pkg, revenueIds);
+      packages.forEach((pkg) => {
+        const ledgerOfPackage = byPackage.get(String(pkg._id));
+        const earned = -sum(ledgerOfPackage, revenueIds);
         revenue += earned;
-        deferred += -(pkg?.get(roles.deferred_shipping_revenue) || 0);
+        deferred += -(ledgerOfPackage?.get(roles.deferred_shipping_revenue) || 0);
         if (earned > 0) recognizedPackages++;
       });
     }
+    // Weight of the trip: KG for air, CBM for sea (a domestic trip may mix both)
+    const weight = Math.round(packages.reduce((total, pkg) => total + Number(pkg.deliveredPackages?.weight?.total || 0), 0) * 1000) / 1000;
+    const units = [...new Set(packages.map((pkg) => pkg.deliveredPackages?.weight?.measureUnit).filter(Boolean))];
+    const unit = trip.shippingType === 'air' ? 'KG' : trip.shippingType === 'sea' ? 'CBM' : (units.length === 1 ? units[0] : null);
+    const totalRevenue = revenue + deferred;
+    const totalCost = cost + costInProgress;
     const profit = revenue - cost;
     return {
       tripId: trip._id, voyage: trip.voyage, shippingType: trip.shippingType, status: trip.status, office: trip.inventoryPlace,
-      date: trip.arrivalDate || trip.createdAt, packages: packageIds.length, recognizedPackages,
-      revenue, cost, profit, margin: revenue ? Math.round((profit / revenue) * 1000) / 10 : null, deferred, costInProgress,
+      date: trip.arrivalDate || trip.createdAt, packages: packages.length, recognizedPackages,
+      // Recognised so far (delivered and paid) and its cost
+      revenue, cost, profit, margin: revenue ? Math.round((profit / revenue) * 1000) / 10 : null,
+      // Everything billed on the trip (recognised + still deferred) against all its costs
+      deferred, costInProgress, totalRevenue, totalCost, net: totalRevenue - totalCost,
+      weight, unit, mixedUnits: !unit && units.length > 1,
+      costPerUnit: unit ? perUnit(totalCost, weight) : null, revenuePerUnit: unit && international ? perUnit(totalRevenue, weight) : null,
     };
   });
-  const total = (field) => results.reduce((s, r) => s + r[field], 0);
-  return { results, totals: { revenue: total('revenue'), cost: total('cost'), profit: total('profit'), deferred: total('deferred'), costInProgress: total('costInProgress') } };
+  const total = (field) => results.reduce((s, r) => s + (r[field] || 0), 0);
+  return {
+    results,
+    totals: {
+      revenue: total('revenue'), cost: total('cost'), profit: total('profit'), deferred: total('deferred'), costInProgress: total('costInProgress'),
+      totalRevenue: total('totalRevenue'), totalCost: total('totalCost'), net: total('net'),
+    },
+  };
 }
 
 // Profit of every purchase order: the invoice sold to the customer against the supplier bills

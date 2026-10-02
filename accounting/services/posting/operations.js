@@ -191,6 +191,11 @@ async function postStatement(statementId, options = {}) {
       if (kind === 'SETTLEMENT_CANCEL') fallbacks.push('إرجاع للمحفظة غير مربوط بدفعة معروفة؛ سُجّل كمبلغ مسترد');
       lines.push({ accountId: (await resolveAccount(role))._id, debit: usd, office, label: statement.description });
     }
+  } else if (kind === 'SERVICE_FEE') {
+    // A charge taken from the wallet for a service with no order (domestic transport, delivery):
+    // revenue of the office that entered it
+    const usd = await walletOut();
+    lines.push({ accountId: (await resolveAccount(options.target?.revenueRole || 'revenue_other'))._id, credit: usd, office, label: statement.description });
   } else if (kind === 'WITHDRAWAL') {
     await walletOut();
     const cash = await cashAccount();

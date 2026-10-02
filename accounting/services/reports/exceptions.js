@@ -306,13 +306,14 @@ const CHECKS = {
     const orders = await Order.find({ unsureOrder: true }).select('orderId').lean();
     if (!orders.length) return result('unsurePaid', 'warn', 'طلب غير مؤكد عليه دفعات', '', []);
     const paid = await JournalEntry.aggregate([
-      { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) } } }, { $unwind: '$lines' },
-      { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, 'lines.accountId': oid(roles.customer_receivable), 'lines.credit': { $gt: 0 } } },
-      { $group: { _id: '$lines.orderId', usd: { $sum: '$lines.credit' } } },
+      { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, eventType: { $in: ['WALLET_PAYMENT', 'CASH_PAYMENT', 'CANCEL', 'SETTLEMENT_CANCEL', 'REFUND'] } } }, { $unwind: '$lines' },
+      { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, 'lines.accountId': oid(roles.customer_receivable) } },
+      { $group: { _id: '$lines.orderId', usd: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+      { $match: { usd: { $gt: 0 } } },
     ]);
     const numbers = new Map(orders.map((o) => [String(o._id), o.orderId]));
     const items = paid.map((row) => ({ label: numbers.get(String(row._id)), usd: row.usd, url: `/invoice/${row._id}/edit` }));
-    return result('unsurePaid', 'warn', 'طلب غير مؤكد عليه دفعات', 'دُفع على طلب لم يُؤكَّد بعد، فعومل كطلب عادي. أكّد الطلب أو صحّح الدفعة.', items);
+    return result('unsurePaid', 'warn', 'طلب غير مؤكد عليه دفعات', 'دُفع على طلب لم يُؤكَّد. لا يُحسب إيراداً؛ المبلغ يبقى رصيداً للعميل على الطلب حتى يُؤكَّد الطلب أو تُصحَّح الدفعة.', items);
   },
 
   // 19. Entry numbers have no gaps

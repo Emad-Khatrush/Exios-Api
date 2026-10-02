@@ -197,10 +197,10 @@ async function syncOrder(orderId, options = {}) {
   const partnerId = order.user ? oid(order.user) : null;
   const tolerance = settings.recognitionToleranceCents ?? 200;
   const state = await orderLedger(order._id, ctx);
-  // An unsure order (not confirmed) bills nothing, unless the customer paid on it: then it is a
-  // real order and is billed like any other (it is listed for review in the exceptions)
-  const paidOn = [...state.ar.values()].some((open) => open < 0);
-  const active = !order.isCanceled && (!order.unsureOrder || paidOn);
+  // An unsure (unconfirmed) order bills nothing and earns nothing, even when something was paid
+  // on it: that payment stays the customer's credit on the order, listed for review, until the
+  // order is confirmed or the payment corrected (owner's decision 2026-10-02)
+  const active = !order.isCanceled && !order.unsureOrder;
   const posted = [];
 
   // ---- 1. Claims: what the customer is billed ----

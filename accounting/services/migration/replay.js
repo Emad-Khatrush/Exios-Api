@@ -206,10 +206,12 @@ async function settleOverpayments(run) {
     { $match: { open: { $lt: 0 } } },
   ]);
   const Order = require('../../../models/order');
-  const orders = new Map((await Order.find({ _id: { $in: rows.map((r) => r.orderId).filter(Boolean) } }).select('orderId placedAt').lean()).map((o) => [String(o._id), o]));
+  const orders = new Map((await Order.find({ _id: { $in: rows.map((r) => r.orderId).filter(Boolean) } }).select('orderId placedAt unsureOrder').lean()).map((o) => [String(o._id), o]));
   const settled = [];
   for (const row of rows) {
     const order = row.orderId && orders.get(String(row.orderId));
+    // Paid on an unsure order: stays the customer's credit, listed for review, never revenue
+    if (order?.unsureOrder) continue;
     const office = order && offices.has(order.placedAt) ? order.placedAt : settings.defaultOffice;
     const amount = -row.open;
     try {
