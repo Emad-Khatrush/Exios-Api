@@ -391,3 +391,47 @@ test('deleting an order takes its claims back; an order with payments cannot be 
   await expect(deleteOrder(paid._id, req.user)).rejects.toThrow('دفعة');
   expect(await Order.findById(paid._id)).not.toBeNull();
 });
+
+test('A000 to the real customer: entries re-posted on their dates, wallet lines moved by choice', async () => {
+  const { movableStatements, moveStatements } = require('../services/customerChange');
+  const Wallet = require('../../models/wallet');
+  const a000 = (await mongoose.connection.collection('users').insertOne({ firstName: 'A000', customerId: 'A000' })).insertedId;
+  const real = await newCustomer();
+  const order = await newOrder({ user: a000, packages: [{ weight: 10, price: 10 }] });
+  const [pkg] = order.packageIds;
+  await sync(order._id);
+  // A000 deposited 100$ for the shipment and paid it from the wallet
+  const dep = await deposit(a000, 100, 'USD', { description: `إيداع للطلب ${(await Order.findById(order._id)).orderId}` });
+  await post(dep);
+  const pay = await spend(a000, 100, 'USD');
+  await mongoose.connection.collection('orderpaymenthistories').insertOne({ order: order._id, customer: a000, receivedAmount: 100, currency: 'USD', statementId: pay._id });
+  await post(pay, { target: { orderId: order._id, packageIds: [pkg] } });
+  await Wallet.create([{ user: a000, currency: 'USD', balance: 0 }]);
+  expect(await open(arKey(order._id, pkg))).toBe(0);
+
+  await Order.updateOne({ _id: order._id }, { $set: { user: real } });
+  await sync(order._id);
+  // The claim and the payment now sit on the real customer, each on its original date
+  expect(await balanceOf('121000', { partnerId: real })).toBe(0);
+  expect(await balanceOf('121000', { partnerId: a000 })).toBe(0);
+  const moved = await JournalEntry.findOne({ eventKey: /^REPARTNER:/, eventType: 'WALLET_PAYMENT' }).lean();
+  expect(moved.day).toBe('2026-01-05');
+  expect(await JournalEntry.countDocuments({ eventKey: /^REPARTNER:/, eventType: 'CLAIM' })).toBe(1);
+  expect(await JournalEntry.countDocuments({ eventType: 'RECLASS_PARTNER' })).toBe(0);
+  // Running it again moves nothing
+  await sync(order._id);
+  expect(await JournalEntry.countDocuments({ eventKey: /^REPARTNER:/ })).toBe(2);
+
+  // A000's wallet lines for this order: the payment (linked) and the deposit (mentions the order)
+  const { results } = await movableStatements(order._id);
+  expect(results.map((r) => String(r._id)).sort()).toEqual([String(dep._id), String(pay._id)].sort());
+  await moveStatements(order._id, [dep._id, pay._id], req);
+  expect(await UserStatement.countDocuments({ user: a000 })).toBe(0);
+  expect(await UserStatement.countDocuments({ user: real })).toBe(2);
+  expect((await Wallet.findOne({ user: real, currency: 'USD' })).balance).toBe(0);
+  expect(await balanceOf('220100', { partnerId: a000 })).toBe(0);
+  expect(await balanceOf('220100', { partnerId: real })).toBe(0);
+  expect(await balanceOf('121000')).toBe(0);
+  expect(await JournalEntry.countDocuments({ 'source.model': 'UserStatement', status: 'posted', reversalOf: null, hiddenWithCancel: { $ne: true }, 'lines.partnerId': a000 })).toBe(0);
+  expect((await movableStatements(order._id)).results).toHaveLength(0);
+});

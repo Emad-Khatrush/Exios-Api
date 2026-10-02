@@ -9,7 +9,7 @@ const mongoose = require('mongoose');
 const { JournalEntry } = require('../../models');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
-const { postEntry } = require('../ledger');
+const { postEntry, reverseEntry } = require('../ledger');
 const { resolveAccount } = require('../roles');
 const { getConfig } = require('../config');
 const { nextSeq } = require('../counter');
@@ -240,6 +240,19 @@ async function syncOrder(orderId, options = {}) {
   }
 
   // ---- 2. A claim follows its order when the customer changes ----
+  // (from A000 to the real customer, spec 19.10): every entry that put the claim or a payment on
+  // the old customer is reversed and posted again for the new one on its own date, both hidden,
+  // so the order reads as if it had been entered for the new customer from the start. Whatever
+  // that leaves on the old customer is moved by one entry dated today.
+  // (a paid claim nets to zero on the old customer but its entries still move)
+  if (partnerId && [...state.arByPartner.values()].some((byPartner) => [...byPartner.keys()].some((other) => other && other !== String(partnerId)))) {
+    const moved = await repartnerEntries(order, partnerId, ctx);
+    posted.push(...moved);
+    if (moved.length) {
+      const fresh = await orderLedger(order._id, ctx);
+      state.arByPartner = fresh.arByPartner;
+    }
+  }
   if (partnerId) {
     for (const [key, byPartner] of state.arByPartner) {
       for (const [other, balance] of byPartner) {
@@ -337,6 +350,48 @@ async function syncOrder(orderId, options = {}) {
 
   if (!active) await hideCancelledClaims(order._id, ctx);
   return { posted: posted.length };
+}
+
+// Re-posts on the order's current customer every entry that holds one of its claims on another
+// customer: a reversal of the original (on its date, or the first open day) and a copy with the
+// receivable lines of this order moved to the new customer. The other lines (a wallet paid from)
+// stay as they were; moving the old customer's wallet line is the staff member's choice.
+async function repartnerEntries(order, partnerId, ctx) {
+  const a = ctx.accounts;
+  const entries = await JournalEntry.find({
+    status: 'posted', reversalOf: null,
+    lines: { $elemMatch: { orderId: order._id, accountId: a.customer_receivable._id, partnerId: { $nin: [partnerId, null] } } },
+  }).sort({ day: 1, createdAt: 1 }).session(ctx.session);
+  const posted = [];
+  for (const entry of entries) {
+    const isMoved = (line) => String(line.orderId) === String(order._id) && String(line.accountId) === String(a.customer_receivable._id)
+      && line.partnerId && String(line.partnerId) !== String(partnerId);
+    const reversal = await reverseEntry(entry._id, {
+      session: ctx.session, user: ctx.user, reason: `نقل الطلب ${order.orderId} إلى عميله الحالي`,
+      eventKey: `REPARTNER_REVERSE:${entry._id}`, eventType: entry.eventType,
+      migrationRunId: ctx.migrationRunId, isHistorical: ctx.isHistorical,
+    });
+    const copy = await postEntry({
+      journalId: entry.journalId,
+      eventType: entry.eventType,
+      eventKey: `REPARTNER:${entry._id}:${partnerId}`,
+      date: entry.day,
+      description: entry.description,
+      source: entry.source,
+      isHistorical: !!ctx.isHistorical,
+      migrationRunId: ctx.migrationRunId,
+      fallbacks: entry.fallbacks,
+      notes: [...(entry.notes || []), `نُقل من العميل السابق مع الطلب (القيد الأصلي ${entry.number})`],
+      lines: entry.lines.map((line) => {
+        const plain = line.toObject ? line.toObject() : { ...line };
+        delete plain._id;
+        return isMoved(plain) ? { ...plain, partnerId } : plain;
+      }),
+    }, { session: ctx.session, user: ctx.user });
+    await JournalEntry.updateMany({ _id: { $in: [entry._id, reversal._id] } }, { $set: { hiddenWithCancel: true } }, { session: ctx.session });
+    posted.push(reversal, copy);
+  }
+  return posted;
 }
 
 // The claim entries of an order that is cancelled or deleted and owes nothing any more are hidden

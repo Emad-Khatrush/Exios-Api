@@ -7,6 +7,7 @@ const { protect, allowAdminsAndEmployee } = require('../middleware/check-auth');
 const { handle } = require('./controllers/util');
 const staff = require('./services/staffOperations');
 const { listMoneyAccounts } = require('./services/moneyAccounts');
+const customerChange = require('./services/customerChange');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -36,6 +37,9 @@ router.route('/acc/trips/:tripId/costs')
 router.route('/acc/orders/:orderId/costs')
   .get(STAFF, handle(async (req, res) => res.json(await staff.orderCosts(req.params.orderId))))
   .post(STAFF, handle(async (req, res) => res.json(await staff.addOrderCost(req.params.orderId, req.body || {}, req))));
+// After an order moves from A000 to its real customer: A000's wallet lines for it, and moving the chosen ones
+router.get('/acc/orders/:orderId/previous-statements', STAFF, handle(async (req, res) => res.json(await customerChange.movableStatements(req.params.orderId))));
+router.post('/acc/orders/:orderId/move-statements', STAFF, handle(async (req, res) => res.json(await customerChange.moveStatements(req.params.orderId, req.body?.statementIds, req))));
 router.post('/acc/bills/:billId/cancel', STAFF, handle(async (req, res) => res.json(await staff.cancelOwnBill(req.params.billId, req, req.body?.reason))));
 
 router.get('/office-expenses/options', STAFF, handle(async (req, res) => res.json(await staff.officeExpenseOptions(req.user, req.query.office))));
