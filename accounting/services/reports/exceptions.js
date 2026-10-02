@@ -316,6 +316,15 @@ const CHECKS = {
     return result('unsurePaid', 'warn', 'طلب غير مؤكد عليه دفعات', 'دُفع على طلب لم يُؤكَّد. لا يُحسب إيراداً؛ المبلغ يبقى رصيداً للعميل على الطلب حتى يُؤكَّد الطلب أو تُصحَّح الدفعة.', items);
   },
 
+  // 30. Yuan paid to a broker and not in Alipay after a week
+  async yuanPending() {
+    const { YuanPurchase } = require('../../models/documents');
+    const since = addDays(today(), -7);
+    const rows = await YuanPurchase.find({ status: 'posted', arrived: false, day: { $lt: since } }).populate('vendorId', 'name').lean();
+    const items = rows.map((p) => ({ label: `${p.number} · ${p.vendorId?.name || ''}`, usd: p.usd, note: `منذ ${p.day} · ${p.cnyExpected} يوان`, url: '/accounting/alipay' }));
+    return result('yuanPending', 'warn', 'يوان مدفوع لم يصل منذ أكثر من 7 أيام', 'تابع مع الوسيط، ثم أكّد الوصول بالكمية الفعلية من صفحة Alipay.', items);
+  },
+
   // A delivered package (or a purchase invoice) still unpaid long after: a candidate for writing
   // off (spec 19.7; the number of days is a setting)
   async writeOffCandidates() {

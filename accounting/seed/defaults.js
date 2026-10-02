@@ -54,6 +54,9 @@ const ACCOUNTS = [
   // It works like a cash box: it can receive a customer's deposit and pay bills.
   g('1104', 'الحسابات الجارية للشركاء', 'Partner current accounts', 'asset', '11'),
   a('110401', 'جاري وصل', 'Wasl current account', 'asset', '1104', { currency: 'USD', isCash: true, cashKind: 'current', office: 'tripoli' }),
+  // Dollars paid to a broker for yuan that has not reached Alipay yet (spec 19.5)
+  g('1105', 'مدفوعات بانتظار الوصول', 'Payments awaiting arrival', 'asset', '11'),
+  a('110501', 'يوان مدفوع بانتظار الوصول', 'Yuan paid, awaiting arrival', 'asset', '1105', { requires: ['vendor'] }),
   g('12', 'الذمم المدينة', 'Receivables', 'asset', '1'),
   a('121000', 'ذمم العملاء', 'Customer receivables', 'asset', '12', { requires: ['partner'], allowManualEntry: true }),
   g('13', 'تكاليف قيد التنفيذ', 'Work in progress', 'asset', '1'),
@@ -150,6 +153,7 @@ const ACCOUNTS = [
 // Role -> default account code, and the account types a role may point to
 const ROLE_DEFAULTS = {
   customer_receivable: ['121000', ['asset']],
+  yuan_in_transit: ['110501', ['asset']],
   trip_cost_wip: ['130100', ['asset']],
   purchase_cost_wip: ['130200', ['asset']],
   employee_advances: ['140100', ['asset']],
@@ -218,6 +222,7 @@ const ROLE_LABELS = {
   revenue_shipping_domestic: 'إيراد شحن داخلي',
   revenue_other: 'إيرادات أخرى',
   revenue_remittance: 'إيرادات حوالات Alipay',
+  yuan_in_transit: 'يوان مدفوع بانتظار الوصول',
   cost_shipping_air: 'تكلفة شحن جوي',
   cost_shipping_sea: 'تكلفة شحن بحري',
   cost_shipping_domestic: 'تكلفة شحن داخلي',
@@ -255,6 +260,8 @@ const EVENT_JOURNALS = {
   CASHCOUNT: '@cash',
   VENDOR_PAYMENT: '@cash',
   VENDOR_RECEIPT: '@cash',
+  YUAN_PURCHASE: '@cash',
+  YUAN_ARRIVAL: '@cash',
   SALARY: '@cash',
   EQUITY: '@cash',
   BANK_LINE: '@cash',

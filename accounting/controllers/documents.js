@@ -216,6 +216,7 @@ module.exports.deleteDraftBill = handle(async (req, res) => {
 
 const LISTS = {
   payments: { Model: docs.SupplierPayment, populate: [{ path: 'vendorId', select: 'name' }, { path: 'fromAccountId', select: 'code name currency' }] },
+  'yuan-purchases': { Model: docs.YuanPurchase, populate: [{ path: 'vendorId', select: 'name' }, { path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name' }] },
   'write-offs': { Model: docs.ClaimWriteOff, populate: [{ path: 'partnerId', select: 'firstName lastName customerId' }, { path: 'orderId', select: 'orderId' }] },
   receipts: { Model: docs.SupplierReceipt, populate: [{ path: 'vendorId', select: 'name' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'allocations.billId', select: 'number' }] },
   transfers: { Model: docs.TreasuryTransfer, populate: [{ path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'employeeId', select: 'firstName lastName' }] },
@@ -237,6 +238,7 @@ module.exports.listDocuments = (kind) => handle(async (req, res) => {
 const CREATORS = {
   payments: payables.createPayment,
   receipts: payables.createReceipt,
+  'yuan-purchases': (input, context) => require('../services/posting/alipay').createYuanPurchase(input, context),
   'write-offs': (input, context) => require('../services/posting/writeOff').createWriteOff(input, context),
   transfers: treasury.createTransfer,
   'cash-counts': treasury.createCashCount,
@@ -490,4 +492,14 @@ module.exports.lookupClaims = handle(async (req, res) => {
     return 'دين عام';
   };
   res.json({ results: claims.map((row) => ({ arKey: row._id, open: row.open, label: label(row._id) })) });
+});
+
+// ---- Alipay (spec 19.5) ----
+
+module.exports.alipayDashboard = handle(async (req, res) => {
+  res.json(await require('../services/posting/alipay').dashboard({ from: req.query.from || undefined, to: req.query.to || undefined }));
+});
+
+module.exports.completeYuanPurchase = handle(async (req, res) => {
+  res.json(await inTx((session) => require('../services/posting/alipay').completeYuanPurchase(req.params.id, req.body || {}, { session, req })));
 });

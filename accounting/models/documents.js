@@ -138,6 +138,25 @@ const ClaimWriteOff = mongoose.model('AccountingClaimWriteOff', withLifecycle({
   reason: { type: String, required: true },
 }));
 
+// Yuan bought from a broker for the Alipay accounts (spec 19.5): paid in dollars (or another
+// currency), received in yuan; its rate is yuan / dollar. Until the yuan arrives the dollars wait
+// on "yuan in transit" against the broker.
+const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
+  vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
+  day: { type: String, required: true },
+  fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
+  currency: String,
+  amount: Number,
+  // USD cents that left
+  usd: Number,
+  toAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
+  cnyExpected: Number,
+  cnyReceived: Number,
+  arrived: { type: Boolean, default: true },
+  arrivedDay: String,
+  rate: Number,
+}));
+
 const TreasuryTransfer = mongoose.model('AccountingTreasuryTransfer', withLifecycle({
   day: { type: String, required: true },
   fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
@@ -288,6 +307,7 @@ module.exports = {
   SupplierPayment,
   SupplierReceipt,
   ClaimWriteOff,
+  YuanPurchase,
   TreasuryTransfer,
   CashCount,
   FixedAsset,

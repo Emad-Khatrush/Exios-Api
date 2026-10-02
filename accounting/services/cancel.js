@@ -46,6 +46,7 @@ const RULES = {
   },
   AccountingSupplierPayment: { Model: docs.SupplierPayment },
   AccountingSupplierReceipt: { Model: docs.SupplierReceipt },
+  AccountingYuanPurchase: { Model: docs.YuanPurchase },
   AccountingClaimWriteOff: {
     Model: docs.ClaimWriteOff,
     async check(writeOff, { session }) {
