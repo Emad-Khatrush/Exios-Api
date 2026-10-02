@@ -316,3 +316,19 @@ test('old hand deductions: a withdrawal leaves the cash box, domestic transport 
   expect(report.overpaidSettled.count).toBe(0);
   expect(String((await JournalEntry.findOne({ 'lines.orderId': unsure, eventType: 'CLAIM' }))?._id || '')).toBe('');
 });
+
+// Production copy: a dinar box counted at zero kept 1,200$ because the count was valued at the
+// day's rate instead of the box's own average
+test('a dinar box counted at zero is at zero in dollars too', async () => {
+  await resetDb();
+  await col('accountingcurrencyrates').insertMany([
+    { currency: 'LYD', day: '2024-01-01', rate: 5, isUsed: false, source: 'entered' },
+    { currency: 'LYD', day: '2024-06-01', rate: 8, isUsed: false, source: 'entered' },
+  ]);
+  const user = (await col('users').insertOne({ firstName: 'عميل', lastName: 'د', customerId: 'D1', phone: 918000201 })).insertedId;
+  await col('userstatements').insertOne({ user, createdBy: user, paymentType: 'wallet', total: 0, calculationType: '+', amount: 1000, currency: 'LYD', office: 'tripoli', actionType: 'cash', description: 'إيداع', createdAt: d('2024-02-01T10:00:00Z') });
+  await col('wallets').insertOne({ user, currency: 'LYD', balance: 1000 });
+  const box = await account('110102');
+  await migration.startRun({ wait: true, config: { countDay: '2024-07-01', openingCounts: [{ accountId: box._id, amount: 0 }] } });
+  expect(await getBalance(box._id)).toEqual({ usd: 0, foreign: 0 });
+});

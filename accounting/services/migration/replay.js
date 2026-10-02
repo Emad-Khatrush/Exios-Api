@@ -9,7 +9,7 @@ const { runInTransaction } = require('../transaction');
 const { postEntry } = require('../ledger');
 const { getConfig } = require('../config');
 const { resolveCashAccount, walletRole } = require('../roles');
-const { getBalance } = require('../carrying');
+const { getBalance, valueOutflow } = require('../carrying');
 const { toDay } = require('../dates');
 const { syncOrder } = require('../claims/sync');
 const { purchaseKey, shipmentKey } = require('../claims/keys');
@@ -291,7 +291,8 @@ async function postOpeningCash(run) {
         const currency = account.currency || 'USD';
         const counted = await toCurrencyMinor(Number(count.amount) || 0, currency);
         // The count is the balance at the end of the chosen day; later movements come on top of it
-        const booked = (await getBalance(account._id, { session, upToDay: countDay })).foreign;
+        const bookedBalance = await getBalance(account._id, { session, upToDay: countDay });
+        const booked = currency === 'USD' ? bookedBalance.usd : bookedBalance.foreign;
         const opening = counted - booked;
         results.push({ accountId: account._id, code: account.code, name: account.name, currency, counted, booked, opening, countDay });
         if (!opening) return;
@@ -301,9 +302,11 @@ async function postOpeningCash(run) {
         const day = countDay;
         // A currency first used after history began has no rate that early: its first known rate is used
         const fallbacks = [];
-        let usd;
+        // Money taken out of a box in another currency leaves at the box's average rate (spec 2.4),
+        // so a box counted at zero is at zero in dollars too; money added comes in at the day's rate
+        let usd = currency !== 'USD' && opening < 0 ? valueOutflow(bookedBalance, -opening) : null;
         try {
-          usd = await rates.toUsd(Math.abs(opening), currency, day);
+          if (usd === null) usd = await rates.toUsd(Math.abs(opening), currency, day);
         } catch (error) {
           const first = await CurrencyRate.findOne({ currency }).sort({ day: 1 }).session(session).lean();
           if (!first) throw error;
