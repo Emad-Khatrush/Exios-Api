@@ -153,6 +153,7 @@ const byModel = (req, res, next) => can(MODEL_PERMISSIONS[req.params.model] || '
 router.post('/documents/:model/:id/cancel', byModel, P.cancel, documents.cancel);
 router.post('/documents/:model/:id/attachments', byModel, upload.array('files'), documents.addAttachments);
 
+router.get('/reports/abandoned', P.reports, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/abandoned').abandonedList())));
 router.get('/alipay', can('treasury', 'reports'), documents.alipayDashboard);
 router.post('/yuan-purchases/:id/complete', P.treasury, documents.completeYuanPurchase);
 router.get('/assets', P.assets, documents.listAssets);

@@ -29,6 +29,13 @@ async function uploadReceipts(files) {
 router.get('/acc/options', STAFF, handle(async (req, res) => res.json(await staff.options(req.user, { currency: req.query.currency }))));
 // Where a deposit can go or a debt's money came from: cash boxes, banks, partners' current accounts
 router.get('/acc/money-accounts', STAFF, handle(async (req, res) => res.json({ results: await listMoneyAccounts({ currency: req.query.currency }) })));
+// Abandoned goods on the order page (spec v8): admins and the owner declare, undo, sell
+const abandoned = () => require('./services/abandoned');
+router.get('/acc/orders/:orderId/packages-state', STAFF, handle(async (req, res) => res.json(await abandoned().orderPackages(req.params.orderId, req.user))));
+router.post('/acc/orders/:orderId/packages/:packageId/abandon', STAFF, handle(async (req, res) => res.json(await abandoned().declareAbandoned(req.params.orderId, req.params.packageId, req))));
+router.post('/acc/orders/:orderId/packages/:packageId/restore', STAFF, handle(async (req, res) => res.json(await abandoned().restoreAbandoned(req.params.orderId, req.params.packageId, req))));
+router.post('/acc/orders/:orderId/packages/:packageId/sell', STAFF, handle(async (req, res) => res.json(await abandoned().sellAbandoned(req.params.orderId, req.params.packageId, req.body || {}, req))));
+
 // The package dialog: the volumetric factor, and whether this user may change a saved weight
 router.get('/acc/package-settings', STAFF, handle(async (req, res) => {
   const { volumetricFactor, canEditMeasures } = require('../utils/packageMeasures');

@@ -316,6 +316,13 @@ const CHECKS = {
     return result('unsurePaid', 'warn', 'طلب غير مؤكد عليه دفعات', 'دُفع على طلب لم يُؤكَّد. لا يُحسب إيراداً؛ المبلغ يبقى رصيداً للعميل على الطلب حتى يُؤكَّد الطلب أو تُصحَّح الدفعة.', items);
   },
 
+  // Goods that reached Libya and were not collected for too long (spec v8)
+  async abandonedGoods() {
+    const { abandonAfterDays, results } = await require('../abandoned').abandonedList();
+    const items = results.filter((r) => r.status === 'waiting').map((r) => ({ label: `${r.orderNumber} · ${r.tracking || 'طرد'}`, usd: r.charge, note: `وصل ${r.arrived ? new Date(r.arrived).toISOString().slice(0, 10) : ''}`, url: `/invoice/${r.orderId}/edit` }));
+    return result('abandonedGoods', 'info', `بضائع متروكة: وصلت ولم تُستلم منذ أكثر من ${abandonAfterDays} يوماً`, 'تواصل مع العميل. ما لن يُستلم يُعلن متروكاً من صفحة الطلب ← المحاسبة (للمدير والمالك)، ثم يُباع.', items);
+  },
+
   // 30. Yuan paid to a broker and not in Alipay after a week
   async yuanPending() {
     const { YuanPurchase } = require('../../models/documents');

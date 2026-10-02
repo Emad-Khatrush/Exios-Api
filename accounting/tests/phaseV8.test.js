@@ -170,3 +170,44 @@ test('4. live: a wallet deduction noted "نقل داخلي" with no order is dom
   expect(await balanceOf('410500')).toBe(-1500);
   expect(await balanceOf('399000')).toBe(0);
 });
+
+test('5. abandoned goods: unpaid part reversed, paid part revenue, full cost; undo; then sale to 410800', async () => {
+  const ab = require('../services/abandoned');
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [{ weight: 10, price: 10 }] }); // 100$
+  const [pkg] = order.packageIds;
+  const trip = await newTrip([pkg]);
+  await Inventory.collection.updateOne({ _id: trip }, { $set: { arrivalDate: new Date('2024-01-01') } });
+  await costBill(trip, 60, 'shipping');
+  await tx((session) => syncOrder(order._id, { session }));
+  await pay(customer, order._id, [pkg], 30);
+  expect(await balanceOf('121000')).toBe(7000);
+
+  // Listed after a year in Libya
+  const { results } = await ab.abandonedList();
+  expect(results.map((r) => String(r.packageId))).toContain(String(pkg));
+  await expect(ab.declareAbandoned(order._id, pkg, { user: clerk })).rejects.toMatchObject({ statusCode: 403 });
+
+  await ab.declareAbandoned(order._id, pkg, req);
+  expect(await balanceOf('121000')).toBe(0);
+  expect(await balanceOf('220400')).toBe(0);
+  expect(await balanceOf('410100')).toBe(-3000); // what was paid
+  expect(await balanceOf('510100')).toBe(6000); // the whole cost
+  expect(await balanceOf('220100', { partnerId: customer })).toBe(0); // wallet untouched
+
+  // Undo before the sale: the claim and the cost come back
+  await ab.restoreAbandoned(order._id, pkg, req);
+  expect(await balanceOf('121000')).toBe(7000);
+  expect(await balanceOf('410100')).toBe(0);
+  expect(await balanceOf('510100')).toBe(0);
+
+  // Declared again and sold for 400 dinars into the Tripoli dinar box
+  await ab.declareAbandoned(order._id, pkg, req);
+  const box = await account('110102');
+  await ab.sellAbandoned(order._id, pkg, { day: '2026-03-01', amount: 400, accountId: box._id }, req);
+  expect(await balanceOf('410800')).toBe(-4000);
+  expect((await getBalance(box._id)).foreign).toBe(400000);
+  await expect(ab.restoreAbandoned(order._id, pkg, req)).rejects.toThrow('بعد البيع');
+  const saved = await Order.findById(order._id).lean();
+  expect(saved.paymentList[0].deliveredPackages.abandoned.status).toBe('sold');
+});

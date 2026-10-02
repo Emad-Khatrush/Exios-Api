@@ -225,6 +225,17 @@ async function syncOrder(orderId, options = {}) {
   state.refunded.forEach((refunded, key) => {
     if (desired.has(key)) desired.set(key, Math.max(desired.get(key) - refunded, 0));
   });
+  // A package declared abandoned (spec v8): the customer is billed only what was paid on it. The
+  // unpaid part leaves the receivable against the deferred revenue, the paid part is recognised as
+  // if delivered, and its whole cost goes to cost of sales. The wallet is not touched.
+  const abandoned = new Set([...packages].filter(([, p]) => p?.deliveredPackages?.abandoned?.status).map(([id]) => id));
+  if (active) {
+    abandoned.forEach((id) => [shipmentKey(order._id, id), domesticFeeKey(order._id, id)].forEach((key) => {
+      if (!desired.has(key)) return;
+      const paidSoFar = Math.max((state.billed.get(key) || 0) - (state.ar.get(key) || 0), 0);
+      desired.set(key, Math.min(desired.get(key), paidSoFar));
+    }));
+  }
   const keys = new Set([...desired.keys(), ...state.billed.keys()]);
 
   for (const key of keys) {
@@ -308,8 +319,9 @@ async function syncOrder(orderId, options = {}) {
     if (written > 0) writtenOffKeys.add(key);
     const billed = (state.billed.get(key) || 0) - written;
     const paid = (state.ar.get(key) || 0) <= tolerance;
-    const delivered = packageId ? !!pkg?.status?.received : true;
+    const delivered = packageId ? !!pkg?.status?.received || (active && abandoned.has(packageId)) : true;
     const want = billed > 0 && paid && delivered ? billed : 0;
+    if (packageId && active && abandoned.has(packageId)) writtenOffKeys.add(shipmentKey(order._id, packageId));
     const byAccount = state.recognized.get(key) || new Map();
     const have = [...byAccount.values()].reduce((s, v) => s + v, 0);
     recognizedNow.set(key, want);
