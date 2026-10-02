@@ -216,6 +216,7 @@ module.exports.deleteDraftBill = handle(async (req, res) => {
 
 const LISTS = {
   payments: { Model: docs.SupplierPayment, populate: [{ path: 'vendorId', select: 'name' }, { path: 'fromAccountId', select: 'code name currency' }] },
+  'customer-refunds': { Model: docs.CustomerRefund, populate: [{ path: 'partnerId', select: 'firstName lastName customerId' }, { path: 'orderId', select: 'orderId' }, { path: 'accountId', select: 'code name currency' }] },
   'yuan-purchases': { Model: docs.YuanPurchase, populate: [{ path: 'vendorId', select: 'name' }, { path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name' }] },
   'write-offs': { Model: docs.ClaimWriteOff, populate: [{ path: 'partnerId', select: 'firstName lastName customerId' }, { path: 'orderId', select: 'orderId' }] },
   receipts: { Model: docs.SupplierReceipt, populate: [{ path: 'vendorId', select: 'name' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'allocations.billId', select: 'number' }] },
@@ -238,6 +239,7 @@ module.exports.listDocuments = (kind) => handle(async (req, res) => {
 const CREATORS = {
   payments: payables.createPayment,
   receipts: payables.createReceipt,
+  'customer-refunds': (input, context) => require('../services/posting/customerRefund').createCustomerRefund(input, context),
   'yuan-purchases': (input, context) => require('../services/posting/alipay').createYuanPurchase(input, context),
   'write-offs': (input, context) => require('../services/posting/writeOff').createWriteOff(input, context),
   transfers: treasury.createTransfer,

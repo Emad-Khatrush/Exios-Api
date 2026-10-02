@@ -99,8 +99,9 @@ async function orderLedger(orderId, ctx) {
         _id: {
           arKey: '$lines.arKey', accountId: '$lines.accountId', partnerId: '$lines.partnerId',
           packageId: '$lines.packageId', tripId: '$lines.tripId', claim: { $in: ['$eventType', CLAIM_EVENTS] },
-          refund: { $eq: ['$eventType', 'REFUND'] },
-          writeOff: { $in: ['$eventType', ['CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY']] },
+          // A refund or a write-off that was cancelled no longer counts (its reversal is a CANCEL)
+          refund: { $and: [{ $eq: ['$eventType', 'REFUND'] }, { $ne: ['$status', 'reversed'] }] },
+          writeOff: { $and: [{ $in: ['$eventType', ['CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY']] }, { $ne: ['$status', 'reversed'] }] },
         },
         net: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } },
       },

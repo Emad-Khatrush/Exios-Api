@@ -40,6 +40,17 @@ router.route('/acc/orders/:orderId/costs')
 // After an order moves from A000 to its real customer: A000's wallet lines for it, and moving the chosen ones
 router.get('/acc/orders/:orderId/previous-statements', STAFF, handle(async (req, res) => res.json(await customerChange.movableStatements(req.params.orderId))));
 router.post('/acc/orders/:orderId/move-statements', STAFF, handle(async (req, res) => res.json(await customerChange.moveStatements(req.params.orderId, req.body?.statementIds, req))));
+// A refund from the supplier on this order, part of it added to the customer's wallet (spec 19.6)
+router.route('/acc/orders/:orderId/refunds')
+  .get(STAFF, handle(async (req, res) => {
+    const { CustomerRefund } = require('./models/documents');
+    res.json({ results: await CustomerRefund.find({ orderId: req.params.orderId }).sort({ day: -1 }).populate('accountId', 'code name currency').lean() });
+  }))
+  .post(STAFF, handle(async (req, res) => {
+    const { runInTransaction } = require('./services/transaction');
+    const { createCustomerRefund } = require('./services/posting/customerRefund');
+    res.json(await runInTransaction((session) => createCustomerRefund({ ...(req.body || {}), orderId: req.params.orderId }, { session, req })));
+  }));
 router.post('/acc/bills/:billId/cancel', STAFF, handle(async (req, res) => res.json(await staff.cancelOwnBill(req.params.billId, req, req.body?.reason))));
 
 router.get('/office-expenses/options', STAFF, handle(async (req, res) => res.json(await staff.officeExpenseOptions(req.user, req.query.office))));

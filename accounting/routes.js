@@ -141,12 +141,12 @@ router.route('/bills/:id').get(can('purchases', 'payments'), documents.getBill).
 router.post('/bills/:id/post', P.purchases, documents.postDraftBill);
 
 // Each kind of document belongs to one kind of work
-const DOCUMENT_KINDS = { payments: 'payments', receipts: 'payments', 'yuan-purchases': 'treasury', 'write-offs': 'entries', transfers: 'treasury', 'cash-counts': 'treasury', salaries: 'payroll', equity: 'assets', nettings: 'assets' };
+const DOCUMENT_KINDS = { payments: 'payments', receipts: 'payments', 'yuan-purchases': 'treasury', 'customer-refunds': 'treasury', 'write-offs': 'entries', transfers: 'treasury', 'cash-counts': 'treasury', salaries: 'payroll', equity: 'assets', nettings: 'assets' };
 Object.entries(DOCUMENT_KINDS).forEach(([kind, permission]) => {
   router.route(`/${kind}`).get(can(permission), documents.listDocuments(kind)).post(can(permission), documents.createDocument(kind));
 });
 const MODEL_PERMISSIONS = {
-  AccountingSupplierBill: 'purchases', AccountingSupplierPayment: 'payments', AccountingSupplierReceipt: 'payments', AccountingYuanPurchase: 'treasury', AccountingClaimWriteOff: 'entries', AccountingTreasuryTransfer: 'treasury', AccountingCashCount: 'treasury',
+  AccountingSupplierBill: 'purchases', AccountingSupplierPayment: 'payments', AccountingSupplierReceipt: 'payments', AccountingYuanPurchase: 'treasury', AccountingCustomerRefund: 'treasury', AccountingClaimWriteOff: 'entries', AccountingTreasuryTransfer: 'treasury', AccountingCashCount: 'treasury',
   AccountingSalaryPayment: 'payroll', AccountingFixedAsset: 'assets', AccountingPrepaidExpense: 'assets', AccountingEquityTransaction: 'assets', AccountingNetting: 'assets',
 };
 const byModel = (req, res, next) => can(MODEL_PERMISSIONS[req.params.model] || 'setup')(req, res, next);

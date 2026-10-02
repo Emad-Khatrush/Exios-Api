@@ -232,3 +232,18 @@ test('B10: the weekly Odoo comparison saves our three figures beside the ones ty
   expect(saved.odoo).toMatchObject({ cash: 30000, wallets: 34000, receivables: 5000 });
   expect((await odoo.listComparisons())).toHaveLength(1);
 });
+
+test('B9: a cancelled write-off puts the claim and the deferred revenue back', async () => {
+  const { createWriteOff } = require('../services/posting/writeOff');
+  const { cancelDocument } = require('../services/cancel');
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, isPayment: true, totalInvoice: 100 });
+  await tx((session) => syncOrder(order._id, { session }));
+  const writeOff = await tx((session) => createWriteOff({ day: '2026-03-01', arKey: `PUR:${order._id}`, reason: 'لن يدفع' }, { session, req }));
+  expect(await balanceOf('121000')).toBe(0);
+  expect(await balanceOf('220300')).toBe(0);
+  await tx((session) => cancelDocument('AccountingClaimWriteOff', writeOff._id, { session, req, reason: 'خطأ' }));
+  expect(await balanceOf('121000')).toBe(10000);
+  expect(await balanceOf('220300')).toBe(-10000);
+  expect(await balanceOf('410300')).toBe(0);
+});

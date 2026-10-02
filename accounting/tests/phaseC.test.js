@@ -57,3 +57,47 @@ test('C1: yuan bought from brokers, one waiting for arrival; the Alipay dashboar
   expect(await balanceOf('110501')).toBe(0);
   expect(await balanceOf('110101')).toBe(-100000);
 });
+
+test('C2: a supplier refund on a purchase: cost down by what came in, sale down by what went to the wallet', async () => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  const { cancelDocument } = require('../services/cancel');
+  const { syncOrder } = require('../services/claims/sync');
+  const operations = require('../services/posting/operations');
+  const payables = require('../services/posting/payables');
+  const Order = require('../../models/order');
+  const UserStatement = require('../../models/userStatement');
+  const Wallet = require('../../models/wallet');
+  await CurrencyRate.create([{ currency: 'TRY', day: '2026-01-01', rate: 40 }]);
+  const customer = (await mongoose.connection.collection('users').insertOne({ firstName: 'عميل', customerId: 'C2' })).insertedId;
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'C2-1', user: customer, placedAt: 'tripoli', isPayment: true, totalInvoice: 200, unsureOrder: false, isCanceled: false, paymentList: [], createdAt: new Date('2026-02-01'),
+  });
+  const [alibaba] = await Vendor.create([{ name: 'Alibaba', type: 'supplier' }]);
+  const cash = await account('110101');
+  await tx((session) => payables.createBill({ vendorId: alibaba._id, day: '2026-02-01', currency: 'USD', paidImmediatelyFrom: cash._id, lines: [{ description: 'goods', amount: 180, target: 'order', orderId }] }, { session, req }));
+  await tx((session) => syncOrder(orderId, { session }));
+  const dep = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount: 200, currency: 'USD', total: 200, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-02-02') });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  const spend = await UserStatement.create({ user: customer, createdBy: oid(), description: 'دفع', amount: 200, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-02-02') });
+  await tx((session) => operations.postStatement(spend._id, { session, target: { orderId, category: 'invoice' } }));
+  await Wallet.create([{ user: customer, currency: 'USD', balance: 0 }]);
+  expect(await balanceOf('410300')).toBe(-20000);
+  expect(await balanceOf('510400')).toBe(18000);
+
+  // 1200 lira came into the Kuveyt Türk account, worth 30$ by the bank; 29$ go to the wallet
+  const bank = await account('110204');
+  const refund = await tx((session) => createCustomerRefund({ day: '2026-03-01', orderId, accountId: bank._id, amount: 1200, usdValue: 30, walletUsd: 29 }, { session, req }));
+  expect(await balanceOf('410300')).toBe(-17100);
+  expect(await balanceOf('510400')).toBe(15000);
+  expect(await getBalance(bank._id)).toEqual({ usd: 3000, foreign: 120000 });
+  expect(await balanceOf('220100', { partnerId: customer })).toBe(-2900);
+  expect(await balanceOf('121000')).toBe(0);
+  expect((await Wallet.findOne({ user: customer, currency: 'USD' })).balance).toBe(29);
+  const line = await UserStatement.findOne({ 'accountingSource.id': refund._id }).lean();
+  expect(line).toMatchObject({ actionType: 'refund', amount: 29, calculationType: '+' });
+
+  await tx((session) => cancelDocument('AccountingCustomerRefund', refund._id, { session, req, reason: 'خطأ' }));
+  expect(await balanceOf('410300')).toBe(-20000);
+  expect(await balanceOf('510400')).toBe(18000);
+  expect((await Wallet.findOne({ user: customer, currency: 'USD' })).balance).toBe(0);
+});

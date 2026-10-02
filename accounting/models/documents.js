@@ -157,6 +157,21 @@ const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
   rate: Number,
 }));
 
+// Money a supplier gave back on a purchase, part of it added to the customer's wallet (spec 19.6)
+const CustomerRefund = mongoose.model('AccountingCustomerRefund', withLifecycle({
+  day: { type: String, required: true },
+  orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true },
+  partnerId: { type: Schema.Types.ObjectId, ref: 'User' },
+  // Where the money came in, in its currency, and its real dollar value (USD cents)
+  accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
+  currency: String,
+  amount: Number,
+  usd: Number,
+  // USD cents added to the customer's wallet
+  walletUsd: { type: Number, default: 0 },
+  userStatementId: Schema.Types.ObjectId,
+}));
+
 const TreasuryTransfer = mongoose.model('AccountingTreasuryTransfer', withLifecycle({
   day: { type: String, required: true },
   fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
@@ -308,6 +323,7 @@ module.exports = {
   SupplierReceipt,
   ClaimWriteOff,
   YuanPurchase,
+  CustomerRefund,
   TreasuryTransfer,
   CashCount,
   FixedAsset,

@@ -47,6 +47,28 @@ const RULES = {
   AccountingSupplierPayment: { Model: docs.SupplierPayment },
   AccountingSupplierReceipt: { Model: docs.SupplierReceipt },
   AccountingYuanPurchase: { Model: docs.YuanPurchase },
+  AccountingCustomerRefund: {
+    Model: docs.CustomerRefund,
+    async check(refund, { session, confirmNegative }) {
+      if (!refund.walletUsd) return;
+      const wallet = await Wallet.findOne({ user: refund.partnerId, currency: 'USD' }).session(session);
+      if ((wallet?.balance || 0) < refund.walletUsd / 100 && !confirmNegative) {
+        throw fail(`محفظة العميل ستصبح سالبة (الرصيد ${wallet?.balance || 0}$). أكّد الإلغاء للمتابعة.`);
+      }
+    },
+    async cascade(refund, { session, req, reason }) {
+      if (!refund.walletUsd) return;
+      const statement = await moveWallet({
+        userId: refund.partnerId, currency: 'USD', amount: -refund.walletUsd / 100,
+        description: `إلغاء الريفاند ${refund.number}${reason ? ` - ${reason}` : ''}`, note: refund.number,
+        createdBy: req?.user?._id, source: { model: 'AccountingCustomerRefund', id: refund._id },
+      }, session);
+      await require('../../models/userStatement').updateOne({ _id: statement._id }, { $set: { actionType: 'refund' } }, { session });
+    },
+    async after(refund, context) {
+      await require('./claims/sync').syncOrder(refund.orderId, { session: context.session, user: context.req?.user });
+    },
+  },
   AccountingClaimWriteOff: {
     Model: docs.ClaimWriteOff,
     async check(writeOff, { session }) {
