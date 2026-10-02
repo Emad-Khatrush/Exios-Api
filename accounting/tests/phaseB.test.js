@@ -127,3 +127,15 @@ test('B5: money received from a supplier settles a credit note, then their advan
   expect(await payables.apBalance(payables.billKey(bill._id))).toBe(-3000);
   expect((await getBalance(alipay._id)).usd).toBe(0);
 });
+
+test('B7: the balance sheet shows this year apart from earlier years not closed yet', async () => {
+  const { balanceSheet } = require('../services/reports/statements');
+  const { post } = require('./helpers');
+  const cash = await account('110101');
+  const revenue = await account('410600');
+  await post({ eventType: 'MANUAL', eventKey: 'B7:old', date: '2025-06-01', lines: [{ accountId: cash._id, debit: 10000 }, { accountId: revenue._id, credit: 10000, office: 'tripoli' }] });
+  await post({ eventType: 'MANUAL', eventKey: 'B7:new', date: '2026-03-01', lines: [{ accountId: cash._id, debit: 2500 }, { accountId: revenue._id, credit: 2500, office: 'tripoli' }] });
+  const sheet = await balanceSheet({ asOf: '2026-06-30' });
+  expect(sheet.balanced).toBe(true);
+  expect(sheet.equity).toMatchObject({ unclosedEarnings: 12500, currentYearEarnings: 2500, priorUnclosedEarnings: 10000, yearStart: '2026-01-01' });
+});

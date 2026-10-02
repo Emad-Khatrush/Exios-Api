@@ -138,6 +138,9 @@ describe('historical migration (scenarios 11 and 12)', () => {
     // opening cash: Tripoli USD ends at the counted 1,000
     expect((await getBalance(tripoliUsd._id)).foreign).toBe(100000);
     expect(report.openingCash[0].counted).toBe(100000);
+    expect(report.openingCash[0].entryId).toBeTruthy();
+    // Boxes with money in the books but no count are listed, never adjusted
+    report.openingCash.filter((row) => row.uncounted).forEach((row) => expect(row).toMatchObject({ counted: null, opening: 0 }));
   });
 
   test('phase 6: the accounting view of an order, a trip and a customer, and a printed voucher', async () => {

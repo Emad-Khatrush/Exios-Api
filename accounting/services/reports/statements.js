@@ -125,11 +125,27 @@ async function balanceSheet({ asOf } = {}) {
   const liabilities = 0 - sumOf('liability');
   const equity = 0 - sumOf('equity');
   const unclosedEarnings = 0 - (sumOf('income') + sumOf('expense'));
+  // This fiscal year's result, apart from earlier years not closed yet (closing them moves them
+  // into retained earnings; until then they are shown on their own line)
+  const { fiscalYear } = require('../closing');
+  const day = asOf || require('../dates').today();
+  let { start } = await fiscalYear(day.slice(0, 4));
+  if (start > day) start = (await fiscalYear(String(Number(day.slice(0, 4)) - 1))).start;
+  const resultIds = accounts.filter((a) => !a.isGroup && ['income', 'expense'].includes(a.type)).map((a) => a._id);
+  const [thisYear] = await JournalEntry.aggregate([
+    { $match: { day: { $gte: start, $lte: day }, eventType: { $ne: 'YEAR_CLOSE' }, 'lines.accountId': { $in: resultIds } } },
+    { $unwind: '$lines' }, { $match: { 'lines.accountId': { $in: resultIds } } },
+    { $group: { _id: null, net: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+  ]);
+  const currentYearEarnings = thisYear?.net || 0;
   return {
     asOf: asOf || null,
     assets: { rows: rowsOf('asset', 1), total: assets },
     liabilities: { rows: rowsOf('liability', -1), total: liabilities },
-    equity: { rows: rowsOf('equity', -1), total: equity, unclosedEarnings, totalWithEarnings: equity + unclosedEarnings },
+    equity: {
+      rows: rowsOf('equity', -1), total: equity, unclosedEarnings, totalWithEarnings: equity + unclosedEarnings,
+      currentYearEarnings, priorUnclosedEarnings: unclosedEarnings - currentYearEarnings, yearStart: start,
+    },
     balanced: assets === liabilities + equity + unclosedEarnings,
     difference: assets - (liabilities + equity + unclosedEarnings),
   };

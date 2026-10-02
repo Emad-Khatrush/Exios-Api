@@ -11,6 +11,7 @@ const UserStatement = require('../../models/userStatement');
 const OrderPaymentHistory = require('../../models/orderPaymentHistory');
 const { Vendor } = require('../models/documents');
 const { visibleMatch } = require('../services/visibility');
+const { logAudit } = require('../services/audit');
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -156,4 +157,24 @@ module.exports.lookupUsers = handle(async (req, res) => {
 
 module.exports.journalsForFilter = handle(async (req, res) => {
   res.json({ results: await Journal.find({}).select('code name type isActive').sort({ code: 1 }).lean() });
+});
+
+// A file kept with an entry: the signed count sheet on the opening cash entry, a receipt...
+module.exports.addAttachments = handle(async (req, res) => {
+  if (!isObjectId(req.params.id)) throw badRequest('القيد غير صالح');
+  const entry = await JournalEntry.findById(req.params.id).select('attachments').lean();
+  if (!entry) throw notFound('القيد غير موجود');
+  // Loaded here: the storage client reads its credentials when required
+  const { uploadToGoogleCloud } = require('../../utils/googleClould');
+  const files = [];
+  for (const file of req.files || []) {
+    const uploaded = await uploadToGoogleCloud(file, 'exios-admin-accounting');
+    files.push({ path: uploaded.publicUrl, filename: uploaded.filename, folder: uploaded.folder, bytes: uploaded.bytes, fileType: file.mimetype });
+  }
+  if (!files.length) throw badRequest('لا توجد ملفات');
+  await runInTransaction(async (session) => {
+    await JournalEntry.updateOne({ _id: entry._id }, { $push: { attachments: { $each: files } } }, { session });
+    await logAudit({ req, action: 'entry.attach', model: 'AccountingJournalEntry', docId: entry._id, after: { files: files.map((f) => f.filename) } }, session);
+  });
+  res.json({ attachments: [...(entry.attachments || []), ...files] });
 });

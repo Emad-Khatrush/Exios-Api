@@ -313,7 +313,7 @@ async function postOpeningCash(run) {
           usd = await rates.toUsd(Math.abs(opening), currency, day, first.rate);
           fallbacks.push(`لا يوجد سعر ${currency} في بداية التاريخ؛ استُخدم أول سعر معروف (${first.day})`);
         }
-        await postEntry({
+        const entry = await postEntry({
           eventType: 'OPENING_CASH', eventKey: `OPENING_CASH:${account._id}:${run.runId}`, date: day,
           description: `تسوية جرد ${account.name} بتاريخ ${countDay} (الجرد الفعلي ناقص الحركات المُرحَّلة)`, source: { model: 'AccountingAccount', id: account._id },
           isHistorical: true, migrationRunId: run.runId, fallbacks: [...rates.fallbacks, ...fallbacks],
@@ -322,12 +322,20 @@ async function postOpeningCash(run) {
             { accountId: (await resolveAccount('opening_balance'))._id, [opening > 0 ? 'credit' : 'debit']: usd, label: account.name },
           ],
         }, { session });
+        results[results.length - 1].entryId = entry._id;
         await rates.lock();
       });
     } catch (error) {
       const account = (await getConfig()).accountsById.get(String(count.accountId));
       await recordProblem(run, { at: run.historyStart, source: 'openingCash', ref: account ? `${account.code} ${account.name}` : String(count.accountId) }, error);
     }
+  }
+  // Boxes that hold money in the books but were not counted: the count day must not pass them by
+  const counted = new Set((run.config?.openingCounts || []).map((c) => String(c.accountId)));
+  for (const account of [...(await getConfig()).accountsById.values()].filter((a) => a.isCash && !a.isGroup && a.isActive !== false && !counted.has(String(a._id)))) {
+    const balance = await getBalance(account._id, { upToDay: countDay });
+    const booked = (account.currency || 'USD') === 'USD' ? balance.usd : balance.foreign;
+    if (booked) results.push({ accountId: account._id, code: account.code, name: account.name, currency: account.currency || 'USD', counted: null, booked, opening: 0, countDay, uncounted: true });
   }
   return results;
 }

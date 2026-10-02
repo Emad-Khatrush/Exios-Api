@@ -85,6 +85,7 @@ router.get('/entries/event-types', ANY, entries.eventTypes);
 router.route('/entries').get(P.entries, entries.list).post(P.entries, entries.createManual);
 router.get('/entries/:id', can('entries', 'reports'), entries.get);
 router.post('/entries/:id/cancel', P.entries, P.cancel, entries.cancel);
+router.post('/entries/:id/attachments', can('entries', 'treasury'), upload.array('files'), entries.addAttachments);
 
 router.get('/reports/trial-balance', P.reports, reports.trialBalance);
 router.get('/reports/account-ledger/:id', can('reports', 'treasury'), reports.accountLedger);
