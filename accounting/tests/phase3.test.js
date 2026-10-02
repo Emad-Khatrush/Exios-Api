@@ -304,7 +304,16 @@ test('the outbox records events while live posting is off, posts nothing until i
   expect(result).toEqual({ processed: 3, done: 3 });
   expect(await balanceOf('410100')).toBe(-10000);
 
-  // an event that cannot post (no dinar rate that far back) waits with its error
+  // no dinar rate that far back: the first later rate is used, and the entry says so
+  const early = await deposit(user, 18, 'LYD', { createdAt: new Date('2025-06-01') });
+  await events.emitAccountingEvent('statement', early._id);
+  await events.processQueue();
+  const entry = await JournalEntry.findOne({ 'source.id': early._id });
+  expect(entry.fallbacks.join(' ')).toMatch('أقرب سعر بعد');
+
+  // with that option off, an event that cannot post waits with its error
+  await AccountingSettings.updateOne({ key: 'main' }, { $set: { rateFallbackNext: false } });
+  invalidateConfig();
   const lyd = await deposit(user, 10, 'LYD', { createdAt: new Date('2025-06-01') });
   await events.emitAccountingEvent('statement', lyd._id);
   await events.processQueue();

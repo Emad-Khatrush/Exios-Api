@@ -5,6 +5,7 @@ const UserStatement = require('../../../models/userStatement');
 const OrderPaymentHistory = require('../../../models/orderPaymentHistory');
 const Order = require('../../../models/order');
 const Balance = require('../../../models/balance');
+const User = require('../../../models/user');
 const { JournalEntry } = require('../../models');
 const { postEntry } = require('../ledger');
 const { getConfig } = require('../config');
@@ -83,6 +84,14 @@ function claimLines(parts, side, partnerId) {
 
 const ordersOf = (keys) => [...new Set(keys.filter((k) => !k.startsWith('GEN:')).map((k) => k.split(':')[1]))];
 
+// The office of a staff member: the one set by the owner, else their city when it is an office
+async function officeOfCreator(userId, session) {
+  if (!userId || !mongoose.isValidObjectId(String(userId))) return null;
+  const user = await User.findById(userId).select('office city').session(session || null).lean();
+  const { offices } = await getConfig();
+  return [user?.office, user?.city].find((code) => code && offices.has(code)) || null;
+}
+
 const statementKind = (s) => {
   if (s.calculationType === '-') return s.actionType === 'withdrawal' || s.paymentType === 'withdrawal' ? 'WITHDRAWAL' : 'WALLET_PAYMENT';
   if (s.actionType === 'compensation') return 'COMPENSATION';
@@ -124,9 +133,14 @@ async function postStatement(statementId, options = {}) {
   const rates = new RateBook(session);
   const wallet = await resolveAccount(walletRole(currency));
   const partnerId = oid(statement.user);
-  const officeCode = settings.officeAliases?.[statement.office] || statement.office;
-  const office = offices.has(officeCode) ? officeCode : settings.defaultOffice;
   const fallbacks = [];
+  // Old deposit screens did not save the office: the office of the staff member who entered the
+  // statement (set in Accounting > Access, else the city on their account) stands for it
+  const creatorOffice = statement.office ? null : await officeOfCreator(statement.createdBy, session);
+  if (creatorOffice) fallbacks.push(`العملية بدون مكتب؛ اعتُبر مكتب الموظف الذي أدخلها (${creatorOffice})`);
+  const statementOffice = statement.office || creatorOffice;
+  const officeCode = settings.officeAliases?.[statementOffice] || statementOffice;
+  const office = offices.has(officeCode) ? officeCode : settings.defaultOffice;
   const lines = [];
   let affectedKeys = [];
 
@@ -148,9 +162,9 @@ async function postStatement(statementId, options = {}) {
       if (chosen?.isCash && chosen.isActive && (chosen.currency || 'USD') === currency) return chosen;
       fallbacks.push('الحساب المختار في الإيداع غير صالح لهذه العملة؛ استُخدمت خزينة المكتب');
     }
-    const account = statement.office && await resolveCashAccount(statement.office, currency);
+    const account = statementOffice && await resolveCashAccount(statementOffice, currency);
     if (account) return account;
-    fallbacks.push(statement.office ? `لا توجد خزينة ${currency} للمكتب ${statement.office}` : 'العملية بدون مكتب؛ سُجّلت في حساب المعلّق حتى يحددها المحاسب');
+    fallbacks.push(statementOffice ? `لا توجد خزينة ${currency} للمكتب ${statementOffice}` : 'العملية بدون مكتب؛ سُجّلت في حساب المعلّق حتى يحددها المحاسب');
     return getAccount((await resolveAccount('migration_suspense'))._id);
   };
 

@@ -83,6 +83,21 @@ async function tripsWithoutCost() {
   return trips.filter((t) => !withCost.has(String(t._id))).map((t) => ({ tripId: t._id, voyage: t.voyage, shippingType: t.shippingType, date: t.arrivalDate || t.createdAt }));
 }
 
+// Unsure (unconfirmed) orders the customer paid on: billed like any order, but something to fix
+async function unsurePaidOrders() {
+  const receivable = await resolveAccount('customer_receivable');
+  const orders = await Order.find({ unsureOrder: true }).select('orderId user totalInvoice').lean();
+  if (!orders.length) return { count: 0, list: [] };
+  const paid = await JournalEntry.aggregate([
+    { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) } } }, { $unwind: '$lines' },
+    { $match: { 'lines.orderId': { $in: orders.map((o) => o._id) }, 'lines.accountId': receivable._id, 'lines.credit': { $gt: 0 } } },
+    { $group: { _id: '$lines.orderId', paid: { $sum: '$lines.credit' } } },
+  ]);
+  const byId = new Map(orders.map((o) => [String(o._id), o]));
+  const list = paid.map((row) => ({ orderId: row._id, orderNumber: byId.get(String(row._id))?.orderId, totalInvoice: byId.get(String(row._id))?.totalInvoice, paid: row.paid }));
+  return { count: list.length, list };
+}
+
 // Old "credit" balances (balanceType 'credit', replaced by the wallet long ago): not posted; listed
 // with their amounts so the owner decides what to do with any that are not zero (owner's decision)
 async function creditBalances() {
@@ -167,6 +182,8 @@ async function buildReport(run, result) {
     purchasesWithoutCost: (await purchasesWithoutCost()).slice(0, LIST_LIMIT),
     tripsWithoutCost: (await tripsWithoutCost()).slice(0, LIST_LIMIT),
     openingCash: result.openingCash,
+    overpaidSettled: { count: (result.overpaidSettled || []).length, total: (result.overpaidSettled || []).reduce((sum, row) => sum + row.amount, 0), list: (result.overpaidSettled || []).slice(0, LIST_LIMIT) },
+    unsurePaid: await unsurePaidOrders(),
     creditBalances: await creditBalances(),
     refunds: await refundsSummary(run.runId),
     debtsWithoutSource: (await JournalEntry.aggregate([

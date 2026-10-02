@@ -50,6 +50,7 @@ class RateBook {
     const found = await getRate(currency, day, { docRate, session: this.session });
     if (found.rateId) this.ids.push(found.rateId);
     if (found.source === 'previous') this.fallbacks.push(`سعر ${currency} ليوم ${found.day} (لا يوجد سعر ليوم ${toDay(day)})`);
+    if (found.source === 'next') this.fallbacks.push(`سعر ${currency} ليوم ${found.day}، أقرب سعر بعد ${toDay(day)} (لا يوجد سعر قبله)`);
     return found.rate;
   }
 

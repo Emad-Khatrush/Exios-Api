@@ -79,6 +79,8 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   cutoffAt: { type: Date, default: null },
   // Delivered and unpaid for longer than this many days: listed for a write-off decision (spec 19.7)
   writeOffAfterDays: { type: Number, default: 180 },
+  // No rate on or before an operation's day: use the first rate after it (marked on the entry)
+  rateFallbackNext: { type: Boolean, default: true },
   timezone: { type: String, default: 'Africa/Tripoli' },
   // Live posting of the system's own operations (deposits, orders, deliveries...). Off until the
   // historical migration is committed, so history and live never overlap.

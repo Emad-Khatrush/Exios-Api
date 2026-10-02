@@ -85,6 +85,8 @@ function buildTimeline(sources, config, vendors) {
     if (!at) return;
     events.push({ at: new Date(at), day: toDay(at), priority: PRIORITY[kind], source, ref: String(ref), run });
   };
+  // Orders with payments recorded on them: their old "received" fields repeat those payments
+  const paidOrders = new Set(sources.payments.map((p) => String(p.order)));
   const costAccount = (kind, keys) => (config.costAccounts || []).find((m) => m.kind === kind && keys.map(String).includes(String(m.key)))?.accountId;
 
   sources.orders.forEach((order) => {
@@ -103,6 +105,9 @@ function buildTimeline(sources, config, vendors) {
         [`package:${p._id}`, p.deliveredPackages?.receivedShipmentLYD, 'LYD', [shipmentKey(order._id, p._id)]],
       ]),
     ];
+    // Only for an order with no payment recorded on it (owner's decision): otherwise the same money
+    // would be counted twice
+    if (paidOrders.has(String(order._id))) legacy.length = 0;
     legacy.filter(([, amount]) => Number(amount) > 0).forEach(([part, amount, currency, keys]) => {
       add(order.createdAt, 'payment', 'legacyReceived', order._id, async (ctx) => {
         await postLegacyReceived(order, part, amount, currency, keys, ctx);
@@ -187,6 +192,44 @@ async function recordProblem(run, event, error) {
 
 // Customer wallets must end where the system says they are (spec 6-أ.8); what history cannot
 // explain is adjusted against the suspense account and listed by customer
+// What customers paid on an order beyond everything billed on it, at the end of history (extra
+// charges such as customs taken from the wallet, or a debt on the order larger than its bill):
+// other revenue of that order (owner's decision 2026-10-02). Each one is listed in the report.
+async function settleOverpayments(run) {
+  const receivable = await resolveAccount('customer_receivable');
+  const revenue = await resolveAccount('revenue_other');
+  const { offices, settings } = await getConfig();
+  const rows = await JournalEntry.aggregate([
+    { $match: { 'lines.accountId': receivable._id } }, { $unwind: '$lines' },
+    { $match: { 'lines.accountId': receivable._id, 'lines.arKey': { $ne: null } } },
+    { $group: { _id: { arKey: '$lines.arKey', partnerId: '$lines.partnerId' }, open: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } }, orderId: { $first: '$lines.orderId' }, packageId: { $first: '$lines.packageId' } } },
+    { $match: { open: { $lt: 0 } } },
+  ]);
+  const Order = require('../../../models/order');
+  const orders = new Map((await Order.find({ _id: { $in: rows.map((r) => r.orderId).filter(Boolean) } }).select('orderId placedAt').lean()).map((o) => [String(o._id), o]));
+  const settled = [];
+  for (const row of rows) {
+    const order = row.orderId && orders.get(String(row.orderId));
+    const office = order && offices.has(order.placedAt) ? order.placedAt : settings.defaultOffice;
+    const amount = -row.open;
+    try {
+      await runInTransaction((session) => postEntry({
+        eventType: 'MIGRATION_ADJUST', eventKey: `OVERPAID:${run.runId}:${row._id.arKey}:${row._id.partnerId || ''}`, date: toDay(run.cutoff),
+        description: `دفع زائد على ${order ? `الطلب ${order.orderId}` : 'دين'} يُسجَّل إيراداً آخر`, source: { model: order ? 'Order' : 'Balance', id: row.orderId || oid(row._id.arKey.split(':')[1]) },
+        isHistorical: true, migrationRunId: run.runId, fallbacks: ['دفع أكثر من قيمة ما عليه؛ الزائد سُجّل إيرادات أخرى للمراجعة'],
+        lines: [
+          { accountId: receivable._id, debit: amount, partnerId: row._id.partnerId, arKey: row._id.arKey, ...(row.orderId && { orderId: row.orderId }), ...(row.packageId && { packageId: row.packageId }) },
+          { accountId: revenue._id, credit: amount, office, ...(row.orderId && { orderId: row.orderId }), label: 'دفع زائد عن قيمة الطلب' },
+        ],
+      }, { session }));
+      settled.push({ arKey: row._id.arKey, orderNumber: order?.orderId || null, orderId: row.orderId || null, amount });
+    } catch (error) {
+      await recordProblem(run, { at: run.cutoff, source: 'overpaid', ref: row._id.arKey }, error);
+    }
+  }
+  return settled.sort((a, b) => b.amount - a.amount);
+}
+
 async function reconcileWallets(run, ctx) {
   const differences = [];
   const wallets = await Wallet.find({}).lean();
@@ -358,10 +401,11 @@ async function replay(run, { since } = {}) {
   // Wallets and opening cash only in the dry run: during the commit catch-up, operations waiting in
   // the live queue would look like differences and be adjusted twice
   await saveProgress(run, 'reconcile', 0, 0);
+  const overpaidSettled = since ? [] : await settleOverpayments(run);
   const walletDifferences = since ? [] : await reconcileWallets(run, ctxBase);
   const openingCash = since ? [] : await postOpeningCash(run);
   const suspenseClosed = !since && run.config?.closeSuspense ? await closeSuspense(run) : null;
-  return { events: events.length, walletDifferences, openingCash, suspenseClosed, rateInfo: run.rateInfo };
+  return { events: events.length, overpaidSettled, walletDifferences, openingCash, suspenseClosed, rateInfo: run.rateInfo };
 }
 
 module.exports = { replay, buildTimeline };
