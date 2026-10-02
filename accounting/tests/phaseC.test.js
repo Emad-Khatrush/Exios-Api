@@ -130,3 +130,18 @@ test('C3: a purchase in Kuwaiti dinars is billed in dinars at the bank dollars; 
   expect(suggestion.link).toMatchObject({ orderNumber: 'C3-1', near: true });
   expect(String(suggestion.link.orderId)).toBe(String(orderId));
 });
+
+test('C4: an office added in accounting is accepted by the system models; an unknown one is refused', async () => {
+  const { AccountingOffice } = require('../models');
+  const Balance = require('../../models/balance');
+  const UserStatement = require('../../models/userStatement');
+  const debt = (createdOffice) => new Balance({ owner: oid(), createdBy: oid(), createdOffice, balanceType: 'debt', amount: 1, initialAmount: 1, currency: 'USD', notes: 'x' });
+  await expect(debt('zawiya').validate()).rejects.toThrow('Unknown office');
+  await AccountingOffice.create({ code: 'zawiya', name: 'الزاوية' });
+  invalidateConfig();
+  await expect(debt('zawiya').validate()).resolves.toBeUndefined();
+  await expect(debt('tripoli').validate()).resolves.toBeUndefined();
+  // Old bank values on a wallet line stay valid
+  const line = new UserStatement({ user: oid(), createdBy: oid(), description: 'x', amount: 1, currency: 'USD', total: 1, paymentType: 'wallet', calculationType: '+', office: 'almutahidaTrBank' });
+  await expect(line.validate()).resolves.toBeUndefined();
+});

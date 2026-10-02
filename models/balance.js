@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 
 const balanceSchema = new mongoose.Schema({
   order: {
@@ -15,10 +16,11 @@ const balanceSchema = new mongoose.Schema({
     ref: 'User', // Reference to the 'User' collection
     required: true
   },
+  // Any office of the system (offices are data, spec C4)
   createdOffice: {
     type: String,
     required: true,
-    enum: ['benghazi', 'tripoli']
+    validate: officeValidator(),
   },
   balanceType: {
     type: String,

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const inventorySchema = new Schema({
@@ -26,7 +27,7 @@ const inventorySchema = new Schema({
   inventoryPlace: {
     type: String,
     required: true,
-    enum: ['tripoli', 'benghazi']
+    validate: officeValidator(),
   },
   inventoryFinishedDate: {
     type: Date,

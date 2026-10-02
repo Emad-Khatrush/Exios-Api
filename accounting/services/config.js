@@ -35,6 +35,8 @@ async function getConfig() {
 
 function invalidateConfig() {
   cache = null;
+  // The system's office list is read from the same offices
+  require('../../utils/offices').invalidateOffices();
 }
 
 async function getDecimals(currencyCode) {

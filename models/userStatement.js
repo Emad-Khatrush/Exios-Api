@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const userStatementSchema = new Schema({
@@ -19,7 +20,8 @@ const userStatementSchema = new Schema({
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
-  office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank', 'bank'] },
+  // Any office of the system, or the two old bank values (offices are data, spec C4)
+  office: { type: String, validate: officeValidator(['almutahidaTrBank', 'bank']) },
   // The account the money went into (or came out of), chosen on the deposit screen: a cash box,
   // a bank or a partner's current account such as Wasl (spec 19.4). Without it, the office's box.
   accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },

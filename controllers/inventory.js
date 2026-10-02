@@ -301,7 +301,7 @@ module.exports.getFlights = async (req, res, next) => {
       inventoryType: 'inventoryGoods',
       shippingType: FLIGHT_TYPES.includes(req.query.shippingType) ? req.query.shippingType : { $in: FLIGHT_TYPES },
     };
-    if (['tripoli', 'benghazi'].includes(req.query.office)) match.inventoryPlace = req.query.office;
+    if ((await require('../utils/offices').officeCodes()).includes(req.query.office)) match.inventoryPlace = req.query.office;
     const search = String(req.query.search || '').trim();
     if (search) match.voyage = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 

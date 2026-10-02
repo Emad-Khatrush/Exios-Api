@@ -29,6 +29,13 @@ async function uploadReceipts(files) {
 router.get('/acc/options', STAFF, handle(async (req, res) => res.json(await staff.options(req.user, { currency: req.query.currency }))));
 // Where a deposit can go or a debt's money came from: cash boxes, banks, partners' current accounts
 router.get('/acc/money-accounts', STAFF, handle(async (req, res) => res.json({ results: await listMoneyAccounts({ currency: req.query.currency }) })));
+// Offices and currencies as data (spec C4): the system's dropdowns read them here
+router.get('/acc/offices', STAFF, handle(async (req, res) => {
+  const { officeList } = require('../utils/offices');
+  const { Currency } = require('./models');
+  const currencies = await Currency.find({ isActive: { $ne: false } }).select('code name decimals symbol').sort({ isBase: -1, code: 1 }).lean().catch(() => []);
+  res.json({ offices: await officeList(), currencies, walletCurrencies: ['USD', 'LYD'] });
+}));
 router.post('/acc/vendors', STAFF, handle(async (req, res) => res.json(await staff.createVendor(req.body || {}))));
 
 router.route('/acc/trips/:tripId/costs')
