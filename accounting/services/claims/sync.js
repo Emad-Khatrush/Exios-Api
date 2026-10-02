@@ -320,7 +320,11 @@ async function syncOrder(orderId, options = {}) {
     const billed = (state.billed.get(key) || 0) - written;
     const paid = (state.ar.get(key) || 0) <= tolerance;
     const delivered = packageId ? !!pkg?.status?.received || (active && abandoned.has(packageId)) : true;
-    const want = billed > 0 && paid && delivered ? billed : 0;
+    // A package: all of it once delivered and paid in full. A purchase invoice: what has been paid
+    // so far (the instalment method, owner's decision in v8), all of it once paid in full; its cost
+    // follows in the same proportion below
+    const open = Math.max(state.ar.get(key) || 0, 0);
+    const want = billed <= 0 || !delivered ? 0 : paid ? billed : (packageId ? 0 : Math.max(billed - open, 0));
     if (packageId && active && abandoned.has(packageId)) writtenOffKeys.add(shipmentKey(order._id, packageId));
     const byAccount = state.recognized.get(key) || new Map();
     const have = [...byAccount.values()].reduce((s, v) => s + v, 0);
@@ -361,8 +365,12 @@ async function syncOrder(orderId, options = {}) {
 
   // ---- 4. Costs follow their revenue ----
   // The whole cost of a written-off claim is recognised, even when nothing of it was paid
-  const purchaseRecognized = recognizedNow.get(purchaseKey(order._id)) > 0 || writtenOffKeys.has(purchaseKey(order._id));
-  const purchaseWant = purchaseRecognized ? state.purchaseCostTotal : 0;
+  // The purchase cost is recognised in the proportion of the invoice recognised (all of it once
+  // paid in full, or when the claim is written off)
+  const purchaseBilled = state.billed.get(purchaseKey(order._id)) || 0;
+  const purchaseShare = writtenOffKeys.has(purchaseKey(order._id)) ? 1
+    : purchaseBilled > 0 ? Math.min((recognizedNow.get(purchaseKey(order._id)) || 0) / purchaseBilled, 1) : 0;
+  const purchaseWant = Math.round(state.purchaseCostTotal * purchaseShare);
   if (purchaseWant !== state.purchaseCostRecognized) {
     const dims = { orderId: order._id, office, arKey: purchaseKey(order._id) };
     // New cost follows the order's kind; cost taken back leaves the account that holds it

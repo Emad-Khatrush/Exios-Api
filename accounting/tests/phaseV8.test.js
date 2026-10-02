@@ -288,3 +288,32 @@ test('4b. a transport fee in dinars paid from the dinar wallet on its own, the s
   expect(await balanceOf('410500')).toBe(-500);
   expect(await balanceOf('410100')).toBe(-10000);
 });
+
+test('D. a purchase invoice paid in part: the paid share is revenue, its cost in the same proportion', async () => {
+  const customer = await newCustomer();
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'D-1', user: customer, placedAt: 'tripoli', isPayment: true, totalInvoice: 200, unsureOrder: false, isCanceled: false, paymentList: [], createdAt: new Date('2026-02-01'),
+  });
+  const [shop] = await Vendor.create([{ name: 'Shop', type: 'supplier' }]);
+  await tx((session) => payables.createBill({ vendorId: shop._id, day: '2026-02-01', currency: 'USD', lines: [{ description: 'goods', amount: 150, target: 'order', orderId }] }, { session, req }));
+  const payInvoice = async (amount) => {
+    const dep = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-02-02') });
+    await tx((session) => operations.postStatement(dep._id, { session }));
+    const spend = await UserStatement.create({ user: customer, createdBy: oid(), description: 'دفع', amount, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-02-02') });
+    await tx((session) => operations.postStatement(spend._id, { session, target: { orderId, category: 'invoice' } }));
+  };
+  await tx((session) => syncOrder(orderId, { session }));
+  expect(await balanceOf('410300')).toBe(0);
+
+  await payInvoice(100);
+  expect(await balanceOf('410300')).toBe(-10000);
+  expect(await balanceOf('510400')).toBe(7500);
+  expect(await balanceOf('220300')).toBe(-10000);
+  expect(await balanceOf('130200')).toBe(7500);
+
+  await payInvoice(100);
+  expect(await balanceOf('410300')).toBe(-20000);
+  expect(await balanceOf('510400')).toBe(15000);
+  expect(await balanceOf('220300')).toBe(0);
+  expect(await balanceOf('130200')).toBe(0);
+});
