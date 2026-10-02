@@ -125,8 +125,13 @@ function buildTimeline(sources, config, vendors) {
   });
 
   sources.statements.forEach((statement) => {
-    const kind = statement.calculationType === '+' ? 'deposit' : 'payment';
-    add(statement.createdAt, kind, 'statement', statement._id, (ctx) => operations.postStatement(statement._id, { ...ctx, target: sources.statementTarget(statement) }));
+    // A payment given back to the wallet sorts with the payments, by time, so it always comes
+    // after the payment it undoes
+    const kind = statement.calculationType === '+' && !sources.isPaymentRefund(statement) ? 'deposit' : 'payment';
+    add(statement.createdAt, kind, 'statement', statement._id, (ctx) => {
+      const target = sources.statementTarget(statement);
+      return operations.postStatement(statement._id, { ...ctx, target, kind: target?.kind, reverses: target?.reverses });
+    });
   });
 
   sources.payments.filter((p) => p.paymentType === 'cash').forEach((payment) => {
@@ -207,9 +212,11 @@ async function reconcileWallets(run, ctx) {
           const day = toDay(run.cutoff);
           const suspense = await suspenseAccount();
           const minor = Math.abs(difference);
-          const usd = difference > 0
+          // A few dirhams are worth less than a cent: the line still carries one cent so the
+          // wallet's dinars are brought in line
+          const usd = Math.max(1, difference > 0
             ? await rates.toUsd(minor, currency, day)
-            : await valueOut(account, minor, { day, rates, partnerId: partner });
+            : await valueOut(account, minor, { day, rates, partnerId: partner }));
           const walletLine = moneyLine(account, difference > 0 ? 'credit' : 'debit', minor, usd, { partnerId: oid(partner), label: 'تسوية رصيد المحفظة مع المنظومة' });
           await postEntry({
             eventType: 'MIGRATION_ADJUST', eventKey: `WALLET_ADJUST:${run.runId}:${partner}:${currency}`, date: day,

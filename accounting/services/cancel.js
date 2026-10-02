@@ -79,13 +79,13 @@ const RULES = {
 // Reverses every entry the document produced that is still in effect (its own, plus
 // depreciation/amortisation posted under it). Each reversal is keyed by the entry it undoes,
 // CANCEL:<model>:<id>:<entryId>, so the same entry can never be reversed twice.
-async function reverseSourceEntries(modelName, id, { session, user, reason }) {
+async function reverseSourceEntries(modelName, id, { session, user, reason, migrationRunId, isHistorical }) {
   const entries = await JournalEntry.find({ 'source.model': modelName, 'source.id': id, status: 'posted', reversalOf: null })
     .sort({ day: 1, createdAt: 1 }).session(session);
   const reversals = [];
   for (const entry of entries) {
     const eventKey = `CANCEL:${modelName}:${id}:${entry._id}`;
-    reversals.push(await reverseEntry(entry._id, { session, user, reason, eventKey, eventType: 'CANCEL' }));
+    reversals.push(await reverseEntry(entry._id, { session, user, reason, eventKey, eventType: 'CANCEL', migrationRunId, isHistorical }));
   }
   return reversals;
 }

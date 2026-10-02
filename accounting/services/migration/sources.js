@@ -114,8 +114,56 @@ async function loadSources(cutoff) {
   const packageByTracking = (order, tracking) => (order?.paymentList || []).find((p) => norm(p.deliveredPackages?.trackingNumber) === norm(tracking));
   const generalDebts = balances.filter((b) => !b.order || b.debtType === 'general');
 
+  // Old screens gave a payment back to the wallet ("الغاء عملية الدفع كود X واسترجاع القيمة…")
+  // without saving the kind of operation. Such a refund undoes one earlier payment of the same
+  // customer, amount and currency on the same order: that payment's entry is reversed exactly.
+  const debits = new Map();
+  statements.filter((s) => s.calculationType === '-').forEach((s) => {
+    const key = `${s.user}|${s.currency}`;
+    if (!debits.has(key)) debits.set(key, []);
+    debits.get(key).push(s);
+  });
+  debits.forEach((list) => list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+  const reversedPayments = new Set();
+  const paymentOrderNumber = (s) => String(s.note || '').match(MANUAL_ORDER)?.[1]?.trim()
+    || (SHIPPING_PAYMENT.test(String(s.description || '')) ? String(s.note || '').trim() : null)
+    || String(s.note || '').match(DEBT_PAYMENT)?.[2]?.trim() || null;
+  const originalPayment = (refund, orderNumber) => {
+    const found = (debits.get(`${refund.user}|${refund.currency}`) || []).find((s) => !reversedPayments.has(String(s._id))
+      && new Date(s.createdAt) <= new Date(refund.createdAt)
+      && Math.abs(Number(s.amount) - Number(refund.amount)) < 0.011
+      && paymentOrderNumber(s) === orderNumber);
+    if (found) reversedPayments.add(String(found._id));
+    return found;
+  };
+  const isPaymentRefund = (statement) => statement.calculationType === '+'
+    && (statement.actionType === 'cancellation' || (!statement.actionType && (PAYMENT_CANCEL.test(String(statement.description || '')) || CANCELLATION_REFUND.test(String(statement.description || '')))));
+
+  // Worked out once per statement (matching payments consumes them)
+  const targets = new Map();
   const statementTarget = (statement) => {
+    const id = String(statement._id);
+    if (!targets.has(id)) targets.set(id, findTarget(statement));
+    return targets.get(id);
+  };
+
+  const findTarget = (statement) => {
     const text = String(statement.description || '');
+    if (isPaymentRefund(statement)) {
+      const refund = text.match(CANCELLATION_REFUND);
+      const cancel = text.match(PAYMENT_CANCEL);
+      const orderNumber = refund ? String(statement.note || '').match(CANCELLATION_ORDER)?.[1] : cancel?.[1]?.trim();
+      const order = orderNumber && ordersByNumber.get(orderNumber);
+      const pkg = refund && order ? packageByTracking(order, refund[1].trim()) : null;
+      const category = refund || /receivedGoods/.test(statement.note || '') ? 'receivedGoods' : 'invoice';
+      const original = orderNumber && originalPayment(statement, orderNumber);
+      // Without the original payment the money still goes back on the order's claim
+      return {
+        kind: 'SETTLEMENT_CANCEL',
+        ...(original && { reverses: original._id }),
+        ...(order && { orderId: order._id, category, packageIds: pkg ? [pkg._id] : undefined }),
+      };
+    }
     if (statement.calculationType === '-') {
       if (statement.actionType === 'withdrawal') return null;
       const shipping = text.match(SHIPPING_PAYMENT);
@@ -182,7 +230,7 @@ async function loadSources(cutoff) {
 
   return {
     orders, trips, statements, payments, invoices, balances, expenses, incomes,
-    ordersById, packageOwner, deliveries, orderAt, statementTarget, historyStart,
+    ordersById, packageOwner, deliveries, orderAt, statementTarget, isPaymentRefund, historyStart,
   };
 }
 

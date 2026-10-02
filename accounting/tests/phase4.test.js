@@ -260,3 +260,29 @@ describe('starting from the counted balances', () => {
     expect((await getBalance(cash._id)).foreign).toBe(100000 + 2000 - 5000);
   });
 });
+
+// Order 9075-4150 on the production copy: a payment given back to the wallet by the old screens,
+// saved with no kind, was taken for a new cash deposit, so the order looked paid twice
+test('an old payment refund with no kind reverses the payment it undoes, not a new deposit', async () => {
+  await resetDb();
+  await col('accountingcurrencyrates').insertOne({ currency: 'LYD', day: '2024-01-01', rate: 5, isUsed: false, source: 'entered' });
+  const user = (await col('users').insertOne({ firstName: 'محمد', lastName: 'عرب', customerId: 'P090', phone: 918000090 })).insertedId;
+  const order = (await col('orders').insertOne({
+    orderId: '9075-4150', user, placedAt: 'tripoli', isPayment: true, isShipment: false, unsureOrder: false, isCanceled: false,
+    totalInvoice: 5978, paymentList: [], createdAt: d('2024-05-31T16:00:00Z'), updatedAt: d('2024-06-08T14:25:00Z'),
+  })).insertedId;
+  const statement = (fields) => col('userstatements').insertOne({ user, createdBy: user, paymentType: 'wallet', total: 0, ...fields });
+  await statement({ calculationType: '+', amount: 13000, currency: 'USD', office: 'tripoli', actionType: 'cash', description: 'إيداع', createdAt: d('2024-05-30T10:00:00Z') });
+  await statement({ calculationType: '-', amount: 6679.74, currency: 'USD', description: 'تم خصم 6679.74USD من المحفظة', note: 'Order Id (9075-4150) => تم شراء', createdAt: d('2024-06-02T14:11:05Z') });
+  await statement({ calculationType: '+', amount: 6679.74, currency: 'USD', description: 'mohymen الغاء عملية الدفع كود 9075-4150 واسترجاع القيمة الى المحفظة من طرف ', note: 'invoice Cancellation Refund', createdAt: d('2024-06-08T14:22:40Z') });
+  await statement({ calculationType: '-', amount: 5978, currency: 'USD', description: 'تم خصم 5978USD من المحفظة', note: 'Order Id (9075-4150) => شراء', createdAt: d('2024-06-08T14:24:42Z') });
+  await col('wallets').insertOne({ user, currency: 'USD', balance: 13000 - 5978 });
+
+  await migration.startRun({ wait: true });
+  expect(await balanceOf('121000')).toBe(0); // the order is paid once, not twice
+  expect(await balanceOf('110101')).toBe(1300000); // only the real deposit reached the cash box
+  expect(await balanceOf('220100', { partnerId: user })).toBe(-(13000 - 5978) * 100);
+  expect(await balanceOf('410300')).toBe(-597800);
+  expect(await JournalEntry.countDocuments({ eventType: 'DEPOSIT' })).toBe(1);
+  expect(await JournalEntry.countDocuments({ eventType: 'MIGRATION_ADJUST', eventKey: /^WALLET_ADJUST/ })).toBe(0);
+});

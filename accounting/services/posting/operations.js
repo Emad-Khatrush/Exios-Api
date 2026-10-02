@@ -99,14 +99,18 @@ async function postStatement(statementId, options = {}) {
   if (!statement) return { skipped: 'statement not found' };
   if (statement.accountingSource?.model) return { skipped: 'posted by accounting itself' };
 
-  const kind = statementKind(statement);
+  // The historical migration may say what an old statement was when its kind was never saved
+  // (a payment given back to the wallet, saved as a plain deposit by the old screens)
+  const kind = options.kind || statementKind(statement);
   const version = options.version ? `:v${options.version}` : '';
   const eventKey = `${kind}:${statement._id}${version}`;
   if (await JournalEntry.exists({ eventKey }).session(session)) return { skipped: 'already posted' };
 
   // A cancellation that gives back a known payment: its entry is reversed exactly
   if (kind === 'SETTLEMENT_CANCEL' && options.reverses) {
-    const reversals = await reverseSourceEntries('UserStatement', options.reverses, { session, user: options.user, reason: statement.description });
+    const reversals = await reverseSourceEntries('UserStatement', options.reverses, {
+      session, user: options.user, reason: statement.description, migrationRunId: options.migrationRunId, isHistorical: options.isHistorical,
+    });
     const keys = reversals.flatMap((r) => r.lines.map((l) => l.arKey).filter(Boolean));
     for (const orderId of ordersOf(keys)) await syncOrder(orderId, { ...options, date: statement.createdAt });
     return { reversed: reversals.length };

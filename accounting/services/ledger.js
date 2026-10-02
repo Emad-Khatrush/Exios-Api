@@ -194,7 +194,8 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
 
 // Cancels an entry with its mirror image. Dated like the original while that period is open,
 // otherwise on the first open day. A reversal is never reversed itself.
-async function reverseEntry(entryId, { session, user, reason, eventKey, eventType = 'REVERSAL', onLocked = 'shift' } = {}) {
+// A reversal made by the historical migration carries its run id, like every entry of the run
+async function reverseEntry(entryId, { session, user, reason, eventKey, eventType = 'REVERSAL', onLocked = 'shift', migrationRunId, isHistorical } = {}) {
   assertInTransaction(session);
   const original = await JournalEntry.findById(entryId).session(session);
   if (!original) throw new ErrorHandler(404, 'القيد غير موجود');
@@ -213,6 +214,7 @@ async function reverseEntry(entryId, { session, user, reason, eventKey, eventTyp
     description: `إلغاء القيد ${original.number}${reason ? ` - ${reason}` : ''}`,
     source: original.source,
     reversalOf: original._id,
+    ...(migrationRunId && { migrationRunId, isHistorical: !!isHistorical }),
     lines: original.lines.map((line) => {
       const plain = line.toObject ? line.toObject() : { ...line };
       return {
