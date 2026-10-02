@@ -174,3 +174,46 @@ test('B8: the owner posts into a closed year; a supplementary closing carries it
   expect(await balanceOf('530800')).toBe(0);
   expect((await JournalEntry.findOne({ eventKey: `CANCEL:JournalEntry:${entry._id}` }).lean()).day).toBe('2025-12-20');
 });
+
+test('B9: writing off a delivered package: revenue = what was paid, full cost, a later payment raises revenue', async () => {
+  const { createWriteOff } = require('../services/posting/writeOff');
+  const { cancelDocument } = require('../services/cancel');
+  const operations = require('../services/posting/operations');
+  const payables = require('../services/posting/payables');
+  const { Vendor } = require('../models/documents');
+  const UserStatement = require('../../models/userStatement');
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [{ weight: 10, price: 10, received: true }] }); // 100$
+  const [pkg] = order.packageIds;
+  const trip = await newTrip([pkg]);
+  const [carrier] = await Vendor.create([{ name: 'Carrier', type: 'carrier' }]);
+  await tx((session) => payables.createBill({ vendorId: carrier._id, day: '2026-01-03', currency: 'USD', lines: [{ description: 'air', amount: 70, target: 'trip', tripId: trip }] }, { session, req }));
+  await tx((session) => syncOrder(order._id, { session }));
+  const key = `SHP:${order._id}:${pkg}`;
+  const pay = async (amount, day) => {
+    const dep = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date(day) });
+    await tx((session) => operations.postStatement(dep._id, { session }));
+    const spend = await UserStatement.create({ user: customer, createdBy: oid(), description: 'دفع', amount, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date(day) });
+    await tx((session) => operations.postStatement(spend._id, { session, target: { orderId: order._id, packageIds: [pkg] } }));
+  };
+  await pay(40, '2026-02-01');
+  expect(await balanceOf('410100')).toBe(0); // not fully paid: deferred
+
+  // An undelivered package is refused
+  const other = await newOrder({ user: customer, packages: [{ weight: 1, price: 10 }] });
+  await tx((session) => syncOrder(other._id, { session }));
+  await expect(tx((session) => createWriteOff({ day: '2026-03-01', arKey: `SHP:${other._id}:${other.packageIds[0]}`, reason: 'x' }, { session, req }))).rejects.toThrow('لم يُسلَّم');
+
+  const writeOff = await tx((session) => createWriteOff({ day: '2026-03-01', arKey: key, reason: 'العميل لن يدفع' }, { session, req }));
+  expect(writeOff.amountUsd).toBe(6000);
+  expect(await balanceOf('121000', { partnerId: customer })).toBe(1000); // only the other order
+  expect(await balanceOf('410100')).toBe(-4000); // revenue = paid
+  expect(await balanceOf('510100')).toBe(7000); // full cost
+  expect(await balanceOf('220400')).toBe(-1000); // only the other order's package is still deferred
+
+  // Paid 20$ later: the write-off shrinks and revenue rises by it
+  await pay(20, '2026-04-01');
+  expect(await balanceOf('410100')).toBe(-6000);
+  expect((await operations.openBalances([key])).get(key) || 0).toBe(0);
+  await expect(tx((session) => cancelDocument('AccountingClaimWriteOff', writeOff._id, { session, req, reason: 'x' }))).rejects.toThrow('بعد شطبها');
+});

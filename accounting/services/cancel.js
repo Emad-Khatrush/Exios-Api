@@ -46,6 +46,17 @@ const RULES = {
   },
   AccountingSupplierPayment: { Model: docs.SupplierPayment },
   AccountingSupplierReceipt: { Model: docs.SupplierReceipt },
+  AccountingClaimWriteOff: {
+    Model: docs.ClaimWriteOff,
+    async check(writeOff, { session }) {
+      if (await JournalEntry.exists({ eventType: 'WRITEOFF_RECOVERY', 'lines.arKey': writeOff.arKey }).session(session)) {
+        throw fail('دُفع على المطالبة بعد شطبها؛ أُعيد جزء من الشطب تلقائياً. لا يُلغى الشطب الآن.');
+      }
+    },
+    async after(writeOff, context) {
+      await require('./claims/sync').syncOrder(writeOff.orderId, { session: context.session, user: context.req?.user });
+    },
+  },
   AccountingTreasuryTransfer: { Model: docs.TreasuryTransfer },
   AccountingCashCount: { Model: docs.CashCount },
   AccountingSalaryPayment: { Model: docs.SalaryPayment },

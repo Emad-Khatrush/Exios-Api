@@ -100,6 +100,7 @@ async function orderLedger(orderId, ctx) {
           arKey: '$lines.arKey', accountId: '$lines.accountId', partnerId: '$lines.partnerId',
           packageId: '$lines.packageId', tripId: '$lines.tripId', claim: { $in: ['$eventType', CLAIM_EVENTS] },
           refund: { $eq: ['$eventType', 'REFUND'] },
+          writeOff: { $in: ['$eventType', ['CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY']] },
         },
         net: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } },
       },
@@ -112,13 +113,13 @@ async function orderLedger(orderId, ctx) {
   const shippingCostIds = new Set(['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'].map((r) => String(a[r]._id)));
 
   const state = {
-    ar: new Map(), arByPartner: new Map(), billed: new Map(), recognized: new Map(), refunded: new Map(),
+    ar: new Map(), arByPartner: new Map(), billed: new Map(), recognized: new Map(), refunded: new Map(), writtenOff: new Map(),
     shipCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0, remittanceCostRecognized: 0,
   };
   const add = (map, key, value) => map.set(key, (map.get(key) || 0) + value);
 
   rows.forEach((row) => {
-    const { arKey, partnerId, packageId, tripId, claim, refund } = row._id;
+    const { arKey, partnerId, packageId, tripId, claim, refund, writeOff } = row._id;
     if (is(row, a.customer_receivable) && arKey) {
       add(state.ar, arKey, row.net);
       if (!state.arByPartner.has(arKey)) state.arByPartner.set(arKey, new Map());
@@ -127,6 +128,8 @@ async function orderLedger(orderId, ctx) {
       // Money given back to the customer on this claim (a refund from the supplier, spec 19.6):
       // the customer is billed that much less
       if (refund) add(state.refunded, arKey, row.net);
+      // What is written off and not yet taken back by a later payment
+      if (writeOff) add(state.writtenOff, arKey, -row.net);
     }
     if (arKey && revenueIds.has(String(row._id.accountId))) {
       if (!state.recognized.has(arKey)) state.recognized.set(arKey, new Map());
@@ -268,12 +271,34 @@ async function syncOrder(orderId, options = {}) {
     }
   }
 
+  // ---- 2b. A payment on a written-off claim takes the write-off back (spec 19.7): the claim is
+  // owed again by what was paid, so the payment settles it and the revenue rises by it
+  if (active) {
+    for (const [key, written] of state.writtenOff) {
+      const over = -(state.ar.get(key) || 0);
+      const back = Math.min(written, over);
+      if (!(back > 0) || !partnerId) continue;
+      const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
+      const deferred = packageId ? a.deferred_shipping_revenue : a.deferred_purchase_revenue;
+      const dims = { arKey: key, orderId: order._id, ...(packageId && { packageId: oid(packageId) }) };
+      posted.push(await post(ctx, 'WRITEOFF_RECOVERY', key, `دفعة بعد الشطب - طلب ${order.orderId}`, move(
+        back, { accountId: a.customer_receivable._id, partnerId, ...dims }, { accountId: deferred._id, office, ...dims },
+      )));
+      state.writtenOff.set(key, written - back);
+      state.ar.set(key, (state.ar.get(key) || 0) + back);
+    }
+  }
+
   // ---- 3. Revenue: recognised when paid (and, for a package, delivered) ----
+  // A written-off claim counts as settled; its revenue is only what was paid
   const recognizedNow = new Map();
+  const writtenOffKeys = new Set();
   for (const key of keys) {
     const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
     const pkg = packageId && packages.get(packageId);
-    const billed = state.billed.get(key) || 0;
+    const written = active ? Math.max(state.writtenOff.get(key) || 0, 0) : 0;
+    if (written > 0) writtenOffKeys.add(key);
+    const billed = (state.billed.get(key) || 0) - written;
     const paid = (state.ar.get(key) || 0) <= tolerance;
     const delivered = packageId ? !!pkg?.status?.received : true;
     const want = billed > 0 && paid && delivered ? billed : 0;
@@ -312,7 +337,8 @@ async function syncOrder(orderId, options = {}) {
   }
 
   // ---- 4. Costs follow their revenue ----
-  const purchaseRecognized = recognizedNow.get(purchaseKey(order._id)) > 0;
+  // The whole cost of a written-off claim is recognised, even when nothing of it was paid
+  const purchaseRecognized = recognizedNow.get(purchaseKey(order._id)) > 0 || writtenOffKeys.has(purchaseKey(order._id));
   const purchaseWant = purchaseRecognized ? state.purchaseCostTotal : 0;
   if (purchaseWant !== state.purchaseCostRecognized) {
     const dims = { orderId: order._id, office, arKey: purchaseKey(order._id) };
@@ -329,7 +355,7 @@ async function syncOrder(orderId, options = {}) {
 
   const packageIds = new Set([...packages.keys(), ...[...state.shipCost.keys()].map((k) => k.split('|')[0])]);
   for (const packageId of packageIds) {
-    const recognized = recognizedNow.get(shipmentKey(order._id, packageId)) > 0;
+    const recognized = recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
     const trip = await internationalTrip(packages.get(packageId), ctx);
     const tripIds = new Set([...(trip ? [String(trip._id)] : []), ...[...state.shipCost.keys()].filter((k) => k.startsWith(`${packageId}|`)).map((k) => k.split('|')[1])]);
     for (const tripId of tripIds) {

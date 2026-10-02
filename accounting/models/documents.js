@@ -126,6 +126,18 @@ const SupplierReceipt = mongoose.model('AccountingSupplierReceipt', withLifecycl
   advanceUsd: { type: Number, default: 0 },
 }));
 
+// Writing off what a customer still owes on a delivered package or a purchase invoice (spec 19.7):
+// the unpaid part leaves the receivable against its deferred revenue, the paid part becomes revenue
+// and the whole cost is recognised, so the real loss shows. A later payment brings revenue back.
+const ClaimWriteOff = mongoose.model('AccountingClaimWriteOff', withLifecycle({
+  day: { type: String, required: true },
+  arKey: { type: String, required: true },
+  orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true },
+  partnerId: { type: Schema.Types.ObjectId, ref: 'User' },
+  amountUsd: { type: Number, required: true },
+  reason: { type: String, required: true },
+}));
+
 const TreasuryTransfer = mongoose.model('AccountingTreasuryTransfer', withLifecycle({
   day: { type: String, required: true },
   fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
@@ -275,6 +287,7 @@ module.exports = {
   SupplierBill,
   SupplierPayment,
   SupplierReceipt,
+  ClaimWriteOff,
   TreasuryTransfer,
   CashCount,
   FixedAsset,

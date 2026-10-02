@@ -316,6 +316,44 @@ const CHECKS = {
     return result('unsurePaid', 'warn', 'طلب غير مؤكد عليه دفعات', 'دُفع على طلب لم يُؤكَّد. لا يُحسب إيراداً؛ المبلغ يبقى رصيداً للعميل على الطلب حتى يُؤكَّد الطلب أو تُصحَّح الدفعة.', items);
   },
 
+  // A delivered package (or a purchase invoice) still unpaid long after: a candidate for writing
+  // off (spec 19.7; the number of days is a setting)
+  async writeOffCandidates() {
+    const { settings } = await getConfig();
+    const days = settings.writeOffAfterDays || 180;
+    const title = `مسلَّم وغير مسدد أكثر من ${days} يوماً`;
+    const roles = await roleIds(['customer_receivable']);
+    const open = await JournalEntry.aggregate([
+      { $match: { 'lines.accountId': oid(roles.customer_receivable), 'lines.arKey': /^(SHP|PUR):/ } }, { $unwind: '$lines' },
+      { $match: { 'lines.accountId': oid(roles.customer_receivable), 'lines.arKey': /^(SHP|PUR):/ } },
+      { $group: { _id: '$lines.arKey', usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+      { $match: { usd: { $gt: 0 } } },
+    ]);
+    if (!open.length) return result('writeOffCandidates', 'info', title, '', []);
+    const cutoff = new Date(`${addDays(today(), -days)}T00:00:00Z`);
+    const orderIds = [...new Set(open.map((row) => row._id.split(':')[1]))].filter(mongoose.isValidObjectId).map(oid);
+    const orders = new Map((await Order.find({ _id: { $in: orderIds }, isCanceled: { $ne: true } })
+      .select('orderId createdAt paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.deliveredInfo.deliveredDate').lean())
+      .map((o) => [String(o._id), o]));
+    const items = [];
+    open.forEach((row) => {
+      const [kind, orderId, packageId] = row._id.split(':');
+      const order = orders.get(orderId);
+      if (!order) return;
+      let since = order.createdAt;
+      let label = `${order.orderId} · فاتورة شراء`;
+      if (kind === 'SHP') {
+        const pkg = (order.paymentList || []).find((p) => String(p._id) === packageId);
+        if (!pkg?.status?.received) return;
+        since = pkg.deliveredPackages?.deliveredInfo?.deliveredDate || order.createdAt;
+        label = `${order.orderId} · ${pkg.deliveredPackages?.trackingNumber || 'طرد'}`;
+      }
+      if (since && new Date(since) < cutoff) items.push({ label, usd: row.usd, note: `منذ ${new Date(since).toISOString().slice(0, 10)}`, arKey: row._id, url: `/accounting/customer-invoices/${orderId}` });
+    });
+    items.sort((a, b) => b.usd - a.usd);
+    return result('writeOffCandidates', 'info', title, 'راجعها مع العميل؛ ما لن يُدفع يُشطب من صفحة الطلب في المحاسبة (المطالبات ← شطب). الشطب يُبقي الإيراد بقدر ما دُفع ويُحمِّل التكلفة كاملة.', items);
+  },
+
   // 19. Entry numbers have no gaps
   async numbering() {
     const rows = await JournalEntry.aggregate([{ $project: { number: 1 } }]);

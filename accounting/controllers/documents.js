@@ -216,6 +216,7 @@ module.exports.deleteDraftBill = handle(async (req, res) => {
 
 const LISTS = {
   payments: { Model: docs.SupplierPayment, populate: [{ path: 'vendorId', select: 'name' }, { path: 'fromAccountId', select: 'code name currency' }] },
+  'write-offs': { Model: docs.ClaimWriteOff, populate: [{ path: 'partnerId', select: 'firstName lastName customerId' }, { path: 'orderId', select: 'orderId' }] },
   receipts: { Model: docs.SupplierReceipt, populate: [{ path: 'vendorId', select: 'name' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'allocations.billId', select: 'number' }] },
   transfers: { Model: docs.TreasuryTransfer, populate: [{ path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'employeeId', select: 'firstName lastName' }] },
   'cash-counts': { Model: docs.CashCount, populate: [{ path: 'accountId', select: 'code name currency' }] },
@@ -236,6 +237,7 @@ module.exports.listDocuments = (kind) => handle(async (req, res) => {
 const CREATORS = {
   payments: payables.createPayment,
   receipts: payables.createReceipt,
+  'write-offs': (input, context) => require('../services/posting/writeOff').createWriteOff(input, context),
   transfers: treasury.createTransfer,
   'cash-counts': treasury.createCashCount,
   salaries: people.createSalary,
