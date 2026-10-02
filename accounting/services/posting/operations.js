@@ -9,7 +9,7 @@ const User = require('../../../models/user');
 const { JournalEntry } = require('../../models');
 const { postEntry } = require('../ledger');
 const { getConfig } = require('../config');
-const { walletRole, resolveCashAccount } = require('../roles');
+const { walletRole, resolveCashAccount, resolveStaffCashAccount } = require('../roles');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
 const { purchaseKey, shipmentKey, generalDebtKey, domesticFeeKey } = require('../claims/keys');
@@ -174,7 +174,10 @@ async function postStatement(statementId, options = {}) {
       if (chosen?.isCash && chosen.isActive && (chosen.currency || 'USD') === currency) return chosen;
       fallbacks.push('الحساب المختار في الإيداع غير صالح لهذه العملة؛ استُخدمت خزينة المكتب');
     }
-    const account = statementOffice && await resolveCashAccount(statementOffice, currency);
+    // Live: the sub cash box of the office of whoever entered it (spec v8); history: the main box
+    const historical = !!options.isHistorical;
+    const staffOffice = historical ? null : await officeOfCreator(statement.createdBy, session);
+    const account = await resolveStaffCashAccount(staffOffice || statementOffice, currency, { historical });
     if (account) return account;
     fallbacks.push(statementOffice ? `لا توجد خزينة ${currency} للمكتب ${statementOffice}` : 'العملية بدون مكتب؛ سُجّلت في حساب المعلّق حتى يحددها المحاسب');
     return getAccount((await resolveAccount('migration_suspense'))._id);
@@ -286,7 +289,10 @@ async function postCashPayment(paymentId, options = {}) {
   const usd = await rates.toUsd(minor, currency, day, payment.rate);
   const fallbacks = [];
 
-  let cash = options.office && await resolveCashAccount(options.office, currency);
+  // Live: the sub cash box of the office of whoever took the money (spec v8); history: the main box
+  const historical = !!options.isHistorical;
+  const staffOffice = historical ? null : await officeOfCreator(payment.createdBy, session);
+  let cash = await resolveStaffCashAccount(staffOffice || options.office, currency, { historical });
   if (!cash) {
     fallbacks.push('الدفع النقدي على الطلب لا يحدد الخزينة؛ سُجّل في حساب المعلّق حتى يحددها المحاسب');
     cash = await getAccount((await resolveAccount('migration_suspense'))._id);

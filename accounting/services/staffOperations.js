@@ -15,6 +15,7 @@ const { cancelDocument } = require('./cancel');
 const { listMoneyAccounts, moneyAccount } = require('./moneyAccounts');
 const { assertOpenPeriod } = require('./periodGuard');
 const { isOwner, accessOf } = require('./access');
+const { resolveSubCashAccount } = require('./roles');
 const { today, toDay, isDay } = require('./dates');
 
 const fail = (message, status = 400) => new ErrorHandler(status, message);
@@ -44,15 +45,22 @@ async function staffProfile(user) {
 // ---- What the forms list ----
 
 async function options(user, { currency } = {}) {
-  const { currencies, offices } = await getConfig();
+  const { currencies, offices, settings } = await getConfig();
   const [vendors, accounts, profile] = await Promise.all([
     Vendor.find({ isActive: true, seedKey: { $in: [null, undefined] } }).select('name type defaultCurrency').sort({ name: 1 }).lean(),
     listMoneyAccounts({ currency }),
     staffProfile(user),
   ]);
+  // Staff do not choose the cash box (spec v8): cash is their office's sub box; banks and partner
+  // accounts stay a choice. The owner and the accountant see every box.
+  let shown = accounts;
+  if (!profile.anyOffice) {
+    const subIds = new Set(Object.values(settings?.subOfficeAccounts?.[profile.office] || {}).map(String));
+    shown = accounts.filter((a) => a.kind !== 'cash' || subIds.has(String(a._id)));
+  }
   return {
     vendors,
-    accounts,
+    accounts: shown,
     currencies: [...currencies.values()].filter((c) => c.isActive).map((c) => ({ code: c.code, name: c.name })),
     offices: [...offices.values()].filter((o) => o.isActive !== false).map((o) => ({ code: o.code, name: o.name })),
     office: profile.office,
@@ -121,7 +129,13 @@ async function addCost(target, targetId, input, req) {
   if (!(amount > 0)) throw fail('المبلغ يجب أن يكون أكبر من صفر');
   let vendorId = input.vendorId;
   if (!validId(vendorId)) vendorId = (await createVendor({ name: input.vendorName, type: target === 'trip' ? 'carrier' : 'supplier' }))._id;
-  const payFrom = input.payFromAccountId ? await moneyAccount(input.payFromAccountId, { what: 'دُفعت من' }) : null;
+  let payFrom = input.payFromAccountId ? await moneyAccount(input.payFromAccountId, { what: 'دُفعت من' }) : null;
+  // Cash paid by staff comes out of their office's sub box (spec v8)
+  if (payFrom && (payFrom.cashKind || 'cash') === 'cash' && !payFrom.subBox) {
+    const profile = await staffProfile(user);
+    const sub = !profile.anyOffice && profile.office && await resolveSubCashAccount(profile.office, payFrom.currency || 'USD');
+    if (sub) payFrom = sub;
+  }
   const currency = payFrom ? (payFrom.currency || 'USD') : String(input.currency || 'USD');
   const rate = Number(input.rate) > 0 ? Number(input.rate) : undefined;
   const label = target === 'trip' ? 'مصروف رحلة' : 'مشتريات الطلب';
@@ -164,7 +178,8 @@ async function cancelOwnBill(billId, req, reason) {
 // The cash boxes of an office by currency: an office expense is paid from the office's own box
 async function officeBoxes(office) {
   const { settings, accountsById } = await getConfig();
-  const map = settings?.officeAccounts?.[office] || {};
+  // The office's sub boxes when it has them (spec v8), else its main boxes
+  const map = { ...(settings?.officeAccounts?.[office] || {}), ...(settings?.subOfficeAccounts?.[office] || {}) };
   return Object.entries(map)
     .map(([currency, id]) => accountsById.get(String(id)))
     .filter((account) => account && account.isActive && account.isCash && (account.cashKind || 'cash') === 'cash')

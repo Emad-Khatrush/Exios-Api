@@ -46,4 +46,23 @@ async function resolveCashAccount(office, currency) {
   return account && account.isActive ? account : null;
 }
 
-module.exports = { walletRole, allowedTypesFor, roleProblem, resolveAccount, resolveCashAccount };
+// The sub cash box of an office for a currency (spec v8), or null
+async function resolveSubCashAccount(office, currency) {
+  const { settings, accountsById } = await getConfig();
+  const accountId = settings?.subOfficeAccounts?.[office]?.[currency];
+  const account = accountId && accountsById.get(String(accountId));
+  return account && account.isActive ? account : null;
+}
+
+// Where a cash operation made from the system's screens lands: the sub box of the office when it
+// has one (after go-live), else the office's box. The historical replay always uses the main box.
+async function resolveStaffCashAccount(office, currency, { historical } = {}) {
+  if (!office) return null;
+  if (!historical) {
+    const sub = await resolveSubCashAccount(office, currency);
+    if (sub) return sub;
+  }
+  return resolveCashAccount(office, currency);
+}
+
+module.exports = { walletRole, allowedTypesFor, roleProblem, resolveAccount, resolveCashAccount, resolveSubCashAccount, resolveStaffCashAccount };

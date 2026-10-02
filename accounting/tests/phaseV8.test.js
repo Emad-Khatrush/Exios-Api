@@ -29,7 +29,7 @@ beforeEach(async () => {
 });
 
 let seq = 0;
-const newCustomer = async () => (await mongoose.connection.collection('users').insertOne({ firstName: 'عميل', customerId: `V${++seq}` })).insertedId;
+const newCustomer = async () => (await mongoose.connection.collection('users').insertOne({ firstName: 'عميل', customerId: `V${++seq}`, phone: 920000000 + seq })).insertedId;
 
 // packages: [{ weight, price, received, domesticFeeUsd }]
 async function newOrder({ user, placedAt = 'tripoli', packages = [] }) {
@@ -210,4 +210,46 @@ test('5. abandoned goods: unpaid part reversed, paid part revenue, full cost; un
   await expect(ab.restoreAbandoned(order._id, pkg, req)).rejects.toThrow('بعد البيع');
   const saved = await Order.findById(order._id).lean();
   expect(saved.paymentList[0].deliveredPackages.abandoned.status).toBe('sold');
+});
+
+test('6. sub cash boxes: staff cash lands on their office sub box, history on the main box, hand-over moves it all', async () => {
+  const staff = require('../services/staffOperations');
+  const { subBoxes, handOver } = require('../services/subBoxes');
+  const clerkId = (await mongoose.connection.collection('users').insertOne({ firstName: 'موظف', office: 'benghazi', roles: { isEmployee: true }, phone: 930000001 })).insertedId;
+  const benghaziClerk = { _id: clerkId, roles: { isEmployee: true } };
+  const customer = await newCustomer();
+
+  // A cash deposit entered by a Benghazi clerk, though the screen says Tripoli
+  const dep = await UserStatement.create({ user: customer, createdBy: clerkId, description: 'إيداع', amount: 100, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-01') });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  expect(await balanceOf('110123')).toBe(10000);
+  expect(await balanceOf('110101')).toBe(0);
+
+  // The same in the historical replay goes to the main box
+  const old = await UserStatement.create({ user: customer, createdBy: clerkId, description: 'إيداع قديم', amount: 50, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2025-03-01') });
+  await tx((session) => operations.postStatement(old._id, { session, isHistorical: true, migrationRunId: 'TEST' }));
+  expect(await balanceOf('110101')).toBe(5000);
+
+  // A trip cost paid "from the Tripoli box" by the clerk comes out of the Benghazi sub box
+  const order = await newOrder({ user: customer, packages: [{ weight: 5, price: 10 }] });
+  const trip = await newTrip(order.packageIds);
+  const lyd = await account('110102');
+  await staff.addTripCost(trip, { vendorName: 'جمارك', amount: 200, payFromAccountId: lyd._id, costCategory: 'customs', day: '2026-03-02' }, { user: benghaziClerk });
+  expect((await getBalance((await account('110124'))._id)).foreign).toBe(-200000);
+  expect((await getBalance(lyd._id)).foreign).toBe(0);
+
+  // The clerk's forms offer the sub box, not the main boxes
+  const { accounts } = await staff.options(benghaziClerk, {});
+  const codes = accounts.map((a) => a.code || a.name);
+  expect(accounts.some((a) => a.name.includes('فرعية بنغازي'))).toBe(true);
+  expect(accounts.some((a) => a.kind === 'cash' && !a.name.includes('فرعية'))).toBe(false);
+  expect(codes.length).toBeGreaterThan(0);
+
+  // The accountant hands the Benghazi dollars over to the main box
+  const rows = await subBoxes();
+  const usdSub = rows.find((r) => r.subCode === '110123');
+  expect(usdSub).toMatchObject({ foreign: 10000, mainCode: '110103' });
+  await tx((session) => handOver(usdSub.subId, { session, req }));
+  expect(await balanceOf('110123')).toBe(0);
+  expect(await balanceOf('110103')).toBe(10000);
 });

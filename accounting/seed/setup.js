@@ -166,8 +166,9 @@ async function runSetup({ user } = {}) {
 
   const officeAccounts = JSON.parse(JSON.stringify(settings.officeAccounts || {}));
   const aliases = { ...(settings.officeAliases || {}) };
-  // Plain cash boxes first, so an office maps to its cash box before a bank of the same currency
-  const ordered = [...cashAccounts].sort((a, b) => (a.cashKind === 'cash' ? 0 : 1) - (b.cashKind === 'cash' ? 0 : 1));
+  // Plain cash boxes first, so an office maps to its cash box before a bank of the same currency.
+  // Sub boxes are not the office's box: they get their own mapping below.
+  const ordered = [...cashAccounts].filter((a) => !a.subBox).sort((a, b) => (a.cashKind === 'cash' ? 0 : 1) - (b.cashKind === 'cash' ? 0 : 1));
   for (const account of ordered) {
     const aliasKey = Object.keys(defaults.STATEMENT_OFFICE_ALIASES).find((key) => (
       account.seedKey === '110201' ? key === 'almutahidaTrBank' : account.seedKey?.startsWith(`cash:${key}:`)
@@ -183,6 +184,17 @@ async function runSetup({ user } = {}) {
   }
   settings.officeAccounts = officeAccounts;
   settings.officeAliases = aliases;
+
+  const subOfficeAccounts = JSON.parse(JSON.stringify(settings.subOfficeAccounts || {}));
+  for (const account of cashAccounts.filter((a) => a.subBox && a.office && a.currency)) {
+    subOfficeAccounts[account.office] = subOfficeAccounts[account.office] || {};
+    if (!subOfficeAccounts[account.office][account.currency]) {
+      subOfficeAccounts[account.office][account.currency] = account._id;
+      created(`sub cash box ${account.office}/${account.currency} -> ${account.code}`);
+    }
+  }
+  settings.subOfficeAccounts = subOfficeAccounts;
+  settings.markModified('subOfficeAccounts');
 
   const eventJournals = { ...(settings.eventJournals || {}) };
   Object.entries(defaults.EVENT_JOURNALS).forEach(([event, journal]) => {

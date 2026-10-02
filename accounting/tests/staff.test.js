@@ -51,7 +51,7 @@ test('an employee records an expense for their own office, sees only their own, 
   expect(created.status).toBe(200);
   expect(created.body.office).toBe('tripoli');
   expect(await balanceOf('531300')).toBe(2000);
-  expect(await balanceOf('110101')).toBe(-2000);
+  expect(await balanceOf('110121')).toBe(-2000);
 
   await call('post', '/api/office-expenses', other).send({ expenseTypeId: hospitality._id, amount: 5, currency: 'USD' });
   const mine = await call('get', '/api/office-expenses', clerk);
@@ -106,9 +106,9 @@ test('a trip cost entered on the trip page is a supplier bill, paid from a box o
   const owed = await call('post', `/api/acc/trips/${trip._id}/costs`, clerk).send({ vendorName: 'شركة شحن', amount: 100, currency: 'USD' });
   expect(owed.status).toBe(200);
   expect(await balanceOf('130100')).toBe(40000);
-  expect(await balanceOf('110101')).toBe(-30000);
+  expect(await balanceOf('110121')).toBe(-30000);
   expect(await balanceOf('210100')).toBe(-10000);
   const list = await call('get', `/api/acc/trips/${trip._id}/costs`, clerk);
   expect(list.body.bills).toHaveLength(2);
-  expect(list.body.bills.find((b) => b.paid).paidFrom).toBe(box.name);
+  expect(list.body.bills.find((b) => b.paid).paidFrom).toBe('خزينة فرعية طرابلس - دولار'); // staff cash comes out of their office's sub box (spec v8)
 });

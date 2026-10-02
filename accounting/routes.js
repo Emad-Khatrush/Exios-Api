@@ -154,6 +154,9 @@ router.post('/documents/:model/:id/cancel', byModel, P.cancel, documents.cancel)
 router.post('/documents/:model/:id/attachments', byModel, upload.array('files'), documents.addAttachments);
 
 router.get('/reports/abandoned', P.reports, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/abandoned').abandonedList())));
+// Sub cash boxes (spec v8): balances, and handing their money over to the main box
+router.get('/treasury/sub-boxes', can('treasury', 'reports'), require('./controllers/util').handle(async (req, res) => res.json({ results: await require('./services/subBoxes').subBoxes() })));
+router.post('/treasury/sub-boxes/:id/hand-over', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/subBoxes').handOver(req.params.id, { session, req, amount: req.body?.amount })))));
 router.get('/alipay', can('treasury', 'reports'), documents.alipayDashboard);
 router.post('/yuan-purchases/:id/complete', P.treasury, documents.completeYuanPurchase);
 router.get('/assets', P.assets, documents.listAssets);

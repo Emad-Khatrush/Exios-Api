@@ -48,7 +48,7 @@ describe('accounting setup (scenario 24)', () => {
     await runSetup();
 
     const turkeyLyd = await Account.findOne({ seedKey: 'cash:turkey:LYD' });
-    expect(turkeyLyd.code).toBe('110109');
+    expect(turkeyLyd.code).toBe('110125');
     const bankLyd = await Account.findOne({ seedKey: 'cash:almutahidaTrBank:LYD' });
     expect(bankLyd.cashKind).toBe('bank');
     expect(bankLyd.office).toBe('turkey');

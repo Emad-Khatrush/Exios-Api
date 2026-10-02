@@ -49,6 +49,12 @@ const ACCOUNTS = [
   a('110106', 'خزينة مصراتة - دينار', 'Misurata cash - LYD', 'asset', '1101', { currency: 'LYD', isCash: true, cashKind: 'cash', office: 'misurata' }),
   a('110107', 'مكتب تركيا - دولار', 'Turkey office - USD', 'asset', '1101', { currency: 'USD', isCash: true, cashKind: 'cash', office: 'turkey' }),
   a('110108', 'مكتب الصين - دولار', 'China office - USD', 'asset', '1101', { currency: 'USD', isCash: true, cashKind: 'cash', office: 'china' }),
+  // The offices' sub cash boxes (spec v8): staff cash operations land here, the accountant moves the
+  // money to the main box
+  a('110121', 'خزينة فرعية طرابلس - دولار', 'Tripoli sub cash - USD', 'asset', '1101', { currency: 'USD', isCash: true, cashKind: 'cash', office: 'tripoli', subBox: true }),
+  a('110122', 'خزينة فرعية طرابلس - دينار', 'Tripoli sub cash - LYD', 'asset', '1101', { currency: 'LYD', isCash: true, cashKind: 'cash', office: 'tripoli', subBox: true }),
+  a('110123', 'خزينة فرعية بنغازي - دولار', 'Benghazi sub cash - USD', 'asset', '1101', { currency: 'USD', isCash: true, cashKind: 'cash', office: 'benghazi', subBox: true }),
+  a('110124', 'خزينة فرعية بنغازي - دينار', 'Benghazi sub cash - LYD', 'asset', '1101', { currency: 'LYD', isCash: true, cashKind: 'cash', office: 'benghazi', subBox: true }),
   g('1102', 'البنوك', 'Banks', 'asset', '11'),
   a('110201', 'مصرف المتحدة - تركيا', 'Al Mutahida Bank - Turkey', 'asset', '1102', { currency: 'USD', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('110202', 'بنك البركه التركي - دولار', 'Albaraka bank USD', 'asset', '1102', { currency: 'USD', isCash: true, cashKind: 'bank', office: 'turkey' }),

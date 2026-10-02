@@ -349,10 +349,10 @@ test('a statement edited or deleted after posting is reversed (and re-posted whe
   await post(dep);
   await UserStatement.updateOne({ _id: dep._id }, { $set: { amount: 120 }, $push: { editHistory: { editedAt: new Date() } } });
   await tx((session) => operations.repostStatement(dep._id, { session }));
-  expect(await balanceOf('110101')).toBe(12000);
+  expect(await balanceOf('110121')).toBe(12000);
   await UserStatement.deleteOne({ _id: dep._id });
   await tx((session) => operations.reverseStatement(dep._id, { session }));
-  expect(await balanceOf('110101')).toBe(0);
+  expect(await balanceOf('110121')).toBe(0);
 });
 
 test('deleting an order takes its claims back; an order with payments cannot be deleted', async () => {

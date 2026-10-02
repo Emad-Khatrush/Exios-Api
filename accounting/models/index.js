@@ -69,6 +69,9 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   accountRoles: { type: Schema.Types.Mixed, default: {} },
   // office code -> { currency: account _id }
   officeAccounts: { type: Schema.Types.Mixed, default: {} },
+  // { office: { currency: accountId } } of the sub cash boxes (spec v8): every cash operation made
+  // from the system's screens after go-live posts to the sub box of the staff member's office
+  subOfficeAccounts: { type: Schema.Types.Mixed, default: {} },
   // UserStatement.office values that are an account of an office, not an office (value -> office code)
   officeAliases: { type: Schema.Types.Mixed, default: {} },
   // event type -> journal code, or '@cash' for the journal of the cash account on the entry
