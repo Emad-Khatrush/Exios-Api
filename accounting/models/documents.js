@@ -34,7 +34,8 @@ const withLifecycle = (definition, options = {}) => {
 
 const Vendor = mongoose.model('AccountingVendor', new Schema({
   name: { type: String, required: true, trim: true },
-  type: { type: String, enum: ['carrier', 'supplier', 'service', 'other'], default: 'supplier' },
+  // 'funder': a third party whose card buys for us (a friend); we settle with them later (spec 19.13)
+  type: { type: String, enum: ['carrier', 'supplier', 'service', 'funder', 'other'], default: 'supplier' },
   phone: String,
   country: String,
   defaultCurrency: { type: String, default: 'USD' },
@@ -109,6 +110,20 @@ const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycl
   autoFromBillId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
   isHistorical: { type: Boolean, default: false },
   migrationRunId: String,
+}));
+
+// Money a vendor gives us (spec 19.13): back from an advance we paid, the refund of a credit note,
+// or simply held for them (e.g. a supplier put 50 yuan in our Alipay)
+const SupplierReceipt = mongoose.model('AccountingSupplierReceipt', withLifecycle({
+  vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
+  day: { type: String, required: true },
+  toAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
+  currency: String,
+  amount: Number,
+  rate: Number,
+  // USD cents settling each credit note; the rest goes on the vendor's advance balance
+  allocations: [{ _id: false, billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' }, amountUsd: Number }],
+  advanceUsd: { type: Number, default: 0 },
 }));
 
 const TreasuryTransfer = mongoose.model('AccountingTreasuryTransfer', withLifecycle({
@@ -259,6 +274,7 @@ module.exports = {
   Vendor,
   SupplierBill,
   SupplierPayment,
+  SupplierReceipt,
   TreasuryTransfer,
   CashCount,
   FixedAsset,

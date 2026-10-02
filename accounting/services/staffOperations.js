@@ -65,7 +65,7 @@ async function createVendor({ name, type }) {
   if (clean.length < 2) throw fail('اكتب اسم المورد');
   const existing = await Vendor.findOne({ name: new RegExp(`^${clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).lean();
   if (existing) return existing;
-  return Vendor.create({ name: clean, type: ['carrier', 'supplier', 'service', 'other'].includes(type) ? type : 'supplier' });
+  return Vendor.create({ name: clean, type: ['carrier', 'supplier', 'service', 'funder', 'other'].includes(type) ? type : 'supplier' });
 }
 
 // ---- Trip costs and order purchases ----

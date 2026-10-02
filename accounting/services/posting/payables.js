@@ -1,7 +1,7 @@
 // Vendor bills, credit notes and payments (spec E14, E15, E23, E26, E31)
 const mongoose = require('mongoose');
 const { JournalEntry } = require('../../models');
-const { Vendor, SupplierBill, SupplierPayment, FixedAsset, PrepaidExpense } = require('../../models/documents');
+const { Vendor, SupplierBill, SupplierPayment, SupplierReceipt, FixedAsset, PrepaidExpense } = require('../../models/documents');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
 const { postEntry } = require('../ledger');
@@ -375,6 +375,63 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   return doc;
 }
 
+// Money received from a vendor into a cash box, bank or Alipay (spec 19.13): it settles the credit
+// notes it is allocated to; the rest comes off the advance we paid them (or, with no advance, is
+// money we now hold for them)
+async function createReceipt(input, { session, req, user }) {
+  const existing = await findExisting(SupplierReceipt, input.idempotencyKey, session);
+  if (existing) return existing;
+  const actor = user || req?.user;
+  const vendor = await Vendor.findById(input.vendorId).session(session);
+  if (!vendor) throw fail('اختر المورد');
+  if (!isDay(input.day)) throw fail('التاريخ غير صالح');
+  const to = await getAccount(input.toAccountId, 'الحساب المستلم');
+  if (!to.isCash) throw fail('استلم في خزينة أو بنك أو محفظة إلكترونية');
+  const currency = currencyOf(to);
+  const minor = await toCurrencyMinor(input.amount, currency);
+  if (!minor) throw fail('المبلغ المستلم مطلوب');
+  const rates = new RateBook(session);
+  const usd = await rates.toUsd(minor, currency, input.day, input.rate);
+
+  const allocations = (input.allocations || []).filter((a) => Number(a.amountUsd) > 0).map((a) => ({ billId: toId(a.billId), amountUsd: Math.round(Number(a.amountUsd)) }));
+  const lines = [moneyLine(to, 'debit', minor, usd, { label: `استلام من المورد ${vendor.name}` })];
+  let allocated = 0;
+  for (const allocation of allocations) {
+    // A credit note is posted on its original bill: a bill paid and then credited leaves the
+    // vendor owing us on that bill (a debit balance on its key)
+    const picked = await SupplierBill.findById(allocation.billId).session(session);
+    const bill = picked?.isCreditNote ? await SupplierBill.findById(picked.originalBillId).session(session) : picked;
+    if (!bill || bill.status !== 'posted') throw fail('اختر فاتورة أو إشعاراً دائناً مُرحَّلاً');
+    if (String(bill.vendorId) !== String(vendor._id)) throw fail(`الفاتورة ${bill.number} لمورد آخر`);
+    const owed = -(await apBalance(billKey(bill._id), session));
+    if (allocation.amountUsd > owed) throw fail(`المورد مدين لنا على ${bill.number} بـ${Math.max(owed, 0) / 100}$ فقط`);
+    allocated += allocation.amountUsd;
+    allocation.billId = bill._id;
+    lines.push({ accountId: bill.payableAccountId, credit: allocation.amountUsd, vendorId: vendor._id, apKey: billKey(bill._id), label: `استرداد على ${bill.number}` });
+  }
+  if (allocated > usd) throw fail('المبالغ المخصصة أكبر من المبلغ المستلم');
+  const payable = await payableAccountFor(vendor);
+  const advance = usd - allocated;
+  if (advance > 0) lines.push({ accountId: payable._id, credit: advance, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'من رصيد المورد' });
+
+  const [doc] = await SupplierReceipt.create([{
+    vendorId: vendor._id, day: input.day, toAccountId: to._id, currency, amount: Number(input.amount), rate: input.rate,
+    allocations, advanceUsd: advance, note: input.note, attachments: input.attachments, idempotencyKey: input.idempotencyKey,
+    createdBy: actor?._id, status: 'posted', number: await nextDocNumber('RCV', input.day, session),
+  }], { session });
+  const entry = await postEntry({
+    eventType: 'VENDOR_RECEIPT', eventKey: `VENDOR_RECEIPT:${doc._id}`, date: input.day,
+    description: `استلام ${doc.number} من ${vendor.name}`, source: { model: 'AccountingSupplierReceipt', id: doc._id },
+    fallbacks: rates.fallbacks, lines,
+  }, { session, user: actor });
+  await rates.lock();
+  doc.entryId = entry._id;
+  await doc.save({ session });
+  await logAudit({ req, user: actor, action: 'receipt.post', model: 'AccountingSupplierReceipt', docId: doc._id, after: doc }, session);
+  return doc;
+}
+
 module.exports = {
+  createReceipt,
   syncBillTargets, apBalance, billKey, advanceKey, createBill, updateDraftBill, postDraftBill, deleteDraftBill, createPayment, validateBillInput,
 };

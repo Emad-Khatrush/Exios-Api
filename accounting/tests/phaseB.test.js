@@ -5,7 +5,7 @@ const { startDb, stopDb, resetDb, account, oid } = require('./helpers');
 const { runInTransaction } = require('../services/transaction');
 const { getBalance } = require('../services/carrying');
 const { invalidateConfig } = require('../services/config');
-const { AccountingSettings, CurrencyRate, JournalEntry } = require('../models');
+const { AccountingSettings, CurrencyRate, JournalEntry, Account } = require('../models');
 const { SupplierBill } = require('../models/documents');
 const { syncOrder } = require('../services/claims/sync');
 const bank = require('../services/posting/bank');
@@ -96,4 +96,34 @@ test('B4: an Aswaq statement line goes to a trip, an order or a customer debt', 
   await tx((session) => bank.cancelLineEntry(debtLine._id, { session, req, reason: 'خطأ' }));
   expect(await Balance.countDocuments({ owner: customer })).toBe(0);
   expect(await balanceOf('260100')).toBe(-33000);
+});
+
+test('B5: money received from a supplier settles a credit note, then their advance, then is held for them', async () => {
+  const payables = require('../services/posting/payables');
+  const { Vendor } = require('../models/documents');
+  const { cancelDocument } = require('../services/cancel');
+  await CurrencyRate.create([{ currency: 'CNY', day: '2026-01-01', rate: 7 }]);
+  const [vendor] = await Vendor.create([{ name: 'Alibaba shop', type: 'supplier' }]);
+  const cash = await account('110101');
+  const alipay = await account('110301');
+  const expense = await Account.findOne({ type: 'expense', isGroup: false, isActive: true }).lean();
+  // We paid 100$ in advance and paid a 50$ bill, then got a 30$ credit note on it: they owe us 30$
+  await tx((session) => payables.createPayment({ vendorId: vendor._id, day: '2026-02-01', fromAccountId: cash._id, amount: 100 }, { session, req }));
+  const bill = await tx((session) => payables.createBill({ vendorId: vendor._id, day: '2026-02-02', currency: 'USD', lines: [{ description: 'goods', amount: 50, target: 'expense', accountId: expense._id, office: 'tripoli' }] }, { session, req }));
+  await tx((session) => payables.createPayment({ vendorId: vendor._id, day: '2026-02-02', fromAccountId: cash._id, amount: 50, allocations: [{ billId: bill._id, amountUsd: 5000 }] }, { session, req }));
+  const note = await tx((session) => payables.createBill({ vendorId: vendor._id, day: '2026-02-03', currency: 'USD', isCreditNote: true, originalBillId: bill._id, lines: [{ description: 'returned', amount: 30, target: 'expense', accountId: expense._id, office: 'tripoli' }] }, { session, req }));
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(-3000);
+
+  // The supplier sends 350 yuan (50$) to our Alipay: 30$ closes the credit note, 20$ comes off the advance
+  const receipt = await tx((session) => payables.createReceipt({
+    vendorId: vendor._id, day: '2026-02-05', toAccountId: alipay._id, amount: 350, allocations: [{ billId: note._id, amountUsd: 3000 }],
+  }, { session, req }));
+  expect(receipt).toMatchObject({ advanceUsd: 2000, currency: 'CNY' });
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(0);
+  expect(await payables.apBalance(payables.advanceKey(vendor._id))).toBe(-8000);
+  expect(await getBalance(alipay._id)).toEqual({ usd: 5000, foreign: 350 * 100 });
+
+  await tx((session) => cancelDocument('AccountingSupplierReceipt', receipt._id, { session, req, reason: 'خطأ' }));
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(-3000);
+  expect((await getBalance(alipay._id)).usd).toBe(0);
 });

@@ -254,6 +254,7 @@ const EVENT_JOURNALS = {
   TRANSFER: '@cash',
   CASHCOUNT: '@cash',
   VENDOR_PAYMENT: '@cash',
+  VENDOR_RECEIPT: '@cash',
   SALARY: '@cash',
   EQUITY: '@cash',
   BANK_LINE: '@cash',

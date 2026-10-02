@@ -45,6 +45,7 @@ const RULES = {
     },
   },
   AccountingSupplierPayment: { Model: docs.SupplierPayment },
+  AccountingSupplierReceipt: { Model: docs.SupplierReceipt },
   AccountingTreasuryTransfer: { Model: docs.TreasuryTransfer },
   AccountingCashCount: { Model: docs.CashCount },
   AccountingSalaryPayment: { Model: docs.SalaryPayment },
