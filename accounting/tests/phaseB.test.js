@@ -139,3 +139,38 @@ test('B7: the balance sheet shows this year apart from earlier years not closed 
   expect(sheet.balanced).toBe(true);
   expect(sheet.equity).toMatchObject({ unclosedEarnings: 12500, currentYearEarnings: 2500, priorUnclosedEarnings: 10000, yearStart: '2026-01-01' });
 });
+
+test('B8: the owner posts into a closed year; a supplementary closing carries it into retained earnings', async () => {
+  const { createManualEntry, cancelManualEntry } = require('../services/manualEntry');
+  const { closeYear } = require('../services/closing');
+  const { post } = require('./helpers');
+  const cash = await account('110101');
+  const expense = await account('530800');
+  const revenue = await account('410600');
+  await Account.updateMany({ _id: { $in: [cash._id, expense._id, revenue._id] } }, { $set: { allowManualEntry: true } });
+  invalidateConfig();
+  await post({ eventType: 'MANUAL', eventKey: 'B8:rev', date: '2025-05-01', lines: [{ accountId: cash._id, debit: 50000 }, { accountId: revenue._id, credit: 50000, office: 'tripoli' }] });
+  await tx((session) => closeYear('2025', { session, req }));
+  invalidateConfig();
+  expect(await balanceOf('320000')).toBe(-50000);
+
+  const late = { date: '2025-12-20', description: 'فاتورة كهرباء متأخرة', lines: [{ accountId: expense._id, side: 'debit', amount: 30, office: 'tripoli' }, { accountId: cash._id, side: 'credit', amount: 30 }] };
+  // Refused without saying so, and refused for anyone but the owner
+  await expect(tx((session) => createManualEntry(late, { session, req }))).rejects.toThrow('مقفلة');
+  const clerk = { _id: oid(), roles: { isAccountant: true } };
+  await expect(tx((session) => createManualEntry({ ...late, inLockedPeriod: true }, { session, req: { user: clerk } }))).rejects.toMatchObject({ statusCode: 403 });
+
+  const entry = await tx((session) => createManualEntry({ ...late, inLockedPeriod: true }, { session, req }));
+  expect(entry.day).toBe('2025-12-20');
+  // 2025 stays closed: its expense is in retained earnings, nothing left on the result accounts
+  expect(await balanceOf('530800')).toBe(0);
+  expect(await balanceOf('320000')).toBe(-47000);
+  const supplement = await JournalEntry.findOne({ eventKey: `YEAR_CLOSE_SUPP:2025:${entry._id}` }).lean();
+  expect(supplement).toMatchObject({ day: '2025-12-31', eventType: 'YEAR_CLOSE' });
+
+  // Undone by the owner: back on its own date, with its closing
+  await tx((session) => cancelManualEntry(entry._id, { session, req, reason: 'مكرر' }));
+  expect(await balanceOf('320000')).toBe(-50000);
+  expect(await balanceOf('530800')).toBe(0);
+  expect((await JournalEntry.findOne({ eventKey: `CANCEL:JournalEntry:${entry._id}` }).lean()).day).toBe('2025-12-20');
+});
