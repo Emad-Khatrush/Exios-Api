@@ -210,4 +210,37 @@ async function undoExport(id, user) {
 
 const listExports = () => OdooExport.find({}).select('-entryIds').sort({ createdAt: -1 }).limit(100).populate('createdBy', 'firstName lastName').lean();
 
-module.exports = { OdooExport, odooSettings, saveSettings, pendingSummary, buildRows, createExport, exportRows, undoExport, listExports, COMPANY_CURRENCIES };
+// Exios's side of the weekly comparison: cash boxes and banks, customer wallets, customer claims
+async function ourFigures(day) {
+  const { getBalance } = require('./carrying');
+  const { resolveAccount } = require('./roles');
+  const { accountsById } = await require('./config').getConfig();
+  const sum = async (accounts) => {
+    let total = 0;
+    for (const account of accounts) total += (await getBalance(account._id, { upToDay: day })).usd;
+    return total;
+  };
+  const cash = await sum([...accountsById.values()].filter((a) => a.isCash && !a.isGroup));
+  const wallets = [];
+  for (const role of ['wallet_usd', 'wallet_lyd']) wallets.push(await resolveAccount(role).catch(() => null));
+  return {
+    cash,
+    // Wallets are what we owe customers: shown as a positive amount
+    wallets: -(await sum(wallets.filter(Boolean))),
+    receivables: await sum([await resolveAccount('customer_receivable')]),
+  };
+}
+
+async function saveComparison({ day, odoo, note }, user) {
+  const { OdooComparison } = require('../models');
+  const toCents = (value) => Math.round(Number(value || 0) * 100);
+  const ours = await ourFigures(day);
+  const [doc] = await OdooComparison.create([{
+    day, ours, odoo: { cash: toCents(odoo?.cash), wallets: toCents(odoo?.wallets), receivables: toCents(odoo?.receivables) }, note, createdBy: user?._id,
+  }]);
+  return doc;
+}
+
+const listComparisons = () => require('../models').OdooComparison.find({}).sort({ day: -1, createdAt: -1 }).limit(30).lean();
+
+module.exports = { ourFigures, saveComparison, listComparisons, OdooExport, odooSettings, saveSettings, pendingSummary, buildRows, createExport, exportRows, undoExport, listExports, COMPANY_CURRENCIES };

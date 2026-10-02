@@ -55,3 +55,19 @@ module.exports.undoExport = handle(async (req, res) => {
   await logAudit({ req, action: 'odoo.undo', model: 'AccountingOdooExport', docId: batch._id, after: { number: batch.number } });
   res.json(batch);
 });
+
+// The weekly comparison with Odoo: our three figures on a day, and the comparisons saved so far
+module.exports.comparison = handle(async (req, res) => {
+  const day = req.query.day || today();
+  if (!isDay(day)) throw badRequest('التاريخ غير صالح');
+  const [ours, history] = await Promise.all([odoo.ourFigures(day), odoo.listComparisons()]);
+  res.json({ day, ours, history });
+});
+
+module.exports.saveComparison = handle(async (req, res) => {
+  const day = req.body?.day;
+  if (!isDay(day)) throw badRequest('التاريخ غير صالح');
+  const doc = await odoo.saveComparison(req.body, req.user);
+  await logAudit({ req, action: 'odoo.compare', model: 'AccountingOdooComparison', docId: doc._id, after: doc });
+  res.status(201).json(doc);
+});

@@ -119,6 +119,7 @@ router.put('/odoo/mapping', P.setup, odoo.saveMapping);
 router.post('/odoo/exports', P.setup, odoo.createExport);
 router.get('/odoo/exports/:id/rows', P.setup, odoo.exportRows);
 router.post('/odoo/exports/:id/undo', P.setup, odoo.undoExport);
+router.route('/odoo/comparison').get(can('setup', 'reports'), odoo.comparison).post(can('setup', 'reports'), odoo.saveComparison);
 
 router.get('/suspense', P.suspense, suspense.list);
 router.post('/suspense/settle', P.suspense, suspense.settle);

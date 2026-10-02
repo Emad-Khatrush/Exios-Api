@@ -217,3 +217,18 @@ test('B9: writing off a delivered package: revenue = what was paid, full cost, a
   expect((await operations.openBalances([key])).get(key) || 0).toBe(0);
   await expect(tx((session) => cancelDocument('AccountingClaimWriteOff', writeOff._id, { session, req, reason: 'x' }))).rejects.toThrow('بعد شطبها');
 });
+
+test('B10: the weekly Odoo comparison saves our three figures beside the ones typed from Odoo', async () => {
+  const odoo = require('../services/odoo');
+  const { post } = require('./helpers');
+  const customer = await newCustomer();
+  const cash = await account('110101');
+  const wallet = await account('220100');
+  const receivable = await account('121000');
+  await post({ eventType: 'MANUAL', eventKey: 'B10:dep', date: '2026-02-01', lines: [{ accountId: cash._id, debit: 30000 }, { accountId: wallet._id, credit: 30000, partnerId: customer }] });
+  await post({ eventType: 'MANUAL', eventKey: 'B10:ar', date: '2026-02-02', lines: [{ accountId: receivable._id, debit: 5000, partnerId: customer }, { accountId: wallet._id, credit: 5000, partnerId: customer }] });
+  expect(await odoo.ourFigures('2026-02-28')).toEqual({ cash: 30000, wallets: 35000, receivables: 5000 });
+  const saved = await odoo.saveComparison({ day: '2026-02-28', odoo: { cash: 300, wallets: 340, receivables: 50 } }, admin);
+  expect(saved.odoo).toMatchObject({ cash: 30000, wallets: 34000, receivables: 5000 });
+  expect((await odoo.listComparisons())).toHaveLength(1);
+});

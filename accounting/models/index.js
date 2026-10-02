@@ -195,6 +195,17 @@ const OdooExport = mongoose.model('AccountingOdooExport', new Schema({
   undoneBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true }));
 
+// The weekly check while Odoo still runs beside Exios (spec 19.14): three figures from each side
+// on the same day. USD cents.
+const figures = { _id: false, cash: Number, wallets: Number, receivables: Number };
+const OdooComparison = mongoose.model('AccountingOdooComparison', new Schema({
+  day: { type: String, required: true },
+  ours: figures,
+  odoo: figures,
+  note: String,
+  createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
+}, { timestamps: true }));
+
 // What an admin or accountant who is not the owner may do in accounting (services/access.js).
 // No document = no access.
 const AccountingMember = mongoose.model('AccountingMember', new Schema({
@@ -206,6 +217,7 @@ const AccountingMember = mongoose.model('AccountingMember', new Schema({
 module.exports = {
   AccountingMember,
   OdooExport,
+  OdooComparison,
   Voucher,
   Reconciliation,
   MigrationRun,
