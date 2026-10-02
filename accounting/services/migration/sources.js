@@ -29,7 +29,7 @@ const norm = (value) => String(value ?? '').trim().toLowerCase();
 async function loadSources(cutoff) {
   const upTo = { $lte: cutoff };
   const [orders, trips, statements, payments, invoices, balances, expenses, incomes] = await Promise.all([
-    Order.find({ createdAt: upTo }).select('orderId user placedAt isPayment isShipment isRemittance unsureOrder isCanceled totalInvoice editedAmounts paymentList shipment activity isFinished purchaseItems receivedUSD receivedLYD receivedShipmentUSD receivedShipmentLYD createdAt updatedAt').lean(),
+    Order.find({ createdAt: upTo }).setOptions({ withDeleted: true }).select('orderId user placedAt isPayment isShipment isRemittance unsureOrder isCanceled isDeleted totalInvoice editedAmounts paymentList shipment activity isFinished purchaseItems receivedUSD receivedLYD receivedShipmentUSD receivedShipmentLYD createdAt updatedAt').lean(),
     Inventory.find({ inventoryType: 'inventoryGoods', createdAt: upTo }).select('voyage shippingType inventoryPlace status expenses orders.paymentList._id createdAt arrivalDate').lean(),
     UserStatement.find({ createdAt: upTo }).lean(),
     OrderPaymentHistory.find({ createdAt: upTo }).lean(),

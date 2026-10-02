@@ -48,7 +48,7 @@ async function billsFor(field, id) {
 }
 
 async function orderSummary(orderId) {
-  const order = await Order.findById(orderId).select('orderId user isPayment isShipment isCanceled unsureOrder totalInvoice paymentList._id paymentList.status paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean();
+  const order = await Order.findById(orderId).setOptions({ withDeleted: true }).select('orderId user isPayment isShipment isCanceled isDeleted unsureOrder totalInvoice paymentList._id paymentList.status paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean();
   if (!order) throw notFound('الطلب');
   const roles = await roleIds(ROLES);
   const match = { 'lines.orderId': oid(orderId) };

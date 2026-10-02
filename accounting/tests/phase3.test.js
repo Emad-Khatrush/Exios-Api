@@ -367,8 +367,23 @@ test('deleting an order takes its claims back; an order with payments cannot be 
   expect(await openOf(order._id)).toBe(2);
 
   await deleteOrder(order._id, req.user);
+  // Soft-deleted: gone from the system, still in accounting with its claims reversed and hidden
   expect(await Order.findById(order._id)).toBeNull();
+  expect(await Order.countDocuments({ _id: order._id })).toBe(0);
+  const kept = await Order.findById(order._id).setOptions({ withDeleted: true }).lean();
+  expect(kept).toMatchObject({ isDeleted: true, isCanceled: true });
   expect(await openOf(order._id)).toBe(0);
+  const claims = await JournalEntry.find({ 'source.model': 'Order', 'source.id': order._id }).lean();
+  expect(claims.length).toBeGreaterThan(0);
+  expect(claims.every((e) => e.hiddenWithCancel)).toBe(true);
+  const { customerInvoices } = require('../services/reports/customers');
+  expect((await customerInvoices({ userId: user })).results.map((r) => String(r._id))).not.toContain(String(order._id));
+  expect((await customerInvoices({ userId: user, status: 'deleted' })).results[0]).toMatchObject({ status: 'deleted', billed: 0 });
+
+  // Never reached the books: removed for good
+  const blank = await newOrder({ user, packages: [{ weight: 1, price: 0 }] });
+  await deleteOrder(blank._id, req.user);
+  expect(await Order.findById(blank._id).setOptions({ withDeleted: true })).toBeNull();
 
   const paid = await newOrder({ user, packages: [{ weight: 10, price: 5 }] });
   await sync(paid._id);

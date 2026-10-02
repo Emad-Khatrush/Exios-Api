@@ -121,13 +121,15 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
   if (userId) query.user = oid(userId);
   if (from || to) query.createdAt = { ...(from && { $gte: dayStart(from) }), ...(to && { $lte: dayEnd(to) }) };
   if (status === 'canceled') query.isCanceled = true;
+  // Orders deleted by mistake appear only under their own filter, with a "deleted" badge
+  if (status === 'deleted') query.isDeleted = true;
   if (search) {
     const pattern = new RegExp(escapeRegex(search), 'i');
     const users = await usersMatching(search, 100);
     query.$or = [{ orderId: pattern }, { 'customerInfo.fullName': pattern }, ...(users.length ? [{ user: { $in: users.map((u) => u._id) } }] : [])];
   }
   const orders = await Order.find(query)
-    .select('orderId user customerInfo.fullName placedAt isPayment isShipment isCanceled unsureOrder invoiceConfirmed totalInvoice createdAt paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice')
+    .select('orderId user customerInfo.fullName placedAt isPayment isShipment isCanceled isDeleted unsureOrder invoiceConfirmed totalInvoice createdAt paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice')
     .sort({ createdAt: -1 }).limit(2000).lean();
 
   const roles = await roleIds(['customer_receivable', ...REVENUE, ...DEFERRED, ...COST, ...WIP]);
@@ -150,15 +152,16 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
   let list = orders.map((order) => {
     const books = ledger.get(String(order._id));
     const open = sum(books, ['customer_receivable']);
-    const recognized = -sum(books, REVENUE);
-    const deferred = -sum(books, DEFERRED);
+    const recognized = -sum(books, REVENUE) || 0;
+    const deferred = -sum(books, DEFERRED) || 0;
     const cost = sum(books, COST);
     const costInProgress = sum(books, WIP);
     const billed = recognized + deferred;
     const paid = billed - open;
     const shipping = (order.paymentList || []).reduce((total, pkg) => total + Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0), 0);
     let state = 'none';
-    if (order.isCanceled) state = 'canceled';
+    if (order.isDeleted) state = 'deleted';
+    else if (order.isCanceled) state = 'canceled';
     else if (books) state = open > 0 ? (paid > 0 ? 'partial' : 'unpaid') : billed > 0 ? 'paid' : 'none';
     return {
       _id: order._id, orderNumber: order.orderId, date: order.createdAt, office: order.placedAt,
@@ -168,7 +171,7 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
       billed, paid, open, recognized, deferred, cost, costInProgress, profit: recognized - cost, status: state,
     };
   });
-  if (status && status !== 'canceled') list = list.filter((row) => row.status === status);
+  if (status && status !== 'canceled' && status !== 'deleted') list = list.filter((row) => row.status === status);
   const total = (field) => list.reduce((s, row) => s + row[field], 0);
   return {
     totals: {

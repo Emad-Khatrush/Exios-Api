@@ -43,6 +43,8 @@ const journalEntrySchema = new Schema({
   status: { type: String, enum: ['posted', 'reversed'], default: 'posted' },
   reversalOf: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
   reversedBy: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
+  // Claim entries of a cancelled or deleted order that net to zero: hidden with the cancelled ones
+  hiddenWithCancel: { type: Boolean, default: false },
   lines: { type: [lineSchema], required: true },
   totalDebit: Number,
   attachments: [{

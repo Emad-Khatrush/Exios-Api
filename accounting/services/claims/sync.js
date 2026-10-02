@@ -189,7 +189,7 @@ async function syncOrder(orderId, options = {}) {
   // (delivered packages, invoice total, cancellation), not as it is today
   const order = options.orderAt
     ? await options.orderAt(orderId, ctx.date)
-    : await Order.findById(orderId).session(ctx.session).lean();
+    : await Order.findById(orderId).setOptions({ withDeleted: true }).session(ctx.session).lean();
   if (!order) return { skipped: 'order not found' };
   ctx.order = order;
   const a = ctx.accounts;
@@ -335,7 +335,20 @@ async function syncOrder(orderId, options = {}) {
     }
   }
 
+  if (!active) await hideCancelledClaims(order._id, ctx);
   return { posted: posted.length };
+}
+
+// The claim entries of an order that is cancelled or deleted and owes nothing any more are hidden
+// together (spec 19.9); a payment still on the order keeps them all visible
+async function hideCancelledClaims(orderId, ctx) {
+  const [open] = await JournalEntry.aggregate([
+    { $match: { 'lines.orderId': oid(orderId) } }, { $unwind: '$lines' }, { $match: { 'lines.orderId': oid(orderId) } },
+    { $group: { _id: '$lines.accountId', net: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+    { $match: { net: { $ne: 0 } } }, { $limit: 1 },
+  ]).session(ctx.session);
+  if (open) return;
+  await JournalEntry.updateMany({ 'source.model': 'Order', 'source.id': oid(orderId), hiddenWithCancel: { $ne: true } }, { $set: { hiddenWithCancel: true } }, { session: ctx.session });
 }
 
 // After a trip's costs or packages change: every order on it gets its cost shares re-checked

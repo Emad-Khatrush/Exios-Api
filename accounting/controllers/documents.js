@@ -23,7 +23,9 @@ const inTx = (fn) => runInTransaction(fn);
 
 function listQuery(req, extra = {}) {
   const query = { ...extra };
-  if (req.query.status) query.status = req.query.status;
+  // Cancelled documents are hidden unless asked for ('all' or 'canceled'), spec 19.9
+  if (req.query.status === 'all') { /* every status */ } else if (req.query.status) query.status = req.query.status;
+  else query.status = { $ne: 'canceled' };
   if (req.query.from || req.query.to) {
     query.day = {};
     if (req.query.from) query.day.$gte = req.query.from;
@@ -187,7 +189,7 @@ module.exports.getBill = handle(async (req, res) => {
   const orderIds = bill.lines.map((line) => line.orderId).filter(Boolean);
   const [trips, orders] = await Promise.all([
     Inventory.find({ _id: { $in: tripIds } }).select('voyage shippingType inventoryPlace status').lean(),
-    Order.find({ _id: { $in: orderIds } }).select('orderId customerInfo.fullName').lean(),
+    Order.find({ _id: { $in: orderIds } }).select('orderId customerInfo.fullName isDeleted').setOptions({ withDeleted: true }).lean(),
   ]);
   res.json({ bill, payments, creditNotes, entries, open, trips, orders });
 });
@@ -475,7 +477,7 @@ module.exports.lookupClaims = handle(async (req, res) => {
   // Order number and tracking number, so a person can tell the claims apart
   const claims = rows.filter((row) => row._id);
   const orderIds = claims.map((row) => String(row._id).split(':')).filter(([kind]) => kind === 'PUR' || kind === 'SHP').map(([, id]) => id).filter(isObjectId);
-  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).select('orderId paymentList._id paymentList.deliveredPackages.trackingNumber').lean()).map((o) => [String(o._id), o]));
+  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).select('orderId isDeleted paymentList._id paymentList.deliveredPackages.trackingNumber').setOptions({ withDeleted: true }).lean()).map((o) => [String(o._id), o]));
   const label = (arKey) => {
     const [kind, orderId, packageId] = String(arKey).split(':');
     const order = orders.get(orderId);

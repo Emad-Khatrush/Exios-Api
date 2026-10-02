@@ -186,6 +186,11 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  // Deleted by an admin because it was created by mistake (spec 19.10): hidden from the whole
+  // system; accounting still shows it (its claims reversed) with a "deleted" badge
+  isDeleted: { type: Boolean, default: false },
+  deletedAt: Date,
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   cancelation: {
     date: {
       type: Date,
@@ -356,6 +361,19 @@ const orderSchema = new Schema({
 }, { timestamps: true })
 
 orderSchema.index({ 'paymentList.tripId': 1 });
+orderSchema.index({ isDeleted: 1 });
+
+// Deleted orders are left out of every query unless it asks for them with { withDeleted: true }
+// or names isDeleted itself
+function hideDeleted() {
+  if (this.getOptions().withDeleted || 'isDeleted' in this.getFilter()) return;
+  this.where({ isDeleted: { $ne: true } });
+}
+['find', 'findOne', 'countDocuments', 'distinct', 'findOneAndUpdate', 'updateOne', 'updateMany'].forEach((op) => orderSchema.pre(op, hideDeleted));
+orderSchema.pre('aggregate', function hideDeletedInPipeline() {
+  if (this.options?.withDeleted) return;
+  this.pipeline().unshift({ $match: { isDeleted: { $ne: true } } });
+});
 orderSchema.index({ 'paymentList.domesticTripId': 1 });
 
 module.exports = mongoose.model("Order", orderSchema);

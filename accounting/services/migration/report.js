@@ -43,7 +43,7 @@ async function claimsReview(tolerance) {
     { $match: { $or: [{ open: { $gt: tolerance } }, { open: { $lt: -tolerance } }] } },
   ]);
   const orderIds = [...new Set(open.map((row) => row.orderId).filter(Boolean).map(String))];
-  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).select('orderId paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber').lean()).map((o) => [String(o._id), o]));
+  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).setOptions({ withDeleted: true }).select('orderId paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber').lean()).map((o) => [String(o._id), o]));
   const describe = (row) => {
     const order = orders.get(String(row.orderId));
     const packageId = row._id.startsWith('SHP:') ? row._id.split(':')[2] : null;
@@ -73,7 +73,7 @@ async function purchasesWithoutCost() {
     },
     { $match: { revenue: { $gt: 0 }, cost: 0 } },
   ]);
-  const orders = new Map((await Order.find({ _id: { $in: rows.map((r) => r._id) } }).select('orderId').lean()).map((o) => [String(o._id), o.orderId]));
+  const orders = new Map((await Order.find({ _id: { $in: rows.map((r) => r._id) } }).setOptions({ withDeleted: true }).select('orderId').lean()).map((o) => [String(o._id), o.orderId]));
   return rows.map((r) => ({ orderId: r._id, orderNumber: orders.get(String(r._id)), revenue: r.revenue })).sort((a, b) => b.revenue - a.revenue);
 }
 

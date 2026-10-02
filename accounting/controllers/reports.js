@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const { JournalEntry, Account, CurrencyRate, Currency } = require('../models');
 const { handle, badRequest, notFound, isObjectId } = require('./util');
+const { visibleMatch } = require('../services/visibility');
 const { chartWithTotals, accountTotals } = require('../services/balances');
 const { getConfig } = require('../services/config');
 const { isDay, today } = require('../services/dates');
@@ -76,9 +77,10 @@ module.exports.trialBalance = handle(async (req, res) => {
 
 // Every movement of one account with a running balance (optionally one customer's)
 module.exports.accountLedger = handle(async (req, res) => {
-  const { from, to, partnerId } = req.query;
+  const { from, to, partnerId, showCanceled } = req.query;
   checkPeriod({ from, to });
   if (!isObjectId(req.params.id)) throw badRequest('الحساب غير صالح');
+  const visible = visibleMatch(showCanceled);
   const account = await Account.findById(req.params.id).lean();
   if (!account) throw notFound('الحساب غير موجود');
   const accountId = new mongoose.Types.ObjectId(req.params.id);
@@ -99,7 +101,7 @@ module.exports.accountLedger = handle(async (req, res) => {
   if (isObjectId(partnerId)) lineMatch['lines.partnerId'] = new mongoose.Types.ObjectId(partnerId);
 
   const opening = from ? (await JournalEntry.aggregate([
-    { $match: { ...lineMatch, day: { $lt: from } } },
+    { $match: { ...lineMatch, ...visible, day: { $lt: from } } },
     { $unwind: '$lines' },
     { $match: lineMatch },
     { $group: { _id: null, usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } }, foreign: { $sum: { $ifNull: ['$lines.amountCurrency', 0] } } } },
@@ -109,7 +111,7 @@ module.exports.accountLedger = handle(async (req, res) => {
   if (from) dayRange.$gte = from;
   if (to) dayRange.$lte = to;
   const rows = await JournalEntry.aggregate([
-    { $match: { ...lineMatch, ...(from || to ? { day: dayRange } : {}) } },
+    { $match: { ...lineMatch, ...visible, ...(from || to ? { day: dayRange } : {}) } },
     { $sort: { day: 1, createdAt: 1 } },
     { $limit: 5000 },
     // The operation's amount in its own currency (dinars...), even when this account is kept in dollars

@@ -5,6 +5,7 @@ const moment = require('moment-timezone');
 const { JournalEntry } = require('../../models');
 const { Vendor, SupplierBill } = require('../../models/documents');
 const Order = require('../../../models/order');
+const { visibleMatch } = require('../visibility');
 const Inventory = require('../../../models/inventory');
 const User = require('../../../models/user');
 const { getConfig } = require('../config');
@@ -132,7 +133,7 @@ async function purchaseProfitability({ search, onlyWithoutCost } = {}) {
   const orderIds = [...byOrder.keys()].filter((id) => mongoose.isValidObjectId(id));
   const query = { _id: { $in: orderIds.map(oid) } };
   if (search) query.$or = [{ orderId: new RegExp(escapeRegex(search), 'i') }, { 'customerInfo.fullName': new RegExp(escapeRegex(search), 'i') }];
-  const orders = await Order.find(query).select('orderId customerInfo.fullName user isCanceled createdAt').lean();
+  const orders = await Order.find(query).select('orderId customerInfo.fullName user isCanceled isDeleted createdAt').setOptions({ withDeleted: true }).lean();
 
   let results = orders.map((order) => {
     const ledger = byOrder.get(String(order._id));
@@ -185,7 +186,7 @@ async function receivables({ asOf, partnerId } = {}) {
   ]);
 
   const orderIds = [...new Set(rows.map((row) => String(row._id.arKey).split(':')).filter(([kind]) => kind === 'PUR' || kind === 'SHP').map(([, id]) => id).filter(mongoose.isValidObjectId))];
-  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).select('orderId paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber').lean()).map((o) => [String(o._id), o]));
+  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).select('orderId isDeleted paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber').setOptions({ withDeleted: true }).lean()).map((o) => [String(o._id), o]));
   const users = new Map((await User.find({ _id: { $in: [...new Set(rows.map((row) => row._id.partnerId).filter(Boolean).map(String))] } }).select('firstName lastName customerId phone').lean()).map((u) => [String(u._id), u]));
 
   const claims = rows.map((row) => {
@@ -225,12 +226,12 @@ async function receivables({ asOf, partnerId } = {}) {
 
 // One customer's account from the ledger: claims, payments and wallet movements in date order,
 // with what they owe and what their wallets hold after each line
-async function customerStatement(partnerId, { from, to } = {}) {
+async function customerStatement(partnerId, { from, to, showCanceled } = {}) {
   const roles = await roleIds(['customer_receivable', 'wallet_usd', 'wallet_lyd']);
   const accountIds = idsOf(roles);
   const lineMatch = { 'lines.partnerId': oid(partnerId), 'lines.accountId': { $in: accountIds } };
   const rows = await JournalEntry.aggregate([
-    { $match: { ...(to && { day: { $lte: to } }), ...lineMatch } },
+    { $match: { ...(to && { day: { $lte: to } }), ...lineMatch, ...visibleMatch(showCanceled) } },
     { $sort: { day: 1, createdAt: 1 } },
     { $unwind: '$lines' }, { $match: lineMatch },
     { $project: { number: 1, day: 1, description: 1, eventType: 1, line: '$lines' } },

@@ -10,6 +10,7 @@ const Inventory = require('../../models/inventory');
 const UserStatement = require('../../models/userStatement');
 const OrderPaymentHistory = require('../../models/orderPaymentHistory');
 const { Vendor } = require('../models/documents');
+const { visibleMatch } = require('../services/visibility');
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -62,7 +63,7 @@ async function entryLinks(entry) {
   if (ACCOUNTING_PAGES[model]) source = ACCOUNTING_PAGES[model](id);
 
   const [orders, trips, vendors] = await Promise.all([
-    Order.find({ _id: { $in: [...new Set(orderIds)] } }).select('orderId paymentList._id paymentList.deliveredPackages.trackingNumber').lean(),
+    Order.find({ _id: { $in: [...new Set(orderIds)] } }).select('orderId isDeleted paymentList._id paymentList.deliveredPackages.trackingNumber').setOptions({ withDeleted: true }).lean(),
     Inventory.find({ _id: { $in: ids('tripId') } }).select('voyage').lean(),
     Vendor.find({ _id: { $in: ids('vendorId') } }).select('name').lean(),
   ]);
@@ -80,10 +81,10 @@ async function entryLinks(entry) {
 }
 
 module.exports.list = handle(async (req, res) => {
-  const { from, to, journalId, accountId, eventType, search, partnerId } = req.query;
+  const { from, to, journalId, accountId, eventType, search, partnerId, showCanceled } = req.query;
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Number(req.query.limit) || 50, 200);
-  const query = {};
+  const query = { ...visibleMatch(showCanceled) };
   if (from || to) {
     query.day = {};
     if (from) query.day.$gte = from;

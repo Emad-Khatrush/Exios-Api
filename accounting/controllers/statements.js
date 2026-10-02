@@ -37,7 +37,7 @@ module.exports.receivables = handle(async (req, res) => {
 });
 module.exports.customerStatement = handle(async (req, res) => {
   if (!isObjectId(req.params.id)) throw badRequest('العميل غير صالح');
-  res.json(await operations.customerStatement(req.params.id, period(req.query)));
+  res.json(await operations.customerStatement(req.params.id, { ...period(req.query), showCanceled: req.query.showCanceled }));
 });
 module.exports.payables = handle(async (req, res) => res.json(await operations.payables(period(req.query))));
 
