@@ -85,6 +85,11 @@ const ACCOUNTS = [
   g('25', 'بطاقات الائتمان', 'Credit cards', 'liability', '2'),
   a('250100', 'بطاقة كويت ترك الائتمانية - ليرة', 'Kuveyt Turk credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('250200', 'بطاقة البركة الائتمانية - ليرة', 'Albaraka credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
+  // A partner who pays for us on their account (spec 19.4): what we owe them by their statement.
+  // Aswaq ships from the UAE and Saudi Arabia and pays purchases and taxes for us; we settle in
+  // cash dollars. A friend whose card buys for us (a purchase funder) gets an account like it.
+  g('26', 'الحسابات الجارية الدائنة للشركاء', 'Partner current accounts (owed)', 'liability', '2'),
+  a('260100', 'جاري أسواق', 'Aswaq current account', 'liability', '26', { currency: 'USD', isCash: true, cashKind: 'current', office: 'tripoli' }),
 
   g('3', 'حقوق الملكية', 'Equity', 'equity', null, { cashFlowCategory: 'financing' }),
   a('310000', 'رأس المال', 'Capital', 'equity', '3', { cashFlowCategory: 'financing' }),

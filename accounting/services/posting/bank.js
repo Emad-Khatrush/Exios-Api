@@ -17,7 +17,7 @@ const { getConfig } = require('../config');
 const Order = require('../../../models/order');
 const { readKnownFormat } = require('./statementFormats');
 const { postEntry } = require('../ledger');
-const { isDay, addDays } = require('../dates');
+const { isDay, addDays, dayStart: dayStartOf } = require('../dates');
 const { logAudit } = require('../audit');
 const ErrorHandler = require('../../../utils/errorHandler');
 const { fail, currencyOf, getAccount, toCurrencyMinor, RateBook, valueOut, moneyLine, officeExists, resolveAccount } = require('./common');
@@ -267,6 +267,11 @@ async function createEntryForLine(lineId, input, { session, req }) {
   const label = input.description || line.description || 'حركة من كشف البنك';
   const outOfBank = line.amount < 0;
 
+  // A line of a partner's current account (Aswaq, a funder...) or a bank that paid for a trip, an
+  // order or a customer (spec 19.4): a supplier bill on the trip or order paid from this account,
+  // or a debt on the customer whose money came from it
+  if (['trip', 'order', 'debt'].includes(input.target)) return postToTarget(line, bank, { ...input, label }, { session, req });
+
   // Linked to the purchase cost typed on an order: the cost goes on that order
   const link = input.link?.orderId && input.link?.itemId ? await linkTarget(input.link, session) : null;
   const counter = link ? link.account : await getAccount(input.counterAccountId, 'الحساب المقابل');
@@ -342,6 +347,45 @@ async function createEntryForLine(lineId, input, { session, req }) {
   return line;
 }
 
+// A statement line posted as a trip cost, an order cost, or a debt on a customer
+async function postToTarget(line, bank, input, { session, req }) {
+  if (line.amount > 0) throw fail('هذا السطر دخل إلى الحساب؛ التوجيه إلى رحلة أو طلب أو دين للمبالغ الخارجة فقط');
+  if (input.target === 'debt') {
+    const Balance = require('../../../models/balance');
+    const User = require('../../../models/user');
+    const currency = currencyOf(bank);
+    if (!['USD', 'LYD'].includes(currency)) throw fail('الدين على العميل بالدولار أو الدينار فقط');
+    if (!input.partnerId || !mongoose.isValidObjectId(input.partnerId) || !(await User.exists({ _id: input.partnerId }).session(session))) throw fail('اختر العميل');
+    const { decimals } = (await getConfig()).currencies.get(currency) || { decimals: 2 };
+    const amount = Math.abs(line.amount) / 10 ** decimals;
+    const office = ['tripoli', 'benghazi'].includes(input.office || bank.office) ? (input.office || bank.office) : 'tripoli';
+    const [balance] = await Balance.create([{
+      owner: input.partnerId, createdBy: req?.user?._id, createdOffice: office, balanceType: 'debt', debtType: 'general',
+      amount, initialAmount: amount, currency, status: 'open', notes: input.label,
+      source: { kind: bank.cashKind === 'current' ? 'partner' : 'cash', accountId: bank._id }, createdAt: dayStartOf(line.day),
+    }], { session });
+    const operations = require('./operations');
+    await operations.postGeneralDebt(balance._id, { session, user: req?.user });
+    const entry = await JournalEntry.findOne({ eventKey: `GENERAL_DEBT:${balance._id}` }).session(session);
+    line.entryId = entry._id;
+    line.lineStatus = 'created_entry';
+    await line.save({ session });
+    await logAudit({ req, action: 'bank.createDebt', model: 'AccountingBankStatementLine', docId: line._id, after: { balanceId: balance._id, entryId: entry._id } }, session);
+    return line;
+  }
+  const billTarget = input.target === 'trip' ? { target: 'trip', tripId: input.tripId } : { target: 'order', orderId: input.orderId };
+  if (!billTarget.tripId && !billTarget.orderId) throw fail(input.target === 'trip' ? 'اختر الرحلة' : 'اختر الطلب');
+  const result = await postAsBill(line, bank, null, null, { ...input, billTarget }, { session, req });
+  line.entryId = result.payment.entryId;
+  line.billId = result.bill._id;
+  line.paymentId = result.payment._id;
+  line.lineStatus = 'created_entry';
+  if (billTarget.orderId) line.orderId = billTarget.orderId;
+  await line.save({ session });
+  await logAudit({ req, action: 'bank.createBill', model: 'AccountingBankStatementLine', docId: line._id, after: { billId: result.bill._id, target: input.target } }, session);
+  return line;
+}
+
 // "Always post this text here": the next statements are suggested (and posted in bulk) alone
 async function rememberRule(line, bank, counter, input, req, session) {
   if (!input.remember || !String(input.keyword || '').trim()) return;
@@ -400,7 +444,9 @@ async function postAsBill(line, bank, counter, link, input, { session, req }) {
 
   const vendor = await vendorNamed(vendorFor(input.vendorName, line, bank.name) || merchantOf(line.description), session);
   const description = input.label || line.description;
-  const billLine = link?.orderId
+  const billLine = input.billTarget
+    ? { description, amount: usd, ...input.billTarget }
+    : link?.orderId
     ? { description, amount: usd, target: 'order', orderId: link.orderId }
     : { description, amount: usd, target: 'expense', accountId: counter._id, office: input.office };
   const bill = await payables.createBill({
@@ -428,6 +474,14 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
     await cancelDocument('AccountingSupplierBill', line.billId, { session, req, reason });
     line.paymentId = undefined;
     line.billId = undefined;
+  } else if ((await JournalEntry.findById(line.entryId).select('source').session(session).lean())?.source?.model === 'Balance') {
+    // A debt made from this line: undone while nothing was paid on it
+    const Balance = require('../../../models/balance');
+    const entry = await JournalEntry.findById(line.entryId).select('source').session(session).lean();
+    const balance = await Balance.findById(entry.source.id).session(session);
+    if (balance && (balance.paymentHistory || []).length) throw fail('دُفع جزء من هذا الدين؛ احذف دفعاته أولاً');
+    await reverseSourceEntries('Balance', entry.source.id, { session, user: req?.user, reason });
+    if (balance) await Balance.deleteOne({ _id: balance._id }, { session });
   } else {
     await reverseSourceEntries('AccountingBankStatementLine', line._id, { session, user: req?.user, reason });
   }
