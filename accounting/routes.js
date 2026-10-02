@@ -159,6 +159,8 @@ router.get('/treasury/sub-boxes', can('treasury', 'reports'), require('./control
 router.post('/treasury/sub-boxes/:id/hand-over', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/subBoxes').handOver(req.params.id, { session, req, amount: req.body?.amount })))));
 router.get('/alipay', can('treasury', 'reports'), documents.alipayDashboard);
 router.post('/yuan-purchases/:id/complete', P.treasury, documents.completeYuanPurchase);
+router.get('/alipay/orders/:orderId', can('treasury', 'reports'), require('./controllers/util').handle(async (req, res) => res.json(await require('./services/posting/alipay').remittanceStatus(req.params.orderId))));
+router.post('/alipay/orders/:orderId/send', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/alipay').sendRemittance(req.params.orderId, req.body || {}, { session, req })))));
 router.get('/assets', P.assets, documents.listAssets);
 router.post('/assets/depreciate', P.assets, documents.runDepreciation);
 router.post('/assets/:id/dispose', P.assets, documents.disposeAsset);

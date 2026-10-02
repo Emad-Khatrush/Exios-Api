@@ -29,6 +29,11 @@ async function uploadReceipts(files) {
 router.get('/acc/options', STAFF, handle(async (req, res) => res.json(await staff.options(req.user, { currency: req.query.currency }))));
 // Where a deposit can go or a debt's money came from: cash boxes, banks, partners' current accounts
 router.get('/acc/money-accounts', STAFF, handle(async (req, res) => res.json({ results: await listMoneyAccounts({ currency: req.query.currency }) })));
+// An order marked as an Alipay transfer: send its yuan from Alipay in one step (owner's decision, v8)
+router.route('/acc/orders/:orderId/alipay')
+  .get(STAFF, handle(async (req, res) => res.json(await require('./services/posting/alipay').remittanceStatus(req.params.orderId))))
+  .post(STAFF, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/alipay').sendRemittance(req.params.orderId, req.body || {}, { session, req })))));
+
 // Abandoned goods on the order page (spec v8): admins and the owner declare, undo, sell
 const abandoned = () => require('./services/abandoned');
 router.get('/acc/orders/:orderId/packages-state', STAFF, handle(async (req, res) => res.json(await abandoned().orderPackages(req.params.orderId, req.user))));

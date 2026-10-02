@@ -332,3 +332,23 @@ test('E. an old expense paid before the count day comes out of the opening balan
   expect(await balanceOf('110101')).toBe(0);
   await expect(tx((session) => payables.createBill({ vendorId: shop._id, day: '2026-10-05', currency: 'USD', paidBeforeCount: true, lines: line }, { session, req }))).rejects.toThrow('قبله');
 });
+
+test('G. an Alipay transfer order: the yuan are sent in one step at the Alipay average rate', async () => {
+  const alipay = require('../services/posting/alipay');
+  const [wasl] = await Vendor.create([{ name: 'وصل', type: 'service' }]);
+  const box = await account('110301');
+  const cashBox = await account('110101');
+  await tx((session) => alipay.createYuanPurchase({ vendorId: wasl._id, day: '2026-02-01', fromAccountId: cashBox._id, amount: 1000, toAccountId: box._id, cnyReceived: 6600 }, { session, req }));
+  const customer = await newCustomer();
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'G-1', user: customer, placedAt: 'tripoli', isPayment: true, isRemittance: true, totalInvoice: 1000, unsureOrder: false, isCanceled: false, paymentList: [],
+    purchaseItems: [{ _id: oid(), description: 'علي باي', unitPrice: 6500, currency: 'CNY' }], createdAt: new Date('2026-02-02'),
+  });
+  await tx((session) => syncOrder(orderId, { session }));
+  const status = await alipay.remittanceStatus(orderId);
+  expect(status).toMatchObject({ suggestedCny: 6500, sentCny: 0 });
+  await tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 6500, day: '2026-02-03' }, { session, req }));
+  expect(await balanceOf('130200')).toBe(98485); // 6500 / 6.6
+  expect((await alipay.remittanceStatus(orderId)).suggestedCny).toBe(0);
+  await expect(tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 500, day: '2026-02-03' }, { session, req }))).rejects.toThrow('يوان فقط');
+});
