@@ -109,9 +109,10 @@ async function costLine(bill, line, usd, session, user) {
   }
   if (line.target === 'trip') {
     const trip = await Inventory.findById(line.tripId).select('inventoryPlace shippingType').session(session);
-    // A domestic trip only tracks what was sent on to another office; its cost is a lump sum paid
-    // for the transport, an expense straight away, not shared over packages (owner's decision)
-    const account = await resolveAccount(trip.shippingType === 'domestic' ? 'cost_shipping_domestic' : 'trip_cost_wip');
+    // Every trip's cost waits in work in progress and is shared over its packages by chargeable
+    // weight: an air or sea trip over what it carried, a domestic trip over the packages it took
+    // on to another office (owner's decision in v8, replacing decision 62)
+    const account = await resolveAccount('trip_cost_wip');
     return { ...base, accountId: account._id, tripId: toId(line.tripId), office: trip.inventoryPlace };
   }
   if (line.target === 'expense') {

@@ -80,10 +80,12 @@ async function orderSummary(orderId) {
 
   const packages = new Map((order.paymentList || []).map((pkg) => [String(pkg._id), pkg]));
   const list = [...claims.values()].map((item) => {
-    const [kind, , packageId] = item.arKey.split(':');
+    const [first, , packageId] = item.arKey.split(':');
+    // The transport fee of a package is its own claim beside the shipping (spec v8)
+    const kind = item.arKey.endsWith(':DOM') ? 'DOM' : first;
     const pkg = packages.get(packageId);
     return {
-      ...item, kind, packageId: packageId || null, tracking: pkg?.deliveredPackages?.trackingNumber, delivered: kind === 'SHP' ? !!pkg?.status?.received : null,
+      ...item, kind, packageId: packageId || null, tracking: pkg?.deliveredPackages?.trackingNumber, delivered: kind === 'SHP' || kind === 'DOM' ? !!pkg?.status?.received : null,
       paid: item.billed - item.open, profit: item.recognized - item.cost,
     };
   }).sort((a, b) => a.kind.localeCompare(b.kind));

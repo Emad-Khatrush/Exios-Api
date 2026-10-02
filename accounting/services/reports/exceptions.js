@@ -271,7 +271,7 @@ const CHECKS = {
     });
     const ids = [...byOrder.keys()].filter(mongoose.isValidObjectId).map(oid);
     const [orders, payments] = await Promise.all([
-      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean(),
+      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.domesticFee').lean(),
       OrderPaymentHistory.find({ order: { $in: ids } }).select('order category currency receivedAmount rate').lean(),
     ]);
     const paid = new Map();
@@ -286,7 +286,7 @@ const CHECKS = {
       const books = byOrder.get(String(order._id));
       const system = {
         PUR: order.isPayment ? Math.round(Number(order.totalInvoice || 0) * 100) - (paid.get(`${order._id}|PUR`) || 0) : 0,
-        SHP: (order.paymentList || []).reduce((sum, pkg) => sum + Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100), 0)
+        SHP: (order.paymentList || []).reduce((sum, pkg) => sum + Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100) + Math.round(Number(pkg.deliveredPackages?.domesticFee?.usd || 0) * 100), 0)
           - (paid.get(`${order._id}|SHP`) || 0),
       };
       ['PUR', 'SHP'].forEach((kind) => {

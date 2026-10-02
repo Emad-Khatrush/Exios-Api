@@ -54,6 +54,8 @@ const billLineSchema = new Schema({
   target: { type: String, enum: ['order', 'trip', 'expense', 'asset', 'prepaid'], required: true },
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   tripId: { type: Schema.Types.ObjectId, ref: 'Inventory' },
+  // A trip's cost by kind, for the trip report (spec v8): shipping, customs, clearance, transport, other
+  costCategory: { type: String, enum: ['shipping', 'customs', 'clearance', 'transport', 'other', null] },
   // expense: the expense account; asset: the fixed asset account (1501xx)
   accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   asset: { name: String, usefulLifeMonths: Number, salvageValue: Number },

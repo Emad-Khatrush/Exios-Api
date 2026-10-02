@@ -12,7 +12,7 @@ const { getConfig } = require('../config');
 const { walletRole, resolveCashAccount } = require('../roles');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
-const { purchaseKey, shipmentKey, generalDebtKey } = require('../claims/keys');
+const { purchaseKey, shipmentKey, generalDebtKey, domesticFeeKey } = require('../claims/keys');
 const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount } = require('./common');const { roundHalfAway } = require('../money');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
@@ -43,11 +43,13 @@ async function resolveClaimKeys(target, session) {
     if (balance?.order) target = { ...target, orderId: balance.order, category: target.category || balance.debtType };
   }
   if (!target.orderId) return [];
-  const order = await Order.findById(target.orderId).select('paymentList._id isPayment').session(session).lean();
+  const order = await Order.findById(target.orderId).select('paymentList._id paymentList.deliveredPackages.domesticFee isPayment').session(session).lean();
   if (!order) return [];
   if (target.category === 'invoice' || (!target.category && !target.packageIds?.length && order.isPayment)) return [purchaseKey(order._id)];
   const packageIds = target.packageIds?.length ? target.packageIds : (order.paymentList || []).map((p) => p._id);
-  const keys = packageIds.map((id) => shipmentKey(order._id, id));
+  // A package with a transport fee is paid for both: its shipping, then its fee
+  const withFee = new Set((order.paymentList || []).filter((p) => Number(p.deliveredPackages?.domesticFee?.usd) > 0).map((p) => String(p._id)));
+  const keys = packageIds.flatMap((id) => [shipmentKey(order._id, id), ...(withFee.has(String(id)) ? [domesticFeeKey(order._id, id)] : [])]);
   if (target.packageIds?.length) return keys;
   // "received goods" without packages: the ones still owed, oldest first
   const open = await openBalances(keys, session);
@@ -92,6 +94,8 @@ async function officeOfCreator(userId, session) {
   return [user?.office, user?.city].find((code) => code && offices.has(code)) || null;
 }
 
+const DOMESTIC_NOTE = /نقل\s*داخلي|النقل\s*الداخلي|ديلفري|دليفري|delivery/i;
+
 const statementKind = (s) => {
   if (s.calculationType === '-') return s.actionType === 'withdrawal' || s.paymentType === 'withdrawal' ? 'WITHDRAWAL' : 'WALLET_PAYMENT';
   if (s.actionType === 'compensation') return 'COMPENSATION';
@@ -110,7 +114,15 @@ async function postStatement(statementId, options = {}) {
 
   // The historical migration may say what an old statement was when its kind was never saved
   // (a payment given back to the wallet, saved as a plain deposit by the old screens)
-  const kind = options.kind || statementKind(statement);
+  let kind = options.kind || statementKind(statement);
+  // A deduction with no order or debt whose note says it is for transport to another office or a
+  // delivery: domestic shipping revenue, live as in the historical replay (decision 76, spec v8)
+  const target = options.target || {};
+  const linked = target.orderId || target.arKeys?.length || target.balanceId;
+  if (!options.kind && kind === 'WALLET_PAYMENT' && !linked && DOMESTIC_NOTE.test(String(statement.note || ''))) {
+    kind = 'SERVICE_FEE';
+    options = { ...options, target: { ...target, revenueRole: 'revenue_shipping_domestic' } };
+  }
   const version = options.version ? `:v${options.version}` : '';
   const eventKey = `${kind}:${statement._id}${version}`;
   if (await JournalEntry.exists({ eventKey }).session(session)) return { skipped: 'already posted' };

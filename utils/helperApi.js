@@ -101,7 +101,9 @@ async function loadDeliverablePackages(customerId, selectedPackages) {
       exiosPrice,
       boxesCount: item.deliveredPackages?.boxesCount || '',
       locationPlace: item.deliveredPackages?.locationPlace || '',
-      cost: Number((weight * exiosPrice).toFixed(2)),
+      // The transport fee to another office is charged with the shipping (spec v8)
+      domesticFee: Number(item.deliveredPackages?.domesticFee?.usd || 0),
+      cost: Number((weight * exiosPrice + Number(item.deliveredPackages?.domesticFee?.usd || 0)).toFixed(2)),
     });
   }
 

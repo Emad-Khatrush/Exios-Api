@@ -14,7 +14,7 @@ const { resolveAccount } = require('../roles');
 const { getConfig } = require('../config');
 const { nextSeq } = require('../counter');
 const { toMinor } = require('../money');
-const { purchaseKey, shipmentKey, CLAIM_EVENTS } = require('./keys');
+const { purchaseKey, shipmentKey, domesticFeeKey, isDomesticFeeKey, CLAIM_EVENTS } = require('./keys');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 
@@ -57,18 +57,21 @@ async function internationalTrip(pkg, ctx) {
   return ctx.packageTrips.get(key);
 }
 
-// How an air or sea trip's cost splits over its packages: by weight, always (owner's decision;
-// air in KG, sea in CBM, one unit per trip). Packages of cancelled orders take no share; if no
-// package has a weight the cost is split evenly.
+// How a trip's cost splits over its packages: by chargeable weight, always (owner's decision; air
+// in KG, sea in CBM, one unit per trip). A domestic trip's cost splits over the packages it took on
+// (their domesticTripId). Packages of cancelled orders take no share; if no package has a weight
+// the cost is split evenly.
 async function tripAllocation(tripId, ctx) {
   const key = String(tripId);
   if (ctx.allocations.has(key)) return ctx.allocations.get(key);
 
   const trip = await Inventory.findById(tripId).select('shippingType inventoryType').session(ctx.session).lean();
-  const international = trip && trip.inventoryType === 'inventoryGoods' && trip.shippingType !== 'domestic';
+  const isTrip = trip && trip.inventoryType === 'inventoryGoods';
+  const domestic = isTrip && trip.shippingType === 'domestic';
+  const link = domestic ? 'domesticTripId' : 'tripId';
   let result = { total: 0, shares: new Map(), shippingType: trip?.shippingType };
-  if (international) {
-    const costAccounts = [ctx.accounts.trip_cost_wip, ctx.accounts.cost_shipping_air, ctx.accounts.cost_shipping_sea].map((a) => a._id);
+  if (isTrip) {
+    const costAccounts = [ctx.accounts.trip_cost_wip, ctx.accounts.cost_shipping_air, ctx.accounts.cost_shipping_sea, ctx.accounts.cost_shipping_domestic].map((a) => a._id);
     const [cost] = await JournalEntry.aggregate([
       { $match: { 'lines.tripId': oid(tripId) } },
       { $unwind: '$lines' },
@@ -76,10 +79,10 @@ async function tripAllocation(tripId, ctx) {
       { $group: { _id: null, usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
     ]).session(ctx.session);
 
-    const orders = await Order.find({ 'paymentList.tripId': oid(tripId), isCanceled: { $ne: true } })
-      .select('paymentList._id paymentList.tripId paymentList.deliveredPackages.weight').session(ctx.session).lean();
+    const orders = await Order.find({ [`paymentList.${link}`]: oid(tripId), isCanceled: { $ne: true } })
+      .select(`paymentList._id paymentList.${link} paymentList.deliveredPackages.weight`).session(ctx.session).lean();
     const packages = [];
-    orders.forEach((o) => (o.paymentList || []).forEach((p) => { if (String(p.tripId) === key) packages.push(p); }));
+    orders.forEach((o) => (o.paymentList || []).forEach((p) => { if (String(p[link]) === key) packages.push(p); }));
     const weights = packages.map((pkg) => Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * 1000));
     const shares = allocate(cost?.usd || 0, weights);
     result = { total: cost?.usd || 0, shares: new Map(packages.map((pkg, i) => [String(pkg._id), shares[i]])), shippingType: trip.shippingType };
@@ -214,6 +217,9 @@ async function syncOrder(orderId, options = {}) {
   packages.forEach((pkg, id) => {
     const charge = active ? packageCharge(pkg) : 0;
     if (charge > 0) desired.set(shipmentKey(order._id, id), charge);
+    // The transport fee to another office: its own claim beside the shipping (spec v8)
+    const fee = active ? toMinor(Number(pkg?.deliveredPackages?.domesticFee?.usd || 0), 2) : 0;
+    if (fee > 0) desired.set(domesticFeeKey(order._id, id), fee);
   });
   // A refund given to the customer on a claim lowers what they are billed (never below zero)
   state.refunded.forEach((refunded, key) => {
@@ -228,9 +234,10 @@ async function syncOrder(orderId, options = {}) {
     if (want === have || !partnerId) continue;
     const deferred = packageId ? a.deferred_shipping_revenue : a.deferred_purchase_revenue;
     const pkg = packageId && packages.get(packageId);
-    const what = packageId ? `شحن ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
+    const fee = isDomesticFeeKey(key);
+    const what = packageId ? `${fee ? 'نقل داخلي' : 'شحن'} ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
     const reason = !active ? 'إلغاء' : !have ? 'مطالبة' : want > have ? 'زيادة' : 'تخفيض';
-    const dims = { arKey: key, orderId: order._id, ...(packageId && { packageId: oid(packageId) }) };
+    const dims = { arKey: key, orderId: order._id, ...(packageId && { packageId: oid(packageId) }), ...(fee && pkg?.domesticTripId && { tripId: oid(pkg.domesticTripId) }) };
     posted.push(await post(ctx, 'CLAIM', key, `${reason} ${what} - طلب ${order.orderId}`, move(
       want - have,
       { accountId: a.customer_receivable._id, partnerId, ...dims },
@@ -309,11 +316,14 @@ async function syncOrder(orderId, options = {}) {
     if (want === have) continue;
 
     const deferred = packageId ? a.deferred_shipping_revenue : a.deferred_purchase_revenue;
-    const dims = { arKey: key, orderId: order._id, office, ...(packageId && { packageId: oid(packageId) }) };
+    const dims = { arKey: key, orderId: order._id, office, ...(packageId && { packageId: oid(packageId) }), ...(isDomesticFeeKey(key) && pkg?.domesticTripId && { tripId: oid(pkg.domesticTripId) }) };
     const fallbacks = [];
     let revenueAccount;
     if (want > have) {
-      if (packageId) {
+      if (isDomesticFeeKey(key)) {
+        // The transport fee: domestic shipping revenue
+        revenueAccount = a.revenue_shipping_domestic;
+      } else if (packageId) {
         const { role, fallback } = revenueRoleFor(pkg, await internationalTrip(pkg, ctx), order);
         revenueAccount = a[role];
         if (fallback) fallbacks.push(fallback);
@@ -329,7 +339,7 @@ async function syncOrder(orderId, options = {}) {
       const [accountId] = [...byAccount.entries()].sort((x, y) => y[1] - x[1])[0] || [];
       revenueAccount = { _id: accountId ? oid(accountId) : (packageId ? a.revenue_other._id : a.revenue_purchase_invoices._id) };
     }
-    const what = packageId ? `شحن ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
+    const what = packageId ? `${isDomesticFeeKey(key) ? 'نقل داخلي' : 'شحن'} ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
     posted.push(await post(ctx, 'RECOGNITION', key, `${want > have ? 'الاعتراف بإيراد' : 'عكس الاعتراف بإيراد'} ${what} - طلب ${order.orderId}`, move(
       want - have,
       { accountId: deferred._id, ...dims },
@@ -357,8 +367,13 @@ async function syncOrder(orderId, options = {}) {
   const packageIds = new Set([...packages.keys(), ...[...state.shipCost.keys()].map((k) => k.split('|')[0])]);
   for (const packageId of packageIds) {
     const recognized = recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
-    const trip = await internationalTrip(packages.get(packageId), ctx);
-    const tripIds = new Set([...(trip ? [String(trip._id)] : []), ...[...state.shipCost.keys()].filter((k) => k.startsWith(`${packageId}|`)).map((k) => k.split('|')[1])]);
+    const pkg = packages.get(packageId);
+    const trip = await internationalTrip(pkg, ctx);
+    // The air or sea trip that carried it, and the domestic trip that took it on (spec v8)
+    const tripIds = new Set([
+      ...(trip ? [String(trip._id)] : []), ...(pkg?.domesticTripId ? [String(pkg.domesticTripId)] : []),
+      ...[...state.shipCost.keys()].filter((k) => k.startsWith(`${packageId}|`)).map((k) => k.split('|')[1]),
+    ]);
     for (const tripId of tripIds) {
       const allocation = await tripAllocation(tripId, ctx);
       const want = recognized ? (allocation.shares.get(packageId) || 0) : 0;

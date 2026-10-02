@@ -94,3 +94,79 @@ test('1. volumetric weight: CBM x 167 is what is billed; a saved weight is chang
   await expect(guardMeasures(saved, edited, admin)).resolves.toBeUndefined();
   await expect(guardMeasures(saved, JSON.parse(JSON.stringify(saved.paymentList)), clerk)).resolves.toBeUndefined();
 });
+
+const UserStatement = require('../../models/userStatement');
+const operations = require('../services/posting/operations');
+const payables = require('../services/posting/payables');
+const pay = async (user, orderId, packageIds, amount, day = '2026-02-01') => {
+  const dep = await UserStatement.create({ user, createdBy: oid(), description: 'إيداع', amount, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date(day) });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  const spend = await UserStatement.create({ user, createdBy: oid(), description: 'دفع', amount, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date(day) });
+  await tx((session) => operations.postStatement(spend._id, { session, target: { orderId, packageIds } }));
+};
+const deliver = async (orderId, packageId) => {
+  await Order.updateOne({ _id: orderId, 'paymentList._id': packageId }, { $set: { 'paymentList.$.status.received': true } });
+  await tx((session) => syncOrder(orderId, { session }));
+};
+const costBill = async (tripId, amount, costCategory) => {
+  const [carrier] = await Vendor.create([{ name: `C${Math.random()}`, type: 'carrier' }]);
+  return tx((session) => payables.createBill({ vendorId: carrier._id, day: '2026-01-05', currency: 'USD', lines: [{ description: 'x', amount, target: 'trip', tripId, costCategory }] }, { session, req }));
+};
+
+test('3-4. domestic transport: its cost shared over its own packages; the fee is its own claim and 410500', async () => {
+  const customer = await newCustomer();
+  // A stays in Tripoli; B goes on to Benghazi by truck with a 10$ transport fee
+  const order = await newOrder({ user: customer, packages: [{ weight: 20, price: 10 }, { weight: 10, price: 10, domesticFeeUsd: 10 }] });
+  const [a, b] = order.packageIds;
+  const flight = await newTrip([a, b], 'air');
+  const truck = await newTrip([b], 'domestic', 'benghazi');
+  await costBill(flight, 240, 'shipping');
+  await costBill(flight, 60, 'customs');
+  await costBill(truck, 50, 'transport');
+  await tx((session) => syncOrder(order._id, { session }));
+  // 200 + 100 shipping, 10 transport fee
+  expect(await balanceOf('121000')).toBe(31000);
+  expect(await balanceOf('130100')).toBe(35000);
+
+  await pay(customer, order._id, [a], 200);
+  await pay(customer, order._id, [b], 110);
+  expect(await balanceOf('121000')).toBe(0);
+  await deliver(order._id, a);
+  await deliver(order._id, b);
+  expect(await balanceOf('410100')).toBe(-30000);
+  expect(await balanceOf('410500')).toBe(-1000);
+  expect(await balanceOf('510100')).toBe(30000); // the flight (shipping + customs) by weight
+  expect(await balanceOf('510300')).toBe(5000); // the truck, on B only
+  expect(await balanceOf('130100')).toBe(0);
+
+  // A late domestic cost goes straight to 510300 on the same packages
+  await costBill(truck, 20, 'transport');
+  expect(await balanceOf('510300')).toBe(7000);
+  expect(await balanceOf('130100')).toBe(0);
+  const lines = await JournalEntry.aggregate([{ $unwind: '$lines' }, { $match: { 'lines.accountCode': '510300' } }, { $group: { _id: '$lines.packageId' } }]);
+  expect(lines.map((l) => String(l._id))).toEqual([String(b)]);
+
+  // The trip report: cost by category, per KG by delivery office, before and after transport
+  const { tripProfitability } = require('../services/reports/operations');
+  const { results } = await tripProfitability({});
+  const air = results.find((r) => String(r.tripId) === String(flight));
+  expect(air.byCategory).toMatchObject({ shipping: 24000, customs: 6000 });
+  expect(air.costPerUnit).toBe(1000); // 300$ over 30 KG
+  expect(air.profitBeforeDomestic).toBe(0);
+  expect(air.profitAfterDomestic).toBe(-7000);
+  // Tripoli: 20 KG sold at 10$, cost 10$/KG. Benghazi: 10 KG, cost 10$ + 7$ transport per KG
+  expect(air.offices.find((o) => o.office === 'tripoli')).toMatchObject({ weight: 20, costPerUnit: 1000, fullCostPerUnit: 1000, sellPerUnit: 1000 });
+  expect(air.offices.find((o) => o.office === 'benghazi')).toMatchObject({ weight: 10, costPerUnit: 1000, fullCostPerUnit: 1700, sellPerUnit: 1000, domesticCost: 7000 });
+  const road = results.find((r) => String(r.tripId) === String(truck));
+  expect(road).toMatchObject({ totalCost: 7000, packages: 1, weight: 10, feesBilled: 1000, feesRecognized: 1000, extraCostPerUnit: 700 });
+});
+
+test('4. live: a wallet deduction noted "نقل داخلي" with no order is domestic shipping revenue (rule 76)', async () => {
+  const customer = await newCustomer();
+  const dep = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount: 50, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-01') });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  const fee = await UserStatement.create({ user: customer, createdBy: oid(), description: 'خصم', note: 'نقل داخلي إلى بنغازي', amount: 15, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-02') });
+  await tx((session) => operations.postStatement(fee._id, { session }));
+  expect(await balanceOf('410500')).toBe(-1500);
+  expect(await balanceOf('399000')).toBe(0);
+});

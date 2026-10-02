@@ -129,7 +129,7 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
     query.$or = [{ orderId: pattern }, { 'customerInfo.fullName': pattern }, ...(users.length ? [{ user: { $in: users.map((u) => u._id) } }] : [])];
   }
   const orders = await Order.find(query)
-    .select('orderId user customerInfo.fullName placedAt isPayment isShipment isCanceled isDeleted unsureOrder invoiceConfirmed totalInvoice createdAt paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice')
+    .select('orderId user customerInfo.fullName placedAt isPayment isShipment isCanceled isDeleted unsureOrder invoiceConfirmed totalInvoice createdAt paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.domesticFee')
     .sort({ createdAt: -1 }).limit(2000).lean();
 
   const roles = await roleIds(['customer_receivable', ...REVENUE, ...DEFERRED, ...COST, ...WIP]);
@@ -158,7 +158,7 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
     const costInProgress = sum(books, WIP);
     const billed = recognized + deferred;
     const paid = billed - open;
-    const shipping = (order.paymentList || []).reduce((total, pkg) => total + Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0), 0);
+    const shipping = (order.paymentList || []).reduce((total, pkg) => total + Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) + Number(pkg.deliveredPackages?.domesticFee?.usd || 0), 0);
     let state = 'none';
     if (order.isDeleted) state = 'deleted';
     else if (order.isCanceled) state = 'canceled';

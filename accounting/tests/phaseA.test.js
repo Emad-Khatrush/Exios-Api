@@ -101,7 +101,9 @@ test('s40: a trip cost is shared by weight, so the profit shows the price differ
   expect(await balanceOf('130100')).toBe(0);
 });
 
-test('a domestic trip is a lump-sum expense straight away, never shared over packages', async () => {
+// v8 replaced decision 62: a domestic trip's cost waits in progress and is shared over the packages
+// it took on, recognised on 510300 with them
+test('a domestic trip cost is shared over its own packages and recognised with them', async () => {
   const user = await newCustomer();
   const order = await newOrder({ user, packages: [{ weight: 100, price: 10 }] });
   const [pkg] = order.packageIds;
@@ -114,8 +116,8 @@ test('a domestic trip is a lump-sum expense straight away, never shared over pac
   const carrier = await Vendor.create({ name: 'ناقل', type: 'carrier' });
   await bill({ vendorId: carrier._id, lines: [{ description: 'شحن جوي', amount: 500, target: 'trip', tripId: flight }] });
   await bill({ vendorId: carrier._id, lines: [{ description: 'نقل داخلي', amount: 80, target: 'trip', tripId: truck }] });
-  expect(await balanceOf('510300')).toBe(8000);
-  expect(await balanceOf('130100')).toBe(50000);
+  expect(await balanceOf('510300')).toBe(0);
+  expect(await balanceOf('130100')).toBe(58000);
 
   await post(await deposit(user, 1000));
   await post(await spend(user, 1000), { target: { orderId: order._id, packageIds: [pkg] } });

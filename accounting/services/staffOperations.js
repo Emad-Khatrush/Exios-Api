@@ -75,7 +75,7 @@ const billView = (bill, field, id) => {
   return {
     _id: bill._id, number: bill.number, day: bill.day, vendor: bill.vendorId?.name || '', status: bill.status, currency: bill.currency,
     amount: lines.reduce((sum, line) => sum + line.amount, 0), usd: lines.reduce((sum, line) => sum + (line.usd || 0), 0),
-    description: lines.map((line) => line.description).join('، '), paid: !!bill.paidImmediatelyFrom,
+    description: lines.map((line) => line.description).join('، '), paid: !!bill.paidImmediatelyFrom, costCategory: lines[0]?.costCategory || null,
     paidFrom: bill.paidImmediatelyFrom?.name || null, createdBy: bill.createdBy ? `${bill.createdBy.firstName || ''} ${bill.createdBy.lastName || ''}`.trim() : '',
     createdById: bill.createdBy?._id || null, createdAt: bill.createdAt, attachments: bill.attachments || [], note: bill.note || '',
   };
@@ -128,7 +128,11 @@ async function addCost(target, targetId, input, req) {
   return runInTransaction((session) => createBill({
     vendorId, day, currency, rate, idempotencyKey: input.idempotencyKey || undefined,
     paidImmediatelyFrom: payFrom?._id, note: input.note, enteredFrom: target,
-    lines: [{ description: String(input.description || '').trim() || label, amount, target, [target === 'trip' ? 'tripId' : 'orderId']: targetId }],
+    lines: [{
+      description: String(input.description || '').trim() || label, amount, target, [target === 'trip' ? 'tripId' : 'orderId']: targetId,
+      // A trip's cost by kind (spec v8): customs is a cost of the trip itself, shared by weight
+      ...(target === 'trip' && ['shipping', 'customs', 'clearance', 'transport', 'other'].includes(input.costCategory) && { costCategory: input.costCategory }),
+    }],
   }, { session, req }));
 }
 

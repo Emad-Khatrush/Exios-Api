@@ -4,11 +4,14 @@
 const purchaseKey = (orderId) => `PUR:${orderId}`;
 const shipmentKey = (orderId, packageId) => `SHP:${orderId}:${packageId}`;
 const generalDebtKey = (balanceId) => `GEN:${balanceId}`;
+// The transport fee to another office charged on a package, beside its shipping (spec v8)
+const domesticFeeKey = (orderId, packageId) => `SHP:${orderId}:${packageId}:DOM`;
+const isDomesticFeeKey = (arKey) => String(arKey || '').endsWith(':DOM');
 
 function parseKey(arKey) {
   const [kind, first, second] = String(arKey || '').split(':');
   if (kind === 'PUR') return { kind: 'purchase', orderId: first };
-  if (kind === 'SHP') return { kind: 'shipment', orderId: first, packageId: second };
+  if (kind === 'SHP') return { kind: 'shipment', orderId: first, packageId: second, ...(isDomesticFeeKey(arKey) && { domesticFee: true }) };
   if (kind === 'GEN') return { kind: 'general', balanceId: first };
   return { kind: 'unknown' };
 }
@@ -16,4 +19,4 @@ function parseKey(arKey) {
 // Entries that change how much a claim is (billing, re-pricing, edits, cancellation)
 const CLAIM_EVENTS = ['CLAIM', 'PURCHASE_BILLED', 'SHIPMENT_BILLED', 'SHIPMENT_REPRICE', 'AMOUNT_EDIT', 'ORDER_CANCEL', 'PACKAGE_REMOVE', 'GENERAL_DEBT'];
 
-module.exports = { purchaseKey, shipmentKey, generalDebtKey, parseKey, CLAIM_EVENTS };
+module.exports = { purchaseKey, shipmentKey, generalDebtKey, domesticFeeKey, isDomesticFeeKey, parseKey, CLAIM_EVENTS };
