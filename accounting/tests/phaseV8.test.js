@@ -253,3 +253,38 @@ test('6. sub cash boxes: staff cash lands on their office sub box, history on th
   expect(await balanceOf('110123')).toBe(0);
   expect(await balanceOf('110103')).toBe(10000);
 });
+
+test('4b. a transport fee in dinars paid from the dinar wallet on its own, the shipping in dollars', async () => {
+  const { loadDeliverablePackages } = require('../../utils/helperApi');
+  await mongoose.connection.collection('exchangerates').insertOne({ fromCurrency: 'usd', toCurrency: 'lyd', rate: 10 });
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [{ weight: 10, price: 10, received: false }] });
+  const [pkg] = order.packageIds;
+  // 50 LYD fee, set when the rate was 8 (6.25$); delivered when it is 10
+  await Order.updateOne({ _id: order._id, 'paymentList._id': pkg }, { $set: { 'paymentList.$.deliveredPackages.domesticFee': { amount: 50, currency: 'LYD', usd: 6.25 } } });
+  await tx((session) => syncOrder(order._id, { session }));
+  expect(await balanceOf('121000')).toBe(10625);
+
+  const saved = await Order.findById(order._id).lean();
+  const loaded = await loadDeliverablePackages(customer, [{ id: String(pkg), orderId: saved.orderId }], { feeMode: 'separate' });
+  expect(loaded).toMatchObject({ totalCost: 100, totalFeeLYD: 50 });
+  expect(loaded.packages[0]).toMatchObject({ cost: 100, separateFee: true });
+  // The fee's dollars follow today's rate
+  expect((await Order.findById(order._id).lean()).paymentList[0].deliveredPackages.domesticFee.usd).toBe(5);
+  await tx((session) => syncOrder(order._id, { session }));
+
+  // The two wallet payments the delivery makes: shipping in USD, the fee in LYD at today's rate
+  const usdIn = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount: 100, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-01') });
+  await tx((session) => operations.postStatement(usdIn._id, { session }));
+  const lydIn = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount: 50, currency: 'LYD', rate: 10, total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-01') });
+  await tx((session) => operations.postStatement(lydIn._id, { session }));
+  const ship = await UserStatement.create({ user: customer, createdBy: oid(), description: 'شحن', amount: 100, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-02') });
+  await tx((session) => operations.postStatement(ship._id, { session, target: { arKeys: [`SHP:${order._id}:${pkg}`] } }));
+  const fee = await UserStatement.create({ user: customer, createdBy: oid(), description: 'رسوم النقل الداخلي', amount: 50, currency: 'LYD', rate: 10, total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-02') });
+  await tx((session) => operations.postStatement(fee._id, { session, target: { arKeys: [`SHP:${order._id}:${pkg}:DOM`] } }));
+  await Order.updateOne({ _id: order._id, 'paymentList._id': pkg }, { $set: { 'paymentList.$.status.received': true } });
+  await tx((session) => syncOrder(order._id, { session }));
+  expect(await balanceOf('121000')).toBe(0);
+  expect(await balanceOf('410500')).toBe(-500);
+  expect(await balanceOf('410100')).toBe(-10000);
+});

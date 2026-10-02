@@ -101,6 +101,14 @@ async function unsurePaidOrders() {
   return { count: list.length, list };
 }
 
+// Unconfirmed orders with amounts typed in their old "received" fields: not posted (they were
+// estimates, not money received), listed so the owner checks them
+async function unsureReceivedFields() {
+  const orders = await Order.find({ unsureOrder: true, $or: [{ receivedUSD: { $gt: 0 } }, { receivedLYD: { $gt: 0 } }, { receivedShipmentUSD: { $gt: 0 } }, { receivedShipmentLYD: { $gt: 0 } }] })
+    .select('orderId user totalInvoice receivedUSD receivedLYD receivedShipmentUSD receivedShipmentLYD').lean();
+  return { count: orders.length, list: orders.map((o) => ({ orderId: o._id, orderNumber: o.orderId, totalInvoice: o.totalInvoice, usd: (o.receivedUSD || 0) + (o.receivedShipmentUSD || 0), lyd: (o.receivedLYD || 0) + (o.receivedShipmentLYD || 0) })) };
+}
+
 // Old "credit" balances (balanceType 'credit', replaced by the wallet long ago): not posted; listed
 // with their amounts so the owner decides what to do with any that are not zero (owner's decision)
 async function creditBalances() {
@@ -187,6 +195,7 @@ async function buildReport(run, result) {
     openingCash: result.openingCash,
     overpaidSettled: { count: (result.overpaidSettled || []).length, total: (result.overpaidSettled || []).reduce((sum, row) => sum + row.amount, 0), list: (result.overpaidSettled || []).slice(0, LIST_LIMIT) },
     unsurePaid: await unsurePaidOrders(),
+    unsureReceived: await unsureReceivedFields(),
     creditBalances: await creditBalances(),
     refunds: await refundsSummary(run.runId),
     debtsWithoutSource: (await JournalEntry.aggregate([

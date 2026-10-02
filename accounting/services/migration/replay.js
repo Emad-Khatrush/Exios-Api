@@ -108,6 +108,9 @@ function buildTimeline(sources, config, vendors) {
     // Only for an order with no payment recorded on it (owner's decision): otherwise the same money
     // would be counted twice
     if (paidOrders.has(String(order._id))) legacy.length = 0;
+    // Nor on an unconfirmed order: there they were typed as an estimate, not money received (0048-5097:
+    // 2000$ and 1595 LYD on an empty order nobody paid). They are listed in the report for review.
+    if (order.unsureOrder) legacy.length = 0;
     legacy.filter(([, amount]) => Number(amount) > 0).forEach(([part, amount, currency, keys]) => {
       add(order.createdAt, 'payment', 'legacyReceived', order._id, async (ctx) => {
         await postLegacyReceived(order, part, amount, currency, keys, ctx);

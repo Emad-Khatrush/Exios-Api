@@ -21,6 +21,8 @@ const { refreshPackageTrips } = require('../accounting/services/tripLinks');
 const { deleteOrder: deleteOrderWithLedger } = require('../accounting/services/orderDeletion');
 const { syncOrderDebtsOwner } = require('../utils/debts');
 const { normalizePackages, guardMeasures } = require('../utils/packageMeasures');
+const roundFee = (n) => Math.round(n * 100) / 100;
+const { payFeesLYD } = require('../utils/helperApi');
 const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
@@ -1782,19 +1784,22 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
     const paymentAmounts = validatePayment(req.body.payment);
 
     // Costs and totals come from the database; the client's totalCost and rate are ignored
-    const { packages: selectedPackages, totalCost } = await loadDeliverablePackages(id, req.body.selectedPackages);
+    const feeMode = req.body.feeMode === 'usd' ? 'usd' : 'separate';
+    const { packages: selectedPackages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode });
 
     const payment = withCalculatedRate(paymentAmounts, totalCost);
 
     const walletMap = await getUserWalletMap(id);
 
-    checkSufficientFunds(walletMap, payment, totalCost);
+    checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD);
 
     await processPackagesPayment(req, res, next, id, selectedPackages, payment);
+    // Transport fees in dinars, paid on their own from the dinar wallet
+    await payFeesLYD(req, res, next, id, feesLYD);
 
     await updateOrderStatuses(selectedPackages);
 
-    await createInvoice(req.user, id, selectedPackages, payment, totalCost);
+    await createInvoice(req.user, id, selectedPackages, { ...payment, amountLYD: roundFee(Number(payment.amountLYD || 0) + totalFeeLYD) }, totalCost);
 
     await cleanUpInventory(selectedPackages);
     await emitOrdersByNumber(selectedPackages.map(pkg => pkg.orderId), req.user);

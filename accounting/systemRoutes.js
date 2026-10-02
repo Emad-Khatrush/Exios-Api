@@ -39,7 +39,9 @@ router.post('/acc/orders/:orderId/packages/:packageId/sell', STAFF, handle(async
 // The package dialog: the volumetric factor, and whether this user may change a saved weight
 router.get('/acc/package-settings', STAFF, handle(async (req, res) => {
   const { volumetricFactor, canEditMeasures } = require('../utils/packageMeasures');
-  res.json({ volumetricFactor: await volumetricFactor(), canEditMeasures: await canEditMeasures(req.user) });
+  const ExchangeRate = require('../models/exchangeRate');
+  const rate = Number((await ExchangeRate.findOne({ fromCurrency: 'usd' }).lean())?.rate) || null;
+  res.json({ volumetricFactor: await volumetricFactor(), canEditMeasures: await canEditMeasures(req.user), rate });
 }));
 
 // Offices and currencies as data (spec C4): the system's dropdowns read them here

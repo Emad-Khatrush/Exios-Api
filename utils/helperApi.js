@@ -70,9 +70,15 @@ function withCalculatedRate(payment, totalCost) {
 
 // Reads every selected package from the database instead of trusting the cost sent by the
 // client, and refuses packages that are already received, cancelled, or belong to someone else.
-async function loadDeliverablePackages(customerId, selectedPackages) {
+// The transport fee to another office is charged in the currency it was set in (spec v8). With
+// feeMode 'separate' (the default) a fee in dinars is paid from the dinar wallet on its own, beside
+// the shipping; with 'usd' it is converted at today's rate and paid with the shipping. Either way
+// its dollar value is refreshed at today's rate first, so the books and the wallet agree.
+async function loadDeliverablePackages(customerId, selectedPackages, { feeMode = 'separate' } = {}) {
   const seen = new Set();
   const packages = [];
+  const feesLYD = [];
+  let todayRate = null;
 
   for (const selected of selectedPackages) {
     const packageId = String(selected?.id || '');
@@ -90,6 +96,25 @@ async function loadDeliverablePackages(customerId, selectedPackages) {
 
     const weight = Number(item.deliveredPackages?.weight?.total || 0);
     const exiosPrice = Number(item.deliveredPackages?.exiosPrice || 0);
+    const fee = item.deliveredPackages?.domesticFee;
+    let feeUSD = 0;
+    if (Number(fee?.amount) > 0) {
+      if (fee.currency === 'LYD') {
+        if (todayRate === null) {
+          const ExchangeRate = require('../models/exchangeRate');
+          todayRate = Number((await ExchangeRate.findOne({ fromCurrency: 'usd' }).lean())?.rate) || 0;
+          if (!todayRate) throw new ErrorHandler(400, 'No dinar rate in the settings to price the transport fee');
+        }
+        const usd = roundToTwo(Number(fee.amount) / todayRate);
+        if (usd !== Number(fee.usd)) {
+          await Orders.updateOne({ _id: order._id, 'paymentList._id': item._id }, { $set: { 'paymentList.$.deliveredPackages.domesticFee.usd': usd } });
+        }
+        if (feeMode === 'usd') feeUSD = usd;
+        else feesLYD.push({ packageId, orderId: order.orderId, orderMongoId: order._id, trackingNumber: item.deliveredPackages?.trackingNumber || '', amount: Number(fee.amount), rate: todayRate });
+      } else {
+        feeUSD = Number(fee.amount);
+      }
+    }
 
     packages.push({
       ...selected,
@@ -101,9 +126,10 @@ async function loadDeliverablePackages(customerId, selectedPackages) {
       exiosPrice,
       boxesCount: item.deliveredPackages?.boxesCount || '',
       locationPlace: item.deliveredPackages?.locationPlace || '',
-      // The transport fee to another office is charged with the shipping (spec v8)
-      domesticFee: Number(item.deliveredPackages?.domesticFee?.usd || 0),
-      cost: Number((weight * exiosPrice + Number(item.deliveredPackages?.domesticFee?.usd || 0)).toFixed(2)),
+      // The transport fee: in dollars with the shipping, or in dinars on its own (feesLYD)
+      domesticFee: Number(fee?.amount) > 0 ? { amount: Number(fee.amount), currency: fee.currency || 'USD', paidIn: fee.currency === 'LYD' && feeMode !== 'usd' ? 'LYD' : 'USD' } : undefined,
+      separateFee: fee?.currency === 'LYD' && feeMode !== 'usd' && Number(fee?.amount) > 0,
+      cost: Number((weight * exiosPrice + feeUSD).toFixed(2)),
     });
   }
 
@@ -112,7 +138,8 @@ async function loadDeliverablePackages(customerId, selectedPackages) {
   }
 
   const totalCost = roundToTwo(packages.reduce((sum, pkg) => sum + pkg.cost, 0));
-  return { packages, totalCost };
+  const totalFeeLYD = roundToTwo(feesLYD.reduce((sum, f) => sum + f.amount, 0));
+  return { packages, totalCost, feesLYD, totalFeeLYD };
 }
 
 async function getUserWalletMap(userId) {
@@ -126,8 +153,11 @@ function truncateToTwo(num) {
   return Math.trunc(num * 100) / 100;
 }
 
-function checkSufficientFunds(walletMap, payment, totalCost) {
+function checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD = 0) {
   const { amountUSD, amountLYD, rate } = payment;
+  if (amountLYD + totalFeeLYD > (walletMap['LYD'] || 0) + BALANCE_EPSILON) {
+    throw new ErrorHandler(400, totalFeeLYD ? `Not enough LYD for the payment and the transport fees (${totalFeeLYD} LYD)` : 'Balance not enough for LYD payment');
+  }
 
   if (amountUSD > (walletMap['USD'] || 0) + BALANCE_EPSILON) {
     throw new ErrorHandler(400, 'Balance not enough for USD payment');
@@ -226,7 +256,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       calculationType: '-',
       paymentType: 'wallet',
       createdAt: new Date(),
-      description: `تم دفع قيمة الشحن ${pkg?.trackingNumber || ''}`,
+      description: pkg?.feeOnly ? `رسوم النقل الداخلي ${pkg?.trackingNumber || ''}` : `تم دفع قيمة الشحن ${pkg?.trackingNumber || ''}`,
       amount: amountToDeduct,
       currency,
       total: statementTotal,
@@ -252,7 +282,10 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
         statementId: userStatement._id,
       });
     }
-    await emitAccountingEvent('statement', userStatement._id, { target: { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) } }, req.user);
+    const target = pkg?.feeOnly
+      ? { arKeys: [`SHP:${order?._id}:${pkg.id}:DOM`] }
+      : pkg?.separateFee ? { arKeys: [`SHP:${order?._id}:${pkg.id}`] } : { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) };
+    await emitAccountingEvent('statement', userStatement._id, { target }, req.user);
 
     return userStatement;
   } catch (error) {
@@ -261,10 +294,17 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
   }
 }
 
+// The transport fees in dinars, each paid from the dinar wallet on its own (spec v8)
+async function payFeesLYD(req, res, next, id, feesLYD) {
+  for (const fee of feesLYD || []) {
+    await useWalletBalance(req, res, next, id, { id: fee.packageId, orderId: fee.orderId, trackingNumber: fee.trackingNumber, feeOnly: true }, fee.amount, 'LYD', fee.rate, false);
+  }
+}
+
 async function updateOrderStatuses(selectedPackages) {
-  for (const package of selectedPackages) {
-    const order = await Orders.findOne({ orderId: package.orderId });
-    const item = order.paymentList.id(package.id);
+  for (const selected of selectedPackages) {
+    const order = await Orders.findOne({ orderId: selected.orderId });
+    const item = order.paymentList.id(selected.id);
 
     if (item) {
       item.status.received = true;
@@ -325,6 +365,7 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
       cost: pkg?.cost || 0,
       exiosPrice: pkg?.exiosPrice || 0,
       orderId: pkg?.orderId,
+      ...(pkg?.domesticFee && { domesticFee: pkg.domesticFee }),
     }))
   };
 
@@ -576,4 +617,5 @@ try {
   }
 }
 
-module.exports = { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, calculateRate, withCalculatedRate };
+module.exports = {
+  payFeesLYD, cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, calculateRate, withCalculatedRate };
