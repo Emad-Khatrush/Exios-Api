@@ -287,6 +287,8 @@ const orderSchema = new Schema({
         type: String,
         default: ''
       },
+      // total is the CHARGEABLE weight: what the customer is billed on and the trip's cost is shared
+      // by. Charged by volume, it is the volumetric weight and the scale's weight is kept in actual.
       weight: {
         total: {
           type: Number,
@@ -295,6 +297,38 @@ const orderSchema = new Schema({
         measureUnit: {
           type: String,
           default: ''
+        },
+        actual: Number
+      },
+      // Charged by volume (spec v8): CBM typed or worked out from the dimensions (cm); weight.total =
+      // CBM x the factor in force when it was saved
+      volumetric: {
+        enabled: { type: Boolean, default: false },
+        cbm: Number,
+        length: Number,
+        width: Number,
+        height: Number,
+        factor: Number
+      },
+      // Transport to another office, charged on this package beside its shipping (spec v8): added to
+      // what the customer owes, revenue 410500 when delivered and paid
+      domesticFee: {
+        amount: Number,
+        currency: { type: String, enum: ['USD', 'LYD'] },
+        usd: Number
+      },
+      // Not collected for too long (spec v8): declared abandoned, then possibly sold
+      abandoned: {
+        status: { type: String, enum: ['abandoned', 'sold'] },
+        declaredAt: Date,
+        declaredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        sale: {
+          day: String,
+          amount: Number,
+          currency: String,
+          accountId: mongoose.Schema.Types.ObjectId,
+          usd: Number,
+          entryId: mongoose.Schema.Types.ObjectId
         }
       },
       originPrice: {

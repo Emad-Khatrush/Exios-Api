@@ -20,6 +20,7 @@ const { emitAccountingEvent, emitOrdersByNumber } = require('../accounting/servi
 const { refreshPackageTrips } = require('../accounting/services/tripLinks');
 const { deleteOrder: deleteOrderWithLedger } = require('../accounting/services/orderDeletion');
 const { syncOrderDebtsOwner } = require('../utils/debts');
+const { normalizePackages, guardMeasures } = require('../utils/packageMeasures');
 const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
@@ -690,8 +691,11 @@ module.exports.createOrder = async (req, res, next) => {
       deliveredPackages: {
         weight: {
           total: data.deliveredPackages?.weight,
-          measureUnit: data.deliveredPackages?.measureUnit
+          measureUnit: data.deliveredPackages?.measureUnit,
+          ...(data.deliveredPackages?.actualWeight !== undefined && data.deliveredPackages?.actualWeight !== '' && { actual: Number(data.deliveredPackages.actualWeight) }),
         },
+        ...(data.deliveredPackages?.volumetric && { volumetric: data.deliveredPackages.volumetric }),
+        ...(Number(data.deliveredPackages?.domesticFee?.amount) > 0 && { domesticFee: data.deliveredPackages.domesticFee }),
         trackingNumber: data.deliveredPackages?.trackingNumber,
         originPrice: data.deliveredPackages.originPrice,
         exiosPrice: data.deliveredPackages.exiosPrice,
@@ -709,6 +713,8 @@ module.exports.createOrder = async (req, res, next) => {
       },
       note: data.note,
     }))
+    // Charged by volume: the chargeable weight; a transport fee in dinars gets its dollars
+    await normalizePackages(paymentList);
 
     const order = await Orders.create({
       ...req.body,
@@ -792,7 +798,7 @@ module.exports.createOrder = async (req, res, next) => {
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -909,6 +915,17 @@ module.exports.updateOrder = async (req, res, next) => {
 
     const oldOrder = await Orders.findOne({ _id: String(id) });
     if (!oldOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+
+    // A saved weight or volume is changed by an admin or the accountant only; the chargeable weight
+    // is worked out here (spec v8)
+    if (Array.isArray(req.body.paymentList)) {
+      try {
+        await guardMeasures(oldOrder, req.body.paymentList, req.user);
+        await normalizePackages(req.body.paymentList);
+      } catch (error) {
+        return next(new ErrorHandler(error.statusCode || 400, error.message));
+      }
+    }
 
     // The invoice date: admins only, and only until the invoice is confirmed
     let invoiceDate;
@@ -1086,6 +1103,14 @@ module.exports.updateSinglePackage = async (req, res, next) => {
     }
 
     let oldOrder = await Orders.findOne({ _id: String(id) });
+    if (req.body.paymentList) {
+      try {
+        await guardMeasures(oldOrder, [req.body.paymentList], req.user);
+        await normalizePackages([req.body.paymentList]);
+      } catch (error) {
+        return next(new ErrorHandler(error.statusCode || 400, error.message));
+      }
+    }
     const index = oldOrder.paymentList.findIndex(orderPackage => new ObjectId(req.body.paymentList._id).equals(new ObjectId(orderPackage._id)));
     if (index !== -1) {
       oldOrder.paymentList[index] = req.body.paymentList;

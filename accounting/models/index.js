@@ -81,6 +81,11 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   writeOffAfterDays: { type: Number, default: 180 },
   // No rate on or before an operation's day: use the first rate after it (marked on the entry)
   rateFallbackNext: { type: Boolean, default: true },
+  // Volumetric weight of a package = its CBM x this factor (KG per CBM); used when the package is
+  // marked "charged by volume"
+  volumetricFactor: { type: Number, default: 167 },
+  // A package that arrived and was not collected for this many days is listed as abandoned
+  abandonAfterDays: { type: Number, default: 365 },
   timezone: { type: String, default: 'Africa/Tripoli' },
   // Live posting of the system's own operations (deposits, orders, deliveries...). Off until the
   // historical migration is committed, so history and live never overlap.

@@ -119,14 +119,15 @@ async function tripSummary(tripId) {
   const packageRows = packageIds.length ? await ledgerBy(packageMatch, packageMatch, { packageId: '$lines.packageId' }) : [];
 
   const orders = packageIds.length ? await Order.find({ 'paymentList._id': { $in: packageIds.map(oid) } })
-    .select('orderId isCanceled paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean() : [];
+    .select('orderId isCanceled paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.volumetric').lean() : [];
   const wanted = new Set(packageIds.map(String));
   const packages = new Map();
   orders.forEach((order) => (order.paymentList || []).forEach((pkg) => {
     if (!wanted.has(String(pkg._id))) return;
     packages.set(String(pkg._id), {
       packageId: pkg._id, orderId: order._id, orderNumber: order.orderId, isCanceled: !!order.isCanceled, tracking: pkg.deliveredPackages?.trackingNumber, delivered: !!pkg.status?.received,
-      weight: Number(pkg.deliveredPackages?.weight?.total || 0), charge: Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100),
+      // The chargeable weight, and whether it is the volumetric one (spec v8)
+      weight: Number(pkg.deliveredPackages?.weight?.total || 0), volumetric: !!pkg.deliveredPackages?.volumetric?.enabled, actualWeight: pkg.deliveredPackages?.weight?.actual, charge: Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100),
       revenue: 0, deferred: 0, open: 0, cost: 0,
     });
   }));

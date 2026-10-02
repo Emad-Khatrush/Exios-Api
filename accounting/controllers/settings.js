@@ -29,7 +29,7 @@ module.exports.get = handle(async (req, res) => {
 
   res.json({
     setupDone: !!settings.setupCompletedAt,
-    settings: pick(settings, ['lockDate', 'historyStartDate', 'migrationDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'cutoffAt', 'timezone', 'setupCompletedAt', 'wizard', 'officeAliases']),
+    settings: pick(settings, ['lockDate', 'historyStartDate', 'migrationDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'volumetricFactor', 'abandonAfterDays', 'cutoffAt', 'timezone', 'setupCompletedAt', 'wizard', 'officeAliases']),
     roles,
     officeAccounts,
     eventJournals: { ...EVENT_JOURNALS, ...(settings.eventJournals || {}) },
@@ -37,7 +37,7 @@ module.exports.get = handle(async (req, res) => {
 });
 
 module.exports.update = handle(async (req, res) => {
-  const changes = pick(req.body, ['lockDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext']);
+  const changes = pick(req.body, ['lockDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'volumetricFactor', 'abandonAfterDays']);
   if (changes.lockDate !== undefined && changes.lockDate !== null && !isDay(changes.lockDate)) throw badRequest('تاريخ الإقفال غير صالح');
   if (changes.fiscalYearStartMonth !== undefined && !(changes.fiscalYearStartMonth >= 1 && changes.fiscalYearStartMonth <= 12)) {
     throw badRequest('شهر بداية السنة غير صالح');
@@ -45,6 +45,8 @@ module.exports.update = handle(async (req, res) => {
   if (changes.writeOffAfterDays !== undefined && !(Number.isInteger(Number(changes.writeOffAfterDays)) && Number(changes.writeOffAfterDays) >= 30)) {
     throw badRequest('عدد الأيام يجب أن يكون 30 أو أكثر');
   }
+  if (changes.volumetricFactor !== undefined && !(Number(changes.volumetricFactor) > 0)) throw badRequest('معامل الوزن الحجمي غير صالح');
+  if (changes.abandonAfterDays !== undefined && !(Number.isInteger(Number(changes.abandonAfterDays)) && Number(changes.abandonAfterDays) >= 30)) throw badRequest('عدد الأيام يجب أن يكون 30 أو أكثر');
   const settings = await AccountingSettings.findOne({ key: 'main' });
   const before = pick(settings.toObject(), Object.keys(changes));
   Object.assign(settings, changes);
