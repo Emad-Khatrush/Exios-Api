@@ -166,16 +166,16 @@ test('scenario 22/25: delete, archive and rename rules for accounts', async () =
 });
 
 test('scenario 19: new office and currency from the UI, then a deposit posts on them', async () => {
-  expect((await api('post', '/currencies').send({ code: 'AED', name: 'درهم إماراتي', decimals: 2 })).status).toBe(201);
-  const office = await api('post', '/offices').send({ code: 'misurata2', name: 'مصراتة 2', currencies: ['USD', 'AED'] });
+  expect((await api('post', '/currencies').send({ code: 'JOD', name: 'دينار أردني', decimals: 2 })).status).toBe(201);
+  const office = await api('post', '/offices').send({ code: 'misurata2', name: 'مصراتة 2', currencies: ['USD', 'JOD'] });
   expect(office.status).toBe(201);
 
   const offices = await api('get', '/offices');
   const created = offices.body.results.find((o) => o.code === 'misurata2');
   expect(created.cashAccounts).toHaveLength(2);
-  const aedCash = created.cashAccounts.find((a) => a.currency === 'AED');
+  const aedCash = created.cashAccounts.find((a) => a.currency === 'JOD');
 
-  await api('post', '/rates').send({ currency: 'AED', day: '2026-04-01', rate: 3.67 });
+  await api('post', '/rates').send({ currency: 'JOD', day: '2026-04-01', rate: 3.67 });
   const revenue = await account('410600');
   const res = await api('post', '/entries').send({
     date: '2026-04-01', description: 'إيداع',
@@ -186,7 +186,7 @@ test('scenario 19: new office and currency from the UI, then a deposit posts on 
   // manual entries go to the general journal; the new cash box has its own journal for its operations
   expect(res.body.number).toBe('JV/2026/000001');
   const journals = await api('get', '/journals');
-  expect(journals.body.results.map((j) => j.code)).toEqual(expect.arrayContaining(['CASH-MISURA-USD', 'CASH-MISURA-AED']));
+  expect(journals.body.results.map((j) => j.code)).toEqual(expect.arrayContaining(['CASH-MISURA-USD', 'CASH-MISURA-JOD']));
 });
 
 test('roles cannot point to an unsuitable account', async () => {

@@ -1,7 +1,7 @@
 const { startDb, stopDb, resetDb, oid } = require('./helpers');
 const { Account, Journal, AccountingSettings, Currency, AccountingOffice } = require('../models');
 const { runSetup } = require('../seed/setup');
-const { ROLE_DEFAULTS, ACCOUNTS } = require('../seed/defaults');
+const { ROLE_DEFAULTS, ACCOUNTS, CURRENCIES } = require('../seed/defaults');
 const UserStatement = require('../../models/userStatement');
 
 beforeAll(startDb);
@@ -18,7 +18,7 @@ describe('accounting setup (scenario 24)', () => {
     const report = await runSetup();
     expect(report.created.length).toBeGreaterThan(50);
     expect(await Account.countDocuments()).toBe(ACCOUNTS.length);
-    expect(await Currency.countDocuments()).toBe(5);
+    expect(await Currency.countDocuments()).toBe(CURRENCIES.length);
     expect(await AccountingOffice.countDocuments()).toBe(5);
 
     const settings = await AccountingSettings.findOne({ key: 'main' }).lean();

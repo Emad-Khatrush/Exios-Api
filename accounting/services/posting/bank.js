@@ -192,7 +192,8 @@ const CURRENCY_NAMES = {
   'chinese yuan': 'CNY', 'yuan renminbi': 'CNY', 'cny': 'CNY', 'try': 'TRY',
 };
 function paidAbroad(line, bankCurrency) {
-  const match = String(line.description || '').match(/\((-?[\d,]+\.\d{2}) ([^)]+)\)\s*$/);
+  // Two decimals, or three for the dinars of the Gulf (KWD, BHD, OMR)
+  const match = String(line.description || '').match(/\((-?[\d,]+\.\d{2,3}) ([^)]+)\)\s*$/);
   if (match) {
     const currency = CURRENCY_NAMES[match[2].trim().toLowerCase()];
     if (currency) return { amount: Number(match[1].replace(/,/g, '')), currency };
@@ -207,7 +208,7 @@ function paidAbroad(line, bankCurrency) {
 // For each statement line: the purchase cost typed on an order that is the same payment (same
 // amount and currency, bought within a week), when there is exactly one. Purchase costs already
 // linked to another line are not offered again.
-async function findLinks(bank, lines) {
+async function exactLinks(bank, lines) {
   const wanted = lines.map((line) => (line.amount < 0 ? paidAbroad(line, currencyOf(bank)) : null));
   const amounts = [...new Set(wanted.filter(Boolean).map((w) => w.amount))];
   if (!amounts.length) return lines.map(() => null);
@@ -228,6 +229,45 @@ async function findLinks(bank, lines) {
     const { order, item } = found[0];
     taken.add(String(item._id));
     return { orderId: order._id, orderNumber: order.orderId, itemId: item._id, itemDescription: item.description, amount: want.amount, currency: want.currency };
+  });
+}
+
+// Exact matches first (amount and currency), then the near dollar ones
+async function findLinks(bank, lines) {
+  return findNearLinks(bank, lines, await exactLinks(bank, lines));
+}
+
+// Lines the exact match left alone: a dollar purchase typed on an order whose amount is within 2%
+// of the line's dollars and bought within a week, when there is exactly one (spec 19.13)
+const NEAR = 0.02;
+async function findNearLinks(bank, lines, links) {
+  const bankCurrency = currencyOf(bank);
+  const wanted = lines.map((line, index) => {
+    if (links[index] || line.amount >= 0) return null;
+    const abroad = paidAbroad(line, bankCurrency);
+    if (abroad.currency === 'USD') return Math.abs(abroad.amount);
+    return null;
+  });
+  const values = wanted.filter(Boolean);
+  if (!values.length) return links;
+  const [orders, used] = await Promise.all([
+    Order.find({ isCanceled: { $ne: true }, $or: values.map((v) => ({ 'purchaseItems.unitPrice': { $gte: v * (1 - NEAR), $lte: v * (1 + NEAR) } })) })
+      .select('orderId placedAt purchaseItems').lean(),
+    BankStatementLine.distinct('purchaseItemId', { purchaseItemId: { $ne: null }, lineStatus: 'created_entry' }),
+  ]);
+  const taken = new Set([...used.map(String), ...links.filter(Boolean).map((l) => String(l.itemId))]);
+  const items = orders.flatMap((order) => (order.purchaseItems || []).filter((item) => !item.currency || item.currency === 'USD').map((item) => ({ order, item })));
+  return links.map((link, index) => {
+    const usd = wanted[index];
+    if (link || !usd) return link;
+    const line = lines[index];
+    const found = items.filter(({ item }) => !taken.has(String(item._id))
+      && Math.abs(Number(item.unitPrice) - usd) <= usd * NEAR
+      && (!item.date || dayDistance(new Date(item.date).toISOString().slice(0, 10), line.day) <= DUPLICATE_DAYS));
+    if (found.length !== 1) return null;
+    const { order, item } = found[0];
+    taken.add(String(item._id));
+    return { orderId: order._id, orderNumber: order.orderId, itemId: item._id, itemDescription: item.description, amount: Number(item.unitPrice), currency: 'USD', near: true };
   });
 }
 
@@ -444,13 +484,19 @@ async function postAsBill(line, bank, counter, link, input, { session, req }) {
 
   const vendor = await vendorNamed(vendorFor(input.vendorName, line, bank.name) || merchantOf(line.description), session);
   const description = input.label || line.description;
+  // Bought in another currency (KWD, OMR, EUR...): the bill is in that currency at the rate the
+  // bank's dollars give (original ÷ dollars), so it reads like the supplier's invoice (spec 19.13)
+  const original = abroad.currency !== 'USD' && abroad.currency !== bankCurrency && currencies.has(abroad.currency) && Math.abs(abroad.amount) > 0
+    ? { currency: abroad.currency, amount: Math.abs(abroad.amount), rate: Math.abs(abroad.amount) / usd }
+    : null;
+  const billAmount = original ? original.amount : usd;
   const billLine = input.billTarget
-    ? { description, amount: usd, ...input.billTarget }
+    ? { description, amount: billAmount, ...input.billTarget }
     : link?.orderId
-    ? { description, amount: usd, target: 'order', orderId: link.orderId }
-    : { description, amount: usd, target: 'expense', accountId: counter._id, office: input.office };
+    ? { description, amount: billAmount, target: 'order', orderId: link.orderId }
+    : { description, amount: billAmount, target: 'expense', accountId: counter._id, office: input.office };
   const bill = await payables.createBill({
-    vendorId: vendor._id, day: line.day, currency: 'USD', vendorRef: line.reference || undefined,
+    vendorId: vendor._id, day: line.day, currency: original ? original.currency : 'USD', ...(original && { rate: original.rate }), vendorRef: line.reference || undefined,
     note: `من كشف ${bank.name}${rate ? `، دُفعت ${paid} ${bankCurrency} بسعر ${rate.toFixed(4)}` : ''}`,
     idempotencyKey: `BANK_LINE_BILL:${line._id}${suffix}`, lines: [billLine],
   }, { session, req });

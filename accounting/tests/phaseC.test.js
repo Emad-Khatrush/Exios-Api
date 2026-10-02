@@ -101,3 +101,32 @@ test('C2: a supplier refund on a purchase: cost down by what came in, sale down 
   expect(await balanceOf('510400')).toBe(18000);
   expect((await Wallet.findOne({ user: customer, currency: 'USD' })).balance).toBe(0);
 });
+
+test('C3: a purchase in Kuwaiti dinars is billed in dinars at the bank dollars; a dollar purchase within 2% links to its order', async () => {
+  const bank = require('../services/posting/bank');
+  const { SupplierBill, BankStatementLine } = require('../models/documents');
+  const Order = require('../../models/order');
+  await CurrencyRate.create([{ currency: 'TRY', day: '2026-01-01', rate: 40 }]);
+  const lira = await account('110204');
+  const fees = await account('530800');
+  await tx((session) => bank.importLines(lira._id, [{ day: '2026-03-02', description: 'XCITE KW (12.500 Kuwaiti Dinar)', amount: -1640 }], { session, req }));
+  const kwLine = await BankStatementLine.findOne({ accountId: lira._id }).lean();
+  await tx((session) => bank.createEntryForLine(kwLine._id, { counterAccountId: fees._id, office: 'turkey', confirmNotDuplicate: true }, { session, req }));
+  const bill = await SupplierBill.findOne({ idempotencyKey: `BANK_LINE_BILL:${kwLine._id}` }).lean();
+  // 1640 lira at 40 = 41$; 12.500 KD ÷ 41$
+  expect(bill).toMatchObject({ currency: 'KWD', total: 12.5, totalUsd: 4100 });
+  expect(bill.rate).toBeCloseTo(12.5 / 41, 6);
+  expect(await getBalance(lira._id)).toEqual({ usd: -4100, foreign: -164000 });
+
+  // 101.50$ on the card, typed on the order as 100$ two days earlier: linked (within 2%)
+  const usdBank = await account('110205');
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'C3-1', user: oid(), placedAt: 'tripoli', isPayment: true, totalInvoice: 120, unsureOrder: false, isCanceled: false, paymentList: [],
+    purchaseItems: [{ _id: oid(), date: new Date('2026-03-08'), description: 'Amazon', unitPrice: 100, currency: 'USD' }], createdAt: new Date('2026-03-08'),
+  });
+  await tx((session) => bank.importLines(usdBank._id, [{ day: '2026-03-10', description: 'AMAZON US (101.50 US Dollar)', amount: -101.5 }], { session, req }));
+  const suggestions = await bank.suggestions(usdBank._id);
+  const [suggestion] = Object.values(suggestions);
+  expect(suggestion.link).toMatchObject({ orderNumber: 'C3-1', near: true });
+  expect(String(suggestion.link.orderId)).toBe(String(orderId));
+});

@@ -7,6 +7,14 @@ const CURRENCIES = [
   { code: 'CNY', name: 'يوان صيني', decimals: 2, symbol: '¥' },
   { code: 'TRY', name: 'ليرة تركية', decimals: 2, symbol: '₺' },
   { code: 'EUR', name: 'يورو', decimals: 2, symbol: '€' },
+  // Website purchases in the Gulf and the UK: supplier bills in the purchase's own currency (spec 19.13)
+  { code: 'KWD', name: 'دينار كويتي', decimals: 3, symbol: 'KD' },
+  { code: 'SAR', name: 'ريال سعودي', decimals: 2, symbol: 'SR' },
+  { code: 'AED', name: 'درهم إماراتي', decimals: 2, symbol: 'AED' },
+  { code: 'OMR', name: 'ريال عماني', decimals: 3, symbol: 'OMR' },
+  { code: 'BHD', name: 'دينار بحريني', decimals: 3, symbol: 'BD' },
+  { code: 'QAR', name: 'ريال قطري', decimals: 2, symbol: 'QR' },
+  { code: 'GBP', name: 'جنيه إسترليني', decimals: 2, symbol: '£' },
 ];
 
 const OFFICES = [
