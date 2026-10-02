@@ -241,7 +241,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       { new: true }
     );
     if (!wallet) throw new ErrorHandler(400, `Balance not enough for ${currency} payment`);
-    await Wallet.updateOne({ _id: wallet._id }, { balance: Math.max(0, roundToTwo(wallet.balance)) });
+    await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: Math.max(0, roundToTwo(wallet.balance)) });
 
     // FIX: Handle cases where there is no previous statement for this currency
     const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
@@ -423,7 +423,7 @@ async function refundWalletPayment(user, payment, description, note) {
     { new: true }
   );
   if (wallet) {
-    await Wallet.updateOne({ _id: wallet._id }, { balance: roundToTwo(wallet.balance) });
+    await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: roundToTwo(wallet.balance) });
   } else {
     await Wallet.create({ user: customerId, currency, balance: amount });
   }

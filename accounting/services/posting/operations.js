@@ -216,6 +216,7 @@ async function postStatement(statementId, options = {}) {
     const boxOffice = historical ? statementOffice : await cashOffice(statement.createdBy, statementOffice, session);
     const account = await resolveStaffCashAccount(boxOffice, currency, { historical });
     if (account) return account;
+    if (!historical && boxOffice) throw fail(`لا توجد خزينة ${currency} للمكتب ${boxOffice || '-'}. أضفها من المحاسبة ← المكاتب والخزائن ثم أعد المحاولة من الترحيل الحي.`);
     fallbacks.push(statementOffice ? `لا توجد خزينة ${currency} للمكتب ${statementOffice}` : 'العملية بدون مكتب؛ سُجّلت في حساب المعلّق حتى يحددها المحاسب');
     return getAccount((await resolveAccount('migration_suspense'))._id);
   };
@@ -363,6 +364,8 @@ async function postCashPayment(paymentId, options = {}) {
   const historical = !!options.isHistorical;
   const boxOffice = historical ? options.office : await cashOffice(payment.createdBy, options.office, session);
   let cash = await resolveStaffCashAccount(boxOffice, currency, { historical });
+  // Live: an office with no box in that currency waits, with the reason, until one is added
+  if (!cash && !historical && boxOffice) throw fail(`لا توجد خزينة ${currency} للمكتب ${boxOffice || '-'}. أضفها من المحاسبة ← المكاتب والخزائن ثم أعد المحاولة من الترحيل الحي.`);
   if (!cash) {
     fallbacks.push('الدفع النقدي على الطلب لا يحدد الخزينة؛ سُجّل في حساب المعلّق حتى يحددها المحاسب');
     cash = await getAccount((await resolveAccount('migration_suspense'))._id);

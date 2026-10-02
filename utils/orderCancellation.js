@@ -23,7 +23,7 @@ async function creditWallet(user, payment, description, note) {
   const amount = roundToTwo(Number(payment.receivedAmount || 0));
   const { currency } = payment;
   const wallet = await Wallet.findOneAndUpdate({ user: payment.customer, currency }, { $inc: { balance: amount } }, { new: true });
-  if (wallet) await Wallet.updateOne({ _id: wallet._id }, { balance: roundToTwo(wallet.balance) });
+  if (wallet) await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: roundToTwo(wallet.balance) });
   else await Wallet.create({ user: payment.customer, currency, balance: amount });
   const [last] = await UserStatement.find({ user: payment.customer, currency }).sort({ _id: -1 }).limit(1);
   const statement = await UserStatement.create({

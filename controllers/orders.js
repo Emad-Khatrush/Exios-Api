@@ -2038,6 +2038,10 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
     const id = req.params.id;
     const { receivedAmount, currency, createdAt, paymentType, customerId, category, list, rate } = req.body;
     const newList = JSON.parse(list);
+    // Money in another currency counts at its own rate; without one it cannot be valued (owner's rule)
+    if (currency && currency !== 'USD' && !(Number(rate) > 0)) {
+      return next(new ErrorHandler(400, `Type the exchange rate for a payment in ${currency}.`));
+    }
 
     const files = [];
     if (req.files) {

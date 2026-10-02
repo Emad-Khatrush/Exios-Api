@@ -134,7 +134,7 @@ async function createEquity(input, { session, req }) {
 async function moveWallet({ userId, currency, amount, description, note, createdBy, source }, session) {
   const wallet = await Wallet.findOneAndUpdate({ user: userId, currency }, { $inc: { balance: amount } }, { new: true, session });
   if (!wallet) await Wallet.create([{ user: userId, currency, balance: amount }], { session });
-  else await Wallet.updateOne({ _id: wallet._id }, { balance: Math.round(wallet.balance * 100) / 100 }, { session });
+  else await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: Math.round(wallet.balance * 100) / 100 }, { session });
   const [last] = await UserStatement.find({ user: userId, currency }).sort({ _id: -1 }).limit(1).session(session);
   const [statement] = await UserStatement.create([{
     user: userId, createdBy, createdAt: new Date(), description, note,

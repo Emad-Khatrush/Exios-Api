@@ -36,9 +36,10 @@ async function previousCustomers(order) {
 // Wallet lines of the previous customers that belong to this order
 async function movableStatements(orderId) {
   if (!mongoose.isValidObjectId(orderId)) throw new ErrorHandler(400, 'الطلب غير موجود');
-  const order = await Order.findById(orderId).select('orderId user').lean();
+  const order = await Order.findById(orderId).select('orderId user createdAt').lean();
   if (!order) throw new ErrorHandler(404, 'الطلب غير موجود');
   const previous = await previousCustomers(order);
+  const placeholders = (await User.find({ customerId: { $in: ['A000', 'a000'] } }).select('_id').lean()).map((u) => String(u._id));
   if (!previous.length) return { orderId: order.orderId, results: [] };
 
   const [payments, posted] = await Promise.all([
@@ -49,7 +50,12 @@ async function movableStatements(orderId) {
   const mention = new RegExp(escapeRegex(order.orderId), 'i');
   const statements = await UserStatement.find({
     user: { $in: previous.map(oid) },
-    $or: [{ _id: { $in: linked.map(oid) } }, { description: mention }, { note: mention }],
+    $or: [
+      { _id: { $in: linked.map(oid) } }, { description: mention }, { note: mention },
+      // A deposit to A000 rarely names the order: its deposits from a month before the order on are
+      // offered too, so the one this customer made can be moved with the payment it paid
+      { user: { $in: placeholders.map(oid) }, calculationType: '+', actionType: { $nin: ['cancellation', 'wallet'] }, createdAt: { $gte: new Date(new Date(order.createdAt || Date.now()).getTime() - 30 * 86400000) } },
+    ],
   }).sort({ createdAt: 1 }).populate('user', 'firstName lastName customerId').lean();
   return {
     orderId: order.orderId,
@@ -110,7 +116,11 @@ async function moveStatements(orderId, statementIds, req) {
       const [user, currency] = key.split('|');
       await rebuildTotals(oid(user), currency, opening, session);
       const wallet = await Wallet.findOne({ user, currency }).session(session);
-      if (wallet) await Wallet.updateOne({ _id: wallet._id }, { $set: { balance: round2(wallet.balance) } }, { session });
+      // Moving a payment without the deposit it was paid from would leave one wallet below zero
+      if (wallet && wallet.balance < -0.001) {
+        throw new ErrorHandler(400, `نقل هذه السطور يجعل محفظة ${currency} لأحد العميلين سالبة. انقل معها سطر الإيداع الذي دُفعت منه.`);
+      }
+      if (wallet) await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { $set: { balance: round2(wallet.balance) } }, { session });
     }
 
     let reposted = 0;

@@ -431,7 +431,7 @@ const adjustWalletBalance = async (userId, currency, delta) => {
   if (!wallet) return { before: null, after: null };
 
   const after = roundToTwo(wallet.balance);
-  await Wallet.updateOne({ _id: wallet._id }, { balance: after });
+  await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: after });
   return { before: roundToTwo(after - delta), after };
 }
 
@@ -464,6 +464,11 @@ module.exports.deleteStatement = async (req, res, next) => {
     const locked = protectedStatement(statement);
     if (locked) return next(new ErrorHandler(400, locked));
     await assertOpenPeriod(req.user, statement.createdAt);
+    // A deposit whose money was already spent cannot be taken back from the wallet
+    if (statement.calculationType === '+') {
+      const current = await Wallet.findOne({ user: id, currency: statement.currency }).lean();
+      if ((current?.balance || 0) - Number(statement.amount) < -0.001) return next(new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.'));
+    }
 
     const { currency } = statement;
     const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 });
@@ -506,7 +511,7 @@ module.exports.deleteStatement = async (req, res, next) => {
       }
     });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -555,6 +560,11 @@ module.exports.updateStatement = async (req, res, next) => {
     }
     // Neither the old date nor a new one may be in a closed period (owner excepted)
     await assertOpenPeriod(req.user, statement.createdAt);
+    // A deposit lowered below what was already spent from it would leave the wallet below zero
+    if (changes.amount !== undefined && statement.calculationType === '+') {
+      const current = await Wallet.findOne({ user: id, currency: statement.currency }).lean();
+      if ((current?.balance || 0) + (Number(changes.amount) - Number(statement.amount)) < -0.001) return next(new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.'));
+    }
     if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt);
 
     if (!String(changes.description ?? statement.description).trim()) {
@@ -619,7 +629,7 @@ module.exports.getDeletedStatements = async (req, res, next) => {
       hasMore: skip + results.length < totalCount,
     });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -752,7 +762,7 @@ module.exports.getPaymentRate = async (req, res, next) => {
   try {
     res.status(200).json({ limits: await lydRateLimits(req.query.date) });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
@@ -802,22 +812,16 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       }
     }
 
-    // Calculate new wallet balance with truncation to 2 decimals
-    const newBalance = truncateToTwo(wallet.balance - Number(amount));
-
-    // Update wallet with new balance
-    await Wallet.findOneAndUpdate(
-      {
-        user: id,
-        currency,
-      },
-      {
-        balance: newBalance
-      },
-      {
-        new: true,
-      }
+    // Deducted atomically and only if the balance still covers it: two payments at the same moment
+    // (a double click, two employees) cannot both spend the same money. It used to read the
+    // balance, subtract, and write the result, so the second payment overwrote the first.
+    const deducted = await Wallet.findOneAndUpdate(
+      { user: id, currency, balance: { $gte: truncateToTwo(Number(amount)) - 0.001 } },
+      { $inc: { balance: -truncateToTwo(Number(amount)) } },
+      { new: true },
     );
+    if (!deducted) return next(new ErrorHandler(400, 'Insufficient wallet balance'));
+    await Wallet.updateOne({ _id: deducted._id, balance: deducted.balance }, { balance: Math.max(0, Math.round(deducted.balance * 100) / 100) });
 
     const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
     const previousTotal = Number(lastUserStatement[0]?.total || 0);
@@ -878,7 +882,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       createdAt: userStatement.createdAt
     });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 

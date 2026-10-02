@@ -272,23 +272,22 @@ module.exports.createPaymentHistory = async (req, res, next) => {
       updateQuery.$set.status = 'waitingApproval';
     }
 
-    const balance = await Balance.findByIdAndUpdate({ _id: id }, updateQuery, { safe: true, upsert: true, new: true });
-    if (!balance) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
-
-    // Update the wallet balance (deducting payment amount)
-    const newWalletBalance = truncateToTwo(wallet.balance - Number(amount));
-    await Wallets.findOneAndUpdate(
-      {
-        user: existingBalance.owner._id,
-        currency,
-      },
-      {
-        balance: newWalletBalance
-      },
-      {
-        new: true,
-      }
+    // The wallet first, atomically and only if it still covers the payment; then the debt, only if
+    // nobody paid it in between (two payments at the same moment cannot both go through)
+    const deduct = truncateToTwo(Number(amount));
+    const deducted = await Wallets.findOneAndUpdate(
+      { user: existingBalance.owner._id, currency, balance: { $gte: deduct - 0.001 } },
+      { $inc: { balance: -deduct } },
+      { new: true },
     );
+    if (!deducted) return next(new ErrorHandler(400, 'Insufficient wallet balance'));
+    await Wallets.updateOne({ _id: deducted._id, balance: deducted.balance }, { balance: Math.max(0, Math.round(deducted.balance * 100) / 100) });
+
+    const balance = await Balance.findOneAndUpdate({ _id: id, amount: existingBalance.amount }, updateQuery, { new: true });
+    if (!balance) {
+      await Wallets.updateOne({ _id: deducted._id }, { $inc: { balance: deduct } });
+      return next(new ErrorHandler(409, 'This debt was just changed by someone else. Refresh and try again.'));
+    }
 
     const lastUserStatement = await UserStatement.find({ user: existingBalance.owner._id, currency }).sort({ _id: -1 }).limit(1);
     const previousTotal = Number(lastUserStatement[0]?.total || 0);
