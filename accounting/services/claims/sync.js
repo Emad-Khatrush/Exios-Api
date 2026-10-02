@@ -18,8 +18,8 @@ const { purchaseKey, shipmentKey, domesticFeeKey, isDomesticFeeKey, CLAIM_EVENTS
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 
-// Package charge in cents: weight x unit price (exiosPrice is per KG or CBM)
-const packageCharge = (pkg) => toMinor(Number(pkg?.deliveredPackages?.weight?.total || 0) * Number(pkg?.deliveredPackages?.exiosPrice || 0), 2);
+// Package charge in cents: weight x unit price (exiosPrice is per KG or CBM), as the system bills it
+const packageCharge = (pkg) => require('./keys').packageChargeCents(pkg);
 
 // Splits `total` over `weights` so the parts always add up to exactly `total`
 function allocate(total, weights) {
@@ -38,7 +38,7 @@ async function roleIds() {
     'customer_receivable', 'deferred_shipping_revenue', 'deferred_purchase_revenue', 'trip_cost_wip', 'purchase_cost_wip',
     'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices',
     'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices',
-    'revenue_remittance', 'cost_remittance',
+    'revenue_remittance', 'cost_remittance', 'rounding',
   ];
   const accounts = {};
   for (const role of roles) accounts[role] = await resolveAccount(role);
@@ -305,6 +305,24 @@ async function syncOrder(orderId, options = {}) {
       )));
       state.writtenOff.set(key, written - back);
       state.ar.set(key, (state.ar.get(key) || 0) + back);
+    }
+  }
+
+  // ---- 2c. Rounding (spec 2.5): a claim that was paid and is left a few cents over or under,
+  // because a payment covered several packages or dinars were turned into dollars at the payment's
+  // rate, is closed against the rounding account, so the customer owes nothing and has no credit
+  const ROUNDING_CENTS = 5;
+  if (active && partnerId) {
+    for (const key of keys) {
+      const open = state.ar.get(key) || 0;
+      const paidOn = (state.billed.get(key) || 0) - open - Math.max(state.writtenOff.get(key) || 0, 0);
+      if (!open || Math.abs(open) > ROUNDING_CENTS || paidOn <= 0) continue;
+      const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
+      const dims = { arKey: key, orderId: order._id, ...(packageId && { packageId: oid(packageId) }) };
+      posted.push(await post(ctx, 'ROUNDING', key, `فرق تقريب - طلب ${order.orderId}`, move(
+        -open, { accountId: a.customer_receivable._id, partnerId, ...dims }, { accountId: a.rounding._id, office, ...dims },
+      )));
+      state.ar.set(key, 0);
     }
   }
 

@@ -129,7 +129,7 @@ async function tripSummary(tripId) {
     packages.set(String(pkg._id), {
       packageId: pkg._id, orderId: order._id, orderNumber: order.orderId, isCanceled: !!order.isCanceled, tracking: pkg.deliveredPackages?.trackingNumber, delivered: !!pkg.status?.received,
       // The chargeable weight, and whether it is the volumetric one (spec v8)
-      weight: Number(pkg.deliveredPackages?.weight?.total || 0), volumetric: !!pkg.deliveredPackages?.volumetric?.enabled, actualWeight: pkg.deliveredPackages?.weight?.actual, charge: Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100),
+      weight: Number(pkg.deliveredPackages?.weight?.total || 0), volumetric: !!pkg.deliveredPackages?.volumetric?.enabled, actualWeight: pkg.deliveredPackages?.weight?.actual, charge: require('../claims/keys').packageChargeCents(pkg),
       revenue: 0, deferred: 0, open: 0, cost: 0,
     });
   }));

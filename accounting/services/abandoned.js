@@ -158,7 +158,7 @@ async function abandonedList() {
       results.push({
         orderId: order._id, orderNumber: order.orderId, customer: order.customerInfo?.fullName, packageId: pkg._id,
         tracking: pkg.deliveredPackages?.trackingNumber, arrived, status: state || 'waiting',
-        charge: Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100),
+        charge: require('./claims/keys').packageChargeCents(pkg),
       });
     }
   }

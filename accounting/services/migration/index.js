@@ -124,6 +124,45 @@ async function discardRun(runId, { user } = {}) {
 // Commit: live posting switches on first (new operations are queued from this instant), then the
 // replay catches up everything that happened since the dry run started. Both are idempotent, so
 // an operation seen by both is posted once.
+// Spec 8.1.1: entry numbers without gaps. Dry runs take numbers from the same journals as entries
+// made for real, so discarding one leaves holes; at commit every journal is numbered again in date
+// order, once, before anything is exported or printed. Two passes (temporary numbers first)
+// because numbers are unique. Live posting is paused meanwhile, so no entry takes a number in
+// between.
+async function renumberJournals() {
+  const { settings } = await require('../config').getConfig();
+  const wasLive = !!settings?.liveEnabled;
+  if (wasLive) await setSettings({ liveEnabled: false });
+  try {
+    const journals = await Journal.find({}).lean();
+    let changed = 0;
+    for (const journal of journals) {
+      const entries = await JournalEntry.find({ journalId: journal._id }).select('_id day number createdAt').sort({ day: 1, createdAt: 1, _id: 1 }).lean();
+      const next = new Map();
+      const plan = entries.map((entry) => {
+        const year = String(entry.day || '').slice(0, 4);
+        const key = journal.sequenceResetYearly ? year : '';
+        const seq = (next.get(key) || 0) + 1;
+        next.set(key, seq);
+        const padded = String(seq).padStart(6, '0');
+        return { _id: entry._id, from: entry.number, to: journal.sequenceResetYearly ? `${journal.sequencePrefix}/${year}/${padded}` : `${journal.sequencePrefix}/${padded}` };
+      }).filter((row) => row.from !== row.to);
+      if (plan.length) {
+        await JournalEntry.bulkWrite(plan.map((row) => ({ updateOne: { filter: { _id: row._id }, update: { $set: { number: `TMP:${row._id}` } } } })));
+        await JournalEntry.bulkWrite(plan.map((row) => ({ updateOne: { filter: { _id: row._id }, update: { $set: { number: row.to } } } })));
+        changed += plan.length;
+      }
+      await Counter.deleteMany({ _id: new RegExp(`^JE:${journal.code}(:|$)`) });
+      for (const [key, seq] of next) {
+        await Counter.updateOne({ _id: journal.sequenceResetYearly ? `JE:${journal.code}:${key}` : `JE:${journal.code}` }, { $set: { seq } }, { upsert: true });
+      }
+    }
+    return { changed };
+  } finally {
+    if (wasLive) await setSettings({ liveEnabled: true });
+  }
+}
+
 async function commitRun(runId, { user } = {}) {
   const run = await MigrationRun.findOne({ runId });
   if (!run) throw new ErrorHandler(404, 'التشغيل غير موجود');
@@ -139,10 +178,11 @@ async function commitRun(runId, { user } = {}) {
     // ones (an old statement edited during the review, say) stay in the queue and are posted.
     const covered = await markCovered(since);
     const catchUp = await replay(run, { since });
+    const numbering = await renumberJournals();
     run.status = 'committed';
     run.committedAt = new Date();
     run.message = `اعتُمد؛ أُضيفت ${catchUp.events} عملية حدثت أثناء المراجعة`;
-    run.report = { ...(run.report || {}), catchUp: { events: catchUp.events, walletDifferences: catchUp.walletDifferences.length, coveredEvents: covered }, committedBy: user?._id };
+    run.report = { ...(run.report || {}), catchUp: { events: catchUp.events, walletDifferences: catchUp.walletDifferences.length, coveredEvents: covered }, renumbered: numbering.changed, committedBy: user?._id };
     await run.save();
     return run;
   } catch (error) {
@@ -202,4 +242,4 @@ async function costTemplate() {
   ];
 }
 
-module.exports = { startRun, discardRun, commitRun, inventory, costTemplate, rebuildCounters };
+module.exports = { startRun, discardRun, commitRun, inventory, costTemplate, rebuildCounters, renumberJournals };

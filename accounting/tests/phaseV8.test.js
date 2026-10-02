@@ -384,3 +384,130 @@ test('H. a purchase typed once (50$) that the bank charged in two lira payments 
   expect(await balanceOf('130200')).toBe(0);
   expect(await getBalance(lira._id)).toEqual({ usd: 0, foreign: 0 });
 });
+
+test('6b. the owner\'s or accountant\'s cash follows the office on the operation, also after an edit; a clerk\'s stays in their office', async () => {
+  const customer = await newCustomer();
+  const accountantId = (await mongoose.connection.collection('users').insertOne({ firstName: 'محاسب', office: 'tripoli', roles: { isAccountant: true }, phone: 930000002 })).insertedId;
+  const dep = await UserStatement.create({ user: customer, createdBy: accountantId, description: 'إيداع', amount: 220, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-05') });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  expect(await balanceOf('110121')).toBe(22000);
+  // The office changed to Benghazi on the statement: the money moves to Benghazi's sub box
+  await UserStatement.updateOne({ _id: dep._id }, { $set: { office: 'benghazi' }, $push: { editHistory: { editedAt: new Date(), before: { office: 'tripoli' } } } });
+  await tx((session) => operations.repostStatement(dep._id, { session }));
+  expect(await balanceOf('110121')).toBe(0);
+  expect(await balanceOf('110123')).toBe(22000);
+  const posted = await JournalEntry.findOne({ eventKey: `DEPOSIT:${dep._id}:v2` }).lean();
+  expect(posted.lines.find((l) => l.debit).office).toBe('benghazi');
+});
+
+test('6c. an edited refund linked to an order stays on that order', async () => {
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [{ weight: 10, price: 10 }] });
+  await tx((session) => syncOrder(order._id, { session }));
+  const refund = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'ريفاند', amount: 30, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'refund', office: 'tripoli', createdAt: new Date('2026-03-06') });
+  const { emitAccountingEvent } = require('../services/events');
+  await emitAccountingEvent('statement', refund._id, { target: { orderId: order._id } });
+  await tx((session) => operations.postStatement(refund._id, { session, target: { orderId: order._id } }));
+  const expenseBefore = await balanceOf('520200');
+  await UserStatement.updateOne({ _id: refund._id }, { $set: { amount: 40 }, $push: { editHistory: { editedAt: new Date() } } });
+  await tx((session) => operations.repostStatement(refund._id, { session }));
+  // Not turned into a refund expense: still on the order's claim
+  expect(await balanceOf('520200')).toBe(expenseBefore);
+  const posted = await JournalEntry.findOne({ eventKey: `REFUND:${refund._id}:v2` }).lean();
+  expect(posted.lines.some((l) => l.arKey && l.debit === 4000)).toBe(true);
+});
+
+test('7. cancelling an order with payments gives everything back to the wallet; the supplier cost waits for the accountant', async () => {
+  const { returnOrderPayments } = require('../../utils/orderCancellation');
+  const { processQueue } = require('../services/events');
+  const OrderPaymentHistory = require('../../models/orderPaymentHistory');
+  const Wallet = require('../../models/wallet');
+  const { createBill } = require('../services/posting/payables');
+  const exceptions = require('../services/reports/exceptions');
+  const customer = await newCustomer();
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'CXL-1', user: customer, placedAt: 'tripoli', isPayment: true, isShipment: false, unsureOrder: false, isCanceled: false,
+    totalInvoice: 195, paymentList: [], createdAt: new Date('2026-03-01'),
+  });
+  await tx((session) => syncOrder(orderId, { session }));
+  // 190$ from the wallet, 5$ cash on the order
+  await Wallet.create({ user: customer, currency: 'USD', balance: 10 });
+  const paidFromWallet = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'خصم', amount: 190, currency: 'USD', total: 10, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-02') });
+  await tx((session) => operations.postStatement(paidFromWallet._id, { session, target: { orderId, category: 'invoice' } }));
+  await OrderPaymentHistory.create({ order: orderId, customer, createdBy: admin._id, paymentType: 'wallet', category: 'invoice', receivedAmount: 190, currency: 'USD', statementId: paidFromWallet._id, createdAt: new Date('2026-03-02') });
+  const cash = await OrderPaymentHistory.create({ order: orderId, customer, createdBy: admin._id, paymentType: 'cash', category: 'invoice', receivedAmount: 5, currency: 'USD', createdAt: new Date('2026-03-02') });
+  await tx((session) => operations.postCashPayment(cash._id, { session, office: 'tripoli' }));
+  const vendor = await Vendor.create({ name: '1688', type: 'supplier' });
+  await tx((session) => createBill({ vendorId: vendor._id, day: '2026-03-02', currency: 'USD', lines: [{ description: 'شراء', amount: 179.17, target: 'order', orderId }] }, { session, req }));
+  const boxBefore = await balanceOf('110121');
+
+  const order = await Order.findById(orderId).lean();
+  const returned = await returnOrderPayments(order, admin);
+  await Order.updateOne({ _id: orderId }, { $set: { isCanceled: true } });
+  await require('../services/events').emitAccountingEvent('order', orderId, {});
+  await processQueue();
+
+  expect(returned.map((r) => r.amount)).toEqual([190, 5]);
+  expect(await OrderPaymentHistory.countDocuments({ order: orderId })).toBe(0);
+  // The wallet got all 195$ back, in the system and in the books
+  expect((await Wallet.findOne({ user: customer, currency: 'USD' }).lean()).balance).toBe(205);
+  // Books: the 190$ taken (debit) and the 195$ given back (credit)
+  expect(await balanceOf('220100', { partnerId: customer })).toBe(19000 - 19500);
+  // Nothing left on the customer's claim; the 5$ cash stays in the box
+  expect(await balanceOf('121000', { arKey: `PUR:${orderId}` })).toBe(0);
+  expect(await balanceOf('110121')).toBe(boxBefore);
+  // The supplier cost waits on the order, listed for the accountant
+  expect(await balanceOf('130200', { orderId })).toBe(17917);
+  const check = await exceptions.CHECKS.canceledOrderCosts();
+  expect(check.items.map((i) => i.label)).toContain('CXL-1');
+});
+
+test('8. a dinar wallet payment counts at its own rate: on the statement, or on the payment it made (old data)', async () => {
+  const OrderPaymentHistory = require('../../models/orderPaymentHistory');
+  const customer = await newCustomer();
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'RATE-1', user: customer, placedAt: 'benghazi', isPayment: true, isShipment: false, unsureOrder: false, isCanceled: false,
+    totalInvoice: 70, paymentList: [], createdAt: new Date('2026-03-01'),
+  });
+  await tx((session) => syncOrder(orderId, { session }));
+  const dep = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'إيداع', amount: 665, currency: 'LYD', total: 665, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'benghazi', createdAt: new Date('2026-03-01') });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  // The statement has no rate (old screens); the payment it made says 9.5
+  const paid = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'خصم', amount: 665, currency: 'LYD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-02') });
+  await OrderPaymentHistory.create({ order: orderId, customer, createdBy: admin._id, paymentType: 'wallet', category: 'invoice', receivedAmount: 665, currency: 'LYD', rate: 9.5, statementId: paid._id, createdAt: new Date('2026-03-02') });
+  await tx((session) => operations.postStatement(paid._id, { session, target: { orderId, category: 'invoice' } }));
+  // 665 / 9.5 = 70$: the claim is fully paid, not at the day's rate of 10 (66.50$)
+  expect(await balanceOf('121000', { arKey: `PUR:${orderId}` })).toBe(0);
+  // The migration passes the rate it found on the matching payment
+  const other = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'خصم', amount: 95, currency: 'LYD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-03') });
+  await tx((session) => operations.postStatement(other._id, { session, target: { orderId, category: 'invoice', rate: 9.5 } }));
+  const entry = await JournalEntry.findOne({ eventKey: `WALLET_PAYMENT:${other._id}` }).lean();
+  expect(entry.lines.find((l) => l.arKey).credit).toBe(1000);
+});
+
+test('9. cancelling an old wallet payment with no link to its wallet line still reverses its entry exactly', async () => {
+  const { refundWalletPayment } = require('../../utils/helperApi');
+  const { processQueue } = require('../services/events');
+  const OrderPaymentHistory = require('../../models/orderPaymentHistory');
+  const Wallet = require('../../models/wallet');
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [{ weight: 3.05, price: 9.5, received: true }] });
+  await tx((session) => syncOrder(order._id, { session }));
+  // 305 LYD deposited at 10 (30.50$), the shipping paid at the payment's own rate 10.5281 (28.97$)
+  const dep = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'إيداع', amount: 305, currency: 'LYD', total: 305, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-01T10:00:00Z') });
+  await tx((session) => operations.postStatement(dep._id, { session }));
+  const paid = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'تم دفع قيمة الشحن', amount: 305, currency: 'LYD', total: 0, paymentType: 'wallet', calculationType: '-', createdAt: new Date('2026-03-02T10:00:00Z') });
+  await tx((session) => operations.postStatement(paid._id, { session, target: { orderId: order._id, packageIds: order.packageIds, category: 'receivedGoods', rate: 10.5281 } }));
+  await Wallet.create({ user: customer, currency: 'LYD', balance: 0 });
+  // The payment record from before the link existed: no statementId
+  const payment = await OrderPaymentHistory.create({ order: order._id, customer, createdBy: admin._id, paymentType: 'wallet', category: 'receivedGoods', receivedAmount: 305, currency: 'LYD', rate: 10.5281, list: order.packageIds.map((id) => ({ id })), createdAt: new Date('2026-03-02T10:00:30Z') });
+  const key = `SHP:${order._id}:${order.packageIds[0]}`;
+  expect(await balanceOf('121000', { arKey: key })).toBe(0);
+
+  await refundWalletPayment(admin, payment.toObject(), 'إلغاء', 'note');
+  await processQueue();
+  // Exactly the 28.97$ the payment counted for is owed again, and the wallet is back to its deposit
+  expect(await balanceOf('121000', { arKey: key })).toBe(2897);
+  const wallet = await getBalance((await account('220200'))._id, { partnerId: customer });
+  expect(wallet).toMatchObject({ foreign: -305000, usd: -3050 });
+});

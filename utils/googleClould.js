@@ -67,4 +67,4 @@ const deleteFromGoogleCloud = async (publicUrl) => {
   }
 };
 
-module.exports = { uploadToGoogleCloud, deleteFromGoogleCloud };
+module.exports = { storage, uploadToGoogleCloud, deleteFromGoogleCloud };

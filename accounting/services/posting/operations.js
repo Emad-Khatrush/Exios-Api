@@ -6,7 +6,7 @@ const OrderPaymentHistory = require('../../../models/orderPaymentHistory');
 const Order = require('../../../models/order');
 const Balance = require('../../../models/balance');
 const User = require('../../../models/user');
-const { JournalEntry } = require('../../models');
+const { JournalEntry, AccountingEvent } = require('../../models');
 const { postEntry } = require('../ledger');
 const { getConfig } = require('../config');
 const { walletRole, resolveCashAccount, resolveStaffCashAccount } = require('../roles');
@@ -94,6 +94,39 @@ async function officeOfCreator(userId, session) {
   return [user?.office, user?.city].find((code) => code && offices.has(code)) || null;
 }
 
+// The rate written on the operation: the statement's own, the one the migration found on the
+// matching payment, or the one on the payment this statement made
+async function operationRate(statement, options, session) {
+  if (Number(statement.rate) > 0) return Number(statement.rate);
+  if (Number(options.target?.rate) > 0) return Number(options.target.rate);
+  if (!statement.currency || statement.currency === 'USD') return undefined;
+  const payment = await OrderPaymentHistory.findOne({ statementId: statement._id }).select('rate').session(session).lean();
+  if (Number(payment?.rate) > 0) return Number(payment.rate);
+  // A debt paid from the wallet keeps its rate in the debt's own payment history: the payment of
+  // the same amount and currency closest in time
+  if (options.target?.balanceId) {
+    const balance = await Balance.findById(options.target.balanceId).select('paymentHistory').session(session).lean();
+    const time = new Date(statement.createdAt).getTime();
+    const match = (balance?.paymentHistory || [])
+      .filter((p) => Number(p.rate) > 0 && p.currency === statement.currency && Math.abs(Number(p.amount) - Number(statement.amount)) < 0.011)
+      .sort((a, b) => Math.abs(new Date(a.createdAt).getTime() - time) - Math.abs(new Date(b.createdAt).getTime() - time))[0];
+    if (match) return Number(match.rate);
+  }
+  return undefined;
+}
+
+// Whose office box live cash lands in (spec v8): a clerk's cash is in their own office, whatever
+// the screen says; the owner and the accountant record for any office, so the office written on
+// the operation decides (and changing it on the operation moves the money to that office's box)
+async function cashOffice(createdBy, recordOffice, session) {
+  if (createdBy && mongoose.isValidObjectId(String(createdBy))) {
+    const user = await User.findById(createdBy).select('roles').session(session || null).lean();
+    const { isOwner } = require('../access');
+    if (recordOffice && (user?.roles?.isAccountant || await isOwner({ _id: createdBy }))) return recordOffice;
+  }
+  return (await officeOfCreator(createdBy, session)) || recordOffice || null;
+}
+
 const DOMESTIC_NOTE = /نقل\s*داخلي|النقل\s*الداخلي|ديلفري|دليفري|delivery/i;
 
 const statementKind = (s) => {
@@ -125,9 +158,9 @@ async function postStatement(statementId, options = {}) {
   }
   const version = options.version ? `:v${options.version}` : '';
   const eventKey = `${kind}:${statement._id}${version}`;
-  if (await JournalEntry.exists({ eventKey }).session(session)) return { skipped: 'already posted' };
 
-  // A cancellation that gives back a known payment: its entry is reversed exactly
+  // A cancellation that gives back a known payment: its entry is reversed exactly. It posts no
+  // entry under eventKey; reversing is itself once only (a reversed entry is not reversed again).
   if (kind === 'SETTLEMENT_CANCEL' && options.reverses) {
     const reversals = await reverseSourceEntries('UserStatement', options.reverses, {
       session, user: options.user, reason: statement.description, migrationRunId: options.migrationRunId, isHistorical: options.isHistorical,
@@ -136,6 +169,7 @@ async function postStatement(statementId, options = {}) {
     for (const orderId of ordersOf(keys)) await syncOrder(orderId, { ...options, date: statement.createdAt });
     return { reversed: reversals.length };
   }
+  if (await JournalEntry.exists({ eventKey }).session(session)) return { skipped: 'already posted' };
 
   const { settings, offices } = await getConfig();
   const currency = CURRENCY_ALIASES[statement.currency] || statement.currency;
@@ -146,6 +180,9 @@ async function postStatement(statementId, options = {}) {
   const wallet = await resolveAccount(walletRole(currency));
   const partnerId = oid(statement.user);
   const fallbacks = [];
+  // The operation's own rate first (owner's rule): written on the statement, else on the payment
+  // it made (old wallet payments kept the rate on the payment only), else the day's system rate
+  const docRate = await operationRate(statement, options, session);
   // Old deposit screens did not save the office: the office of the staff member who entered the
   // statement (set in Accounting > Access, else the city on their account) stands for it
   const creatorOffice = statement.office ? null : await officeOfCreator(statement.createdBy, session);
@@ -157,12 +194,12 @@ async function postStatement(statementId, options = {}) {
   let affectedKeys = [];
 
   const walletIn = async () => {
-    const usd = await rates.toUsd(minor, currency, day, statement.rate);
+    const usd = await rates.toUsd(minor, currency, day, docRate);
     lines.push(moneyLine(wallet, 'credit', minor, usd, { partnerId, label: statement.description }));
     return usd;
   };
   const walletOut = async () => {
-    const usd = await valueOut(wallet, minor, { day, docRate: statement.rate, rates, partnerId });
+    const usd = await valueOut(wallet, minor, { day, docRate: docRate, rates, partnerId });
     lines.push(moneyLine(wallet, 'debit', minor, usd, { partnerId, label: statement.description }));
     return usd;
   };
@@ -174,10 +211,10 @@ async function postStatement(statementId, options = {}) {
       if (chosen?.isCash && chosen.isActive && (chosen.currency || 'USD') === currency) return chosen;
       fallbacks.push('الحساب المختار في الإيداع غير صالح لهذه العملة؛ استُخدمت خزينة المكتب');
     }
-    // Live: the sub cash box of the office of whoever entered it (spec v8); history: the main box
+    // Live: a sub cash box (see cashOffice); history: the main box of the statement's office
     const historical = !!options.isHistorical;
-    const staffOffice = historical ? null : await officeOfCreator(statement.createdBy, session);
-    const account = await resolveStaffCashAccount(staffOffice || statementOffice, currency, { historical });
+    const boxOffice = historical ? statementOffice : await cashOffice(statement.createdBy, statementOffice, session);
+    const account = await resolveStaffCashAccount(boxOffice, currency, { historical });
     if (account) return account;
     fallbacks.push(statementOffice ? `لا توجد خزينة ${currency} للمكتب ${statementOffice}` : 'العملية بدون مكتب؛ سُجّلت في حساب المعلّق حتى يحددها المحاسب');
     return getAccount((await resolveAccount('migration_suspense'))._id);
@@ -215,14 +252,14 @@ async function postStatement(statementId, options = {}) {
     await walletOut();
     const cash = await cashAccount();
     const cashUsd = cash.currency === currency
-      ? await valueOut(cash, minor, { day, docRate: statement.rate, rates })
-      : await rates.toUsd(minor, currency, day, statement.rate);
+      ? await valueOut(cash, minor, { day, docRate: docRate, rates })
+      : await rates.toUsd(minor, currency, day, docRate);
     lines.push(moneyLine(cash, 'credit', minor, cashUsd, { office, label: statement.description }));
   } else {
     // WALLET_PAYMENT: the claims are paid at the operation's rate; the wallet gives up the
     // dinars at its average rate; the difference is an exchange gain/loss (spec 2.4, E8)
     await walletOut();
-    const atRate = await rates.toUsd(minor, currency, day, statement.rate);
+    const atRate = await rates.toUsd(minor, currency, day, docRate);
     const keys = await resolveClaimKeys(options.target, session);
     if (keys.length) {
       const receivable = await resolveAccount('customer_receivable');
@@ -250,6 +287,28 @@ async function postStatement(statementId, options = {}) {
   await rates.lock();
 
   for (const orderId of ordersOf(affectedKeys)) await syncOrder(orderId, { ...options, date: day });
+  // A general debt paid and left a few cents over or under (dinars turned into dollars at the
+  // payment's rate) is closed on the rounding account, as order claims are (spec 2.5)
+  const generalKeys = affectedKeys.filter((key) => String(key).startsWith('GEN:'));
+  if (generalKeys.length) {
+    const open = await openBalances(generalKeys, session);
+    const lines = [];
+    for (const key of generalKeys) {
+      const left = open.get(key) || 0;
+      if (!left || Math.abs(left) > 5) continue;
+      const receivable = await resolveAccount('customer_receivable');
+      const rounding = await resolveAccount('rounding');
+      const claim = { accountId: receivable._id, partnerId, arKey: key, label: 'فرق تقريب' };
+      const other = { accountId: rounding._id, office, label: 'فرق تقريب' };
+      lines.push(...(left > 0 ? [{ ...other, debit: left }, { ...claim, credit: left }] : [{ ...claim, debit: -left }, { ...other, credit: -left }]));
+    }
+    if (lines.length) {
+      await postEntry({
+        eventType: 'ROUNDING', eventKey: `ROUNDING:${statement._id}${version}`, date: day, description: 'فرق تقريب على دين',
+        source: { model: 'UserStatement', id: statement._id }, isHistorical: !!options.isHistorical, migrationRunId: options.migrationRunId, lines,
+      }, { session, user: options.user });
+    }
+  }
   return { entryId: entry._id };
 }
 
@@ -259,7 +318,18 @@ async function repostStatement(statementId, options = {}) {
   const statement = await UserStatement.findById(statementId).session(session).lean();
   const reversals = await reverseSourceEntries('UserStatement', statementId, { session, user: options.user, reason: 'تعديل العملية' });
   if (!statement) return { reversed: reversals.length };
-  const result = await postStatement(statementId, { ...options, version: (statement.editHistory || []).length + 1 });
+  // The edit keeps what the line was for: the order or debt given when it was first recorded,
+  // else the claims its old entry touched (a refund linked to an order stays on that order)
+  const oldKeys = [...new Set(reversals.flatMap((r) => r.lines.map((l) => l.arKey).filter(Boolean)))];
+  let target = options.target;
+  if (!target) {
+    const first = await AccountingEvent.findOne({ type: 'statement', refId: statement._id }).sort({ createdAt: 1 }).session(session).lean();
+    target = first?.payload?.target;
+  }
+  if (!target && oldKeys.length) target = { arKeys: oldKeys };
+  const result = await postStatement(statementId, { ...options, target, version: (statement.editHistory || []).length + 1 });
+  // Orders the old entry touched are brought up to date too
+  for (const orderId of ordersOf(oldKeys)) await syncOrder(orderId, options);
   return { reversed: reversals.length, ...result };
 }
 
@@ -289,10 +359,10 @@ async function postCashPayment(paymentId, options = {}) {
   const usd = await rates.toUsd(minor, currency, day, payment.rate);
   const fallbacks = [];
 
-  // Live: the sub cash box of the office of whoever took the money (spec v8); history: the main box
+  // Live: a sub cash box (see cashOffice); history: the main box
   const historical = !!options.isHistorical;
-  const staffOffice = historical ? null : await officeOfCreator(payment.createdBy, session);
-  let cash = await resolveStaffCashAccount(staffOffice || options.office, currency, { historical });
+  const boxOffice = historical ? options.office : await cashOffice(payment.createdBy, options.office, session);
+  let cash = await resolveStaffCashAccount(boxOffice, currency, { historical });
   if (!cash) {
     fallbacks.push('الدفع النقدي على الطلب لا يحدد الخزينة؛ سُجّل في حساب المعلّق حتى يحددها المحاسب');
     cash = await getAccount((await resolveAccount('migration_suspense'))._id);
@@ -387,8 +457,11 @@ async function postDebtWriteOff(balanceId, options = {}) {
   const office = offices.has(balance.createdOffice) ? balance.createdOffice : settings.defaultOffice;
   const rates = new RateBook(session);
   const day = balance.manualClosure.closedAt || new Date();
-  const usd = await rates.toUsd(await toCurrencyMinor(amount, balance.currency), balance.currency, day);
   const keys = await resolveClaimKeys({ balanceId: balance._id }, session);
+  // A manual close writes off all that is left: its value is what the claim still holds (valued at
+  // the debt's and its payments' own rates); the day's rate only when nothing is left to read
+  const open = keys.length ? [...(await openBalances(keys, session)).values()].reduce((sum, v) => sum + Math.max(v, 0), 0) : 0;
+  const usd = open > 0 && balance.currency !== 'USD' ? open : await rates.toUsd(await toCurrencyMinor(amount, balance.currency), balance.currency, day);
   const receivable = await resolveAccount('customer_receivable');
   const lines = [{ accountId: (await resolveAccount('bad_debt_expense'))._id, debit: usd, office, label: balance.manualClosure.note }];
   if (keys.length) {

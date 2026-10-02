@@ -34,6 +34,15 @@ router.put('/access/members/:userId', ownerOnly, access.saveMember);
 // The office each staff member works in (their expenses are recorded on it)
 router.get('/access/staff', ownerOnly, handle(async (req, res) => res.json({ results: await staffOps.staffOffices() })));
 router.put('/access/staff/:userId', ownerOnly, handle(async (req, res) => res.json(await staffOps.setStaffOffice(req.params.userId, req.body?.office || null))));
+// Daily database backups in a private Google bucket (owner only): list, back up now, download link
+const backup = () => require('./services/backup');
+router.get('/backups', ownerOnly, handle(async (req, res) => res.json(await backup().overview())));
+router.post('/backups', ownerOnly, handle(async (req, res) => res.json(await backup().startManual(req.user))));
+router.post('/backups/download', ownerOnly, handle(async (req, res) => {
+  const url = await backup().downloadUrl(req.body?.name);
+  await require('./services/audit').logAudit({ req, action: 'backup_download', model: 'SystemBackup', after: { name: req.body?.name } });
+  res.json({ url });
+}));
 // Office expenses entered by staff on the system's Expenses screen, from every office
 router.get('/office-expenses', can('purchases', 'reports'), handle(async (req, res) => res.json(await staffOps.reviewOfficeExpenses(req.query))));
 

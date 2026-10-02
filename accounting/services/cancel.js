@@ -80,7 +80,26 @@ const RULES = {
       await require('./claims/sync').syncOrder(writeOff.orderId, { session: context.session, user: context.req?.user });
     },
   },
-  AccountingTreasuryTransfer: { Model: docs.TreasuryTransfer },
+  AccountingTreasuryTransfer: {
+    Model: docs.TreasuryTransfer,
+    // Spec 7-ج.6: cancelling takes the money back out of the receiving box; if it was spent since,
+    // the box would go below zero, so that needs an explicit confirmation
+    async check(transfer, { session, confirmNegative }) {
+      if (confirmNegative) return;
+      const { accountsById } = await require('./config').getConfig();
+      const to = accountsById.get(String(transfer.toAccountId));
+      if (!to || to.type !== 'asset') return;
+      const { getBalance } = require('./carrying');
+      const { toCurrencyMinor } = require('./posting/common');
+      const currency = to.currency || 'USD';
+      const balance = await getBalance(to._id, { session });
+      const have = currency === 'USD' ? balance.usd : balance.foreign;
+      const out = await toCurrencyMinor(transfer.toAmount, currency);
+      if (have - out < 0) {
+        throw fail(`الحساب المستلم «${to.name}» سيصبح سالباً بعد الإلغاء (صُرف منه بعد التحويل). أكّد الإلغاء للمتابعة.`);
+      }
+    },
+  },
   AccountingCashCount: { Model: docs.CashCount },
   AccountingSalaryPayment: { Model: docs.SalaryPayment },
   AccountingEquityTransaction: { Model: docs.EquityTransaction },

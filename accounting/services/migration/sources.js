@@ -103,11 +103,20 @@ async function loadSources(cutoff) {
   const matchPayment = (statement) => {
     const linked = paymentsByStatement.get(String(statement._id));
     if (linked) return linked;
+    // A deduction typed with no order ("Order Id (undefined)") paid no order; one that names an
+    // order is matched only to that order's payment
+    const named = String(statement.note || '').match(MANUAL_ORDER)?.[1]?.trim();
+    if (named === 'undefined' || named === 'null') return undefined;
+    const namedOrder = named ? ordersByNumber.get(named) : null;
     const candidates = walletPayments.get(`${statement.user}|${statement.currency}`) || [];
     const time = new Date(statement.createdAt).getTime();
-    const found = candidates.find((p) => !usedPayments.has(String(p._id))
-      && Math.abs(Number(p.receivedAmount) - Number(statement.amount)) < 0.011
-      && Math.abs(new Date(p.createdAt).getTime() - time) <= MATCH_WINDOW_MS);
+    // The closest in time first: two equal deductions minutes apart each take their own payment
+    const found = candidates
+      .filter((p) => !usedPayments.has(String(p._id))
+        && Math.abs(Number(p.receivedAmount) - Number(statement.amount)) < 0.011
+        && Math.abs(new Date(p.createdAt).getTime() - time) <= MATCH_WINDOW_MS
+        && (!namedOrder || String(p.order) === String(namedOrder._id)))
+      .sort((a, b) => Math.abs(new Date(a.createdAt).getTime() - time) - Math.abs(new Date(b.createdAt).getTime() - time))[0];
     if (found) usedPayments.add(String(found._id));
     return found;
   };
@@ -140,6 +149,19 @@ async function loadSources(cutoff) {
     && (statement.actionType === 'cancellation' || (!statement.actionType && (PAYMENT_CANCEL.test(String(statement.description || '')) || CANCELLATION_REFUND.test(String(statement.description || '')))));
 
   // Worked out once per statement (matching payments consumes them)
+  // What each debt has been paid so far in this run, in the debt's currency (statements are read in
+  // time order): a debt paid in full is not given a later payment that carries the same note
+  const debtPaid = new Map();
+  const pickDebt = (candidates, statement) => {
+    if (!candidates.length) return null;
+    const open = candidates.find((b) => (debtPaid.get(String(b._id)) || 0) < Number(b.initialAmount || b.amount || 0) - 0.005);
+    const debt = open || candidates[0];
+    const id = String(debt._id);
+    const amount = statement.currency === debt.currency ? Number(statement.amount || 0) : Number(debt.initialAmount || 0);
+    debtPaid.set(id, (debtPaid.get(id) || 0) + amount);
+    return debt;
+  };
+
   const targets = new Map();
   const statementTarget = (statement) => {
     const id = String(statement._id);
@@ -169,19 +191,28 @@ async function loadSources(cutoff) {
       const shipping = text.match(SHIPPING_PAYMENT);
       if (shipping) {
         const order = ordersByNumber.get(String(statement.note || '').trim());
-        const pkg = packageByTracking(order, shipping[1].trim());
-        if (order) return { orderId: order._id, packageIds: pkg ? [pkg._id] : undefined, category: 'receivedGoods' };
+        // The payment the delivery made names its package exactly and carries the rate the dinars
+        // were taken at; the tracking text is only a fallback (two packages can share one, "NIL")
+        const paid = order && matchPayment(statement);
+        const named = (paid?.list || []).map((p) => p?.id || p?._id).filter((id) => id && (order.paymentList || []).some((pkg) => String(pkg._id) === String(id)));
+        const pkg = named.length ? null : packageByTracking(order, shipping[1].trim());
+        if (order) return { orderId: order._id, packageIds: named.length ? named : pkg ? [pkg._id] : undefined, category: 'receivedGoods', ...(Number(paid?.rate) > 0 && { rate: Number(paid.rate) }) };
       }
       const payment = matchPayment(statement);
       if (payment?.order) {
-        return { orderId: payment.order, category: payment.category, packageIds: (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean) };
+        return { orderId: payment.order, category: payment.category, packageIds: (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean), ...(Number(payment.rate) > 0 && { rate: Number(payment.rate) }) };
       }
       const debtNote = String(statement.note || '').match(DEBT_PAYMENT);
       // A general debt is found by its note alone. Not when the statement says it paid an invoice
       // or received-goods debt: several debts can carry the same note, and that payment belongs
       // to the order, not to a general debt that happens to be named the same.
       if (/دفع دين/.test(text) && (!debtNote?.[1] || debtNote[1] === 'general')) {
-        const debt = generalDebts.find((b) => String(b.owner) === String(statement.user) && String(statement.note || '').includes(`#${b.notes}`));
+        // Many debts share one note ("7 AED paid in Dubai = 2$"): the order number written on the
+        // payment picks the right one, then the first one not paid in full yet
+        const paidOrder = debtNote?.[2] ? ordersByNumber.get(debtNote[2]) : null;
+        const sameNote = generalDebts.filter((b) => String(b.owner) === String(statement.user) && String(statement.note || '').includes(`#${b.notes}`));
+        const ofOrder = paidOrder ? sameNote.filter((b) => String(b.order) === String(paidOrder._id)) : [];
+        const debt = pickDebt(ofOrder.length ? ofOrder : sameNote, statement);
         if (debt) return { balanceId: debt._id };
       }
       // A debt paid from another customer's wallet, or a debt tied to an order: found by the
@@ -192,7 +223,8 @@ async function loadSources(cutoff) {
         const candidates = balances.filter((b) => String(b.notes ?? '') === notes
           && (!debtType || b.debtType === debtType)
           && (order ? String(b.order) === String(order._id) : !b.order));
-        const debt = candidates.find((b) => String(b.owner) === String(statement.user)) || candidates[0];
+        const own = candidates.filter((b) => String(b.owner) === String(statement.user));
+        const debt = pickDebt(own.length ? own : candidates, statement);
         if (debt) return { balanceId: debt._id };
         if (order) return { orderId: order._id, category: debtType === 'invoice' ? 'invoice' : undefined };
       }

@@ -8,6 +8,13 @@ const generalDebtKey = (balanceId) => `GEN:${balanceId}`;
 const domesticFeeKey = (orderId, packageId) => `SHP:${orderId}:${packageId}:DOM`;
 const isDomesticFeeKey = (arKey) => String(arKey || '').endsWith(':DOM');
 
+// A package's charge in cents: weight x unit price, rounded the way the system bills it at
+// delivery (toFixed(2)), so the claim is exactly what the customer is asked to pay
+const packageChargeCents = (pkg) => {
+  const charge = Number(pkg?.deliveredPackages?.weight?.total || 0) * Number(pkg?.deliveredPackages?.exiosPrice || 0);
+  return Math.round(Number(charge.toFixed(2)) * 100);
+};
+
 function parseKey(arKey) {
   const [kind, first, second] = String(arKey || '').split(':');
   if (kind === 'PUR') return { kind: 'purchase', orderId: first };
@@ -19,4 +26,4 @@ function parseKey(arKey) {
 // Entries that change how much a claim is (billing, re-pricing, edits, cancellation)
 const CLAIM_EVENTS = ['CLAIM', 'PURCHASE_BILLED', 'SHIPMENT_BILLED', 'SHIPMENT_REPRICE', 'AMOUNT_EDIT', 'ORDER_CANCEL', 'PACKAGE_REMOVE', 'GENERAL_DEBT'];
 
-module.exports = { purchaseKey, shipmentKey, generalDebtKey, domesticFeeKey, isDomesticFeeKey, parseKey, CLAIM_EVENTS };
+module.exports = { packageChargeCents, purchaseKey, shipmentKey, generalDebtKey, domesticFeeKey, isDomesticFeeKey, parseKey, CLAIM_EVENTS };

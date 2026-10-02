@@ -193,7 +193,7 @@ module.exports.createBalance = async (req, res, next) => {
 module.exports.createPaymentHistory = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { createdAt, rate, amount, currency, sameCurrency } = req.body;
+    const { createdAt, rate, amount, currency } = req.body;
 
     const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
 
@@ -250,7 +250,8 @@ module.exports.createPaymentHistory = async (req, res, next) => {
 
     let updatedAmount;
 
-    if (sameCurrency === 'false') {
+    // Worked out here, not taken from the screen: a payment in another currency is converted at its rate
+    if (currency !== existingBalance.currency) {
       const amountToDecrement = truncateToTwo(amount / rate);
       updatedAmount = truncateToTwo(existingBalance.amount - amountToDecrement);
     } else {

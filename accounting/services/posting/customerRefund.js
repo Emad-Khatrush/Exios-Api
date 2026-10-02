@@ -23,7 +23,10 @@ async function createCustomerRefund(input, { session, req }) {
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
   if (!mongoose.isValidObjectId(input.orderId)) throw fail('الطلب غير موجود');
   const order = await Order.findById(input.orderId).select('orderId user isPayment isCanceled placedAt').session(session).lean();
-  if (!order || order.isCanceled) throw fail('الطلب غير موجود أو ملغى');
+  if (!order) throw fail('الطلب غير موجود');
+  // A cancelled order gave the customer everything back already: what the supplier returns only
+  // lowers the cost left on the order (settling it), nothing more goes to the wallet
+  if (order.isCanceled && Number(input.walletUsd || 0) > 0) throw fail('الطلب ملغى وأُرجع للعميل كامل المدفوع. ما أعاده المورد يخفض تكلفة الطلب فقط: اجعل المضاف للمحفظة صفراً.');
   if (!order.isPayment) throw fail('الريفاند لفواتير الشراء فقط (مبلغ أعاده المورد على مشتريات الطلب)');
   const to = await getAccount(input.accountId, 'الحساب الذي دخل فيه المال');
   if (!to.isCash) throw fail('اختر الخزينة أو البنك الذي دخل فيه المال');

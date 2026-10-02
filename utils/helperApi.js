@@ -392,9 +392,27 @@ async function cleanUpInventory(selectedPackages) {
   );
 }
 
+// The wallet line a wallet payment took its money with. Payments saved before the link existed
+// are matched as the historical migration matches them: same customer, currency and amount, a
+// deduction within 10 minutes. Cancelling then reverses that line's entry exactly.
+async function statementOfPayment(payment) {
+  if (payment?.statementId) return payment.statementId;
+  if (!payment || payment.paymentType !== 'wallet') return undefined;
+  const time = new Date(payment.createdAt).getTime();
+  const candidates = await UserStatement.find({
+    user: payment.customer?._id || payment.customer, currency: payment.currency, calculationType: '-',
+    createdAt: { $gte: new Date(time - 10 * 60 * 1000), $lte: new Date(time + 10 * 60 * 1000) },
+  }).select('amount createdAt').lean();
+  const match = candidates
+    .filter((s) => Math.abs(Number(s.amount) - Number(payment.receivedAmount)) < 0.011)
+    .sort((a, b) => Math.abs(new Date(a.createdAt).getTime() - time) - Math.abs(new Date(b.createdAt).getTime() - time))[0];
+  return match?._id;
+}
+
 // Same steps as cancelling a wallet payment on an order: money back to the wallet,
 // a "+" cancellation statement, then the payment record is removed
 async function refundWalletPayment(user, payment, description, note) {
+  const reverses = await statementOfPayment(payment);
   const amount = roundToTwo(Number(payment.receivedAmount || 0));
   const customerId = payment.customer;
   const { currency } = payment;
@@ -424,11 +442,13 @@ async function refundWalletPayment(user, payment, description, note) {
     currency,
     total: roundToTwo(previousTotal + amount),
     note,
+    // The payment's own rate: the amount given back is worth what the payment counted for
+    ...(Number(payment.rate) > 0 && currency !== 'USD' && { rate: Number(payment.rate) }),
     actionType: 'cancellation',
   });
 
   await emitAccountingEvent('statement', refundStatement._id, {
-    reverses: payment.statementId,
+    reverses,
     target: { orderId: payment.order, category: payment.category, packageIds: (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
   }, user);
   await OrderPaymentHistory.deleteOne({ _id: payment._id });
@@ -437,6 +457,23 @@ async function refundWalletPayment(user, payment, description, note) {
 
 // The delivery creates the payments a moment before the invoice itself
 const INVOICE_PAYMENT_WINDOW_MS = 15 * 60 * 1000;
+
+// The delivery invoice a shipping payment belongs to (the same match cancelInvoicePackages makes),
+// or null. Such a payment is given back only by cancelling its invoice: deleting it alone would
+// leave the invoice saying the package was paid and handed over.
+async function deliveryInvoiceOf(payment, orderNumber) {
+  if (!payment || payment.category !== 'receivedGoods' || payment.paymentType !== 'wallet' || !orderNumber) return null;
+  const time = new Date(payment.createdAt).getTime();
+  const invoices = await Invoices.find({
+    isCanceled: { $ne: true },
+    'list.orderId': orderNumber,
+    createdAt: { $gte: new Date(time - 60 * 1000), $lte: new Date(time + INVOICE_PAYMENT_WINDOW_MS) },
+  }).select('referenceId list createdAt').lean();
+  const ids = new Set((payment.list || []).map((p) => String(p?.id || p?._id || '')).filter(Boolean));
+  const tracking = new Set((payment.list || []).map((p) => p?.trackingNumber).filter(Boolean));
+  return invoices.find((invoice) => (invoice.list || []).some((pkg) => pkg.orderId === orderNumber
+    && (ids.has(String(pkg.packageId || '')) || (pkg.trackingNumber && tracking.has(pkg.trackingNumber))))) || null;
+}
 
 async function cancelInvoicePackages(user, invoice) {
   const refunded = { USD: 0, LYD: 0 };
@@ -618,4 +655,4 @@ try {
 }
 
 module.exports = {
-  payFeesLYD, cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, calculateRate, withCalculatedRate };
+  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, calculateRate, withCalculatedRate };

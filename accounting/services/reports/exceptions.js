@@ -116,18 +116,27 @@ const CHECKS = {
   // 9. Paid more than billed
   async overpaid() {
     const { claims } = await receivables({});
-    const items = claims.filter((c) => c.open < 0 && c.arKey).map((c) => ({ label: `${c.orderNumber || c.arKey}${c.tracking ? ` · ${c.tracking}` : ''}`, usd: c.open, url: c.orderId ? `/invoice/${c.orderId}/edit` : null }));
+    // A payment on an inactive order is its own check (unsurePaid), not listed twice
+    const unsure = new Set((await Order.find({ unsureOrder: true }).select('_id').lean()).map((o) => String(o._id)));
+    const items = claims.filter((c) => c.open < 0 && c.arKey && !unsure.has(String(c.orderId))).map((c) => ({ label: `${c.orderNumber || c.arKey}${c.tracking ? ` · ${c.tracking}` : ''}`, usd: c.open, url: c.orderId ? `/invoice/${c.orderId}/edit` : null }));
     return result('overpaid', 'warn', 'مطالبة دُفع عليها أكثر من قيمتها', 'دفعة مكررة، أو سعر خُفّض بعد الدفع. الزائد يُعاد للعميل أو يُوجَّه لمطالبة أخرى.', items, '/accounting/reports?tab=receivables');
   },
 
-  // 11 + 7. Purchase orders sold with no cost, and costs stuck on cancelled orders
+  // 11. Purchase orders sold with no cost
   async purchases() {
     const { results } = await purchaseProfitability({});
-    const items = [
-      ...results.filter((r) => r.withoutCost).map((r) => ({ label: `${r.orderNumber} · بلا تكلفة`, usd: r.revenue, url: `/invoice/${r.orderId}/edit` })),
-      ...results.filter((r) => r.stuckCost).map((r) => ({ label: `${r.orderNumber} · طلب ملغى عليه تكلفة قيد التنفيذ`, usd: r.costInProgress, url: `/invoice/${r.orderId}/edit` })),
-    ];
-    return result('purchases', 'warn', 'فاتورة شراء مسددة بلا تكلفة، أو تكلفة على طلب ملغى', 'ربح 100% يعني غالباً فاتورة مورد لم تُدخل. تكلفة الطلب الملغى تُحمَّل خسارة أو تُنقل.', items, '/accounting/reports?tab=purchases');
+    const items = results.filter((r) => r.withoutCost).map((r) => ({ label: `${r.orderNumber} · بلا تكلفة`, usd: r.revenue, url: `/invoice/${r.orderId}/edit` }));
+    return result('purchases', 'warn', 'فاتورة شراء مسددة بلا تكلفة', 'ربح 100% يعني غالباً فاتورة مورد لم تُدخل.', items, '/accounting/reports?tab=purchases');
+  },
+
+  // 7. A cancelled order whose supplier cost is still waiting (owner's decision: the customer
+  // got everything back on cancelling; the cost waits here until the accountant settles it)
+  async canceledOrderCosts() {
+    const { results } = await purchaseProfitability({});
+    const items = results.filter((r) => r.stuckCost).map((r) => ({ label: r.orderNumber, usd: r.costInProgress, url: `/accounting/customer-invoices/${r.orderId}` }));
+    return result('canceledOrderCosts', 'warn', 'طلب ملغى عليه تكلفة مورد معلّقة',
+      'دُفع للمورد على طلب أُلغي. سوِّها من صفحة الطلب في المحاسبة: ما أعاده المورد يُسجَّل «ريفاند» بمبلغ محفظة صفر، أو إشعار دائن على فاتورة المورد، أو تُنقل التكلفة لطلب آخر بقيد يدوي (130200 من الطلب الملغى إلى الطلب الجديد).',
+      items, '/accounting/reports?tab=purchases');
   },
 
   // 12. Trips that arrived with no cost entered
@@ -214,13 +223,17 @@ const CHECKS = {
     const [statements, posted, fromInvoices] = await Promise.all([
       UserStatement.find({ calculationType: '-', amount: { $gt: 0 }, 'accountingSource.model': { $exists: false } }).select('_id user amount currency createdAt description').lean(),
       JournalEntry.aggregate([
-        { $match: { 'source.model': 'UserStatement', status: 'posted', reversalOf: null } },
-        { $group: { _id: '$source.id', count: { $sum: 1 } } },
+        // A rounding entry beside a debt payment is not a second posting of it
+        { $match: { 'source.model': 'UserStatement', reversalOf: null, eventType: { $ne: 'ROUNDING' } } },
+        { $group: { _id: '$source.id', count: { $sum: { $cond: [{ $eq: ['$status', 'posted'] }, 1, 0] } }, reversed: { $sum: { $cond: [{ $eq: ['$status', 'reversed'] }, 1, 0] } } } },
       ]),
       JournalEntry.countDocuments({ 'source.model': 'Invoice' }),
     ]);
     const counts = new Map(posted.map((row) => [String(row._id), row.count]));
-    const items = statements.filter((s) => (counts.get(String(s._id)) || 0) !== 1).map((s) => ({
+    // A payment cancelled later (given back to the wallet) keeps its line: its entry was reversed
+    // exactly, which is right; only "never posted" or "posted twice" is a problem
+    const cancelled = new Set(posted.filter((row) => !row.count && row.reversed).map((row) => String(row._id)));
+    const items = statements.filter((s) => (counts.get(String(s._id)) || 0) !== 1 && !cancelled.has(String(s._id))).map((s) => ({
       label: `${s.description || ''} · ${s.amount} ${s.currency}`, day: s.createdAt, note: counts.get(String(s._id)) ? `${counts.get(String(s._id))} قيود` : 'بلا قيد', url: `/user/${s.user}`,
     }));
     if (fromInvoices) items.unshift({ label: `${fromInvoices} قيد مصدره فاتورة تسليم (Invoice)`, note: 'لا يجوز: الخصم يُرحَّل من سطر الكشف' });
@@ -261,17 +274,21 @@ const CHECKS = {
     const ledger = await JournalEntry.aggregate([
       { $match: { 'lines.accountId': receivable } }, { $unwind: '$lines' },
       { $match: { 'lines.accountId': receivable, 'lines.orderId': { $ne: null }, 'lines.arKey': { $ne: null } } },
-      { $group: { _id: { orderId: '$lines.orderId', kind: { $substrCP: ['$lines.arKey', 0, 3] } }, open: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+      { $group: { _id: { orderId: '$lines.orderId', kind: { $substrCP: ['$lines.arKey', 0, 3] } }, open: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } },
+        // What the migration moved to other revenue as paid beyond the claim (decision 77, reviewed
+        // in its report): known, so it is not shown here again
+        overpaidMoved: { $sum: { $cond: [{ $regexMatch: { input: '$eventKey', regex: '^OVERPAID:' } }, { $subtract: ['$lines.debit', '$lines.credit'] }, 0] } } } },
     ]);
     const byOrder = new Map();
     ledger.forEach((row) => {
       const entry = byOrder.get(String(row._id.orderId)) || { PUR: 0, SHP: 0 };
       entry[row._id.kind] = (entry[row._id.kind] || 0) + row.open;
+      entry[`${row._id.kind}moved`] = (entry[`${row._id.kind}moved`] || 0) + row.overpaidMoved;
       byOrder.set(String(row._id.orderId), entry);
     });
     const ids = [...byOrder.keys()].filter(mongoose.isValidObjectId).map(oid);
     const [orders, payments] = await Promise.all([
-      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.domesticFee').lean(),
+      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true }, unsureOrder: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.domesticFee').lean(),
       OrderPaymentHistory.find({ order: { $in: ids } }).select('order category currency receivedAmount rate').lean(),
     ]);
     const paid = new Map();
@@ -286,12 +303,15 @@ const CHECKS = {
       const books = byOrder.get(String(order._id));
       const system = {
         PUR: order.isPayment ? Math.round(Number(order.totalInvoice || 0) * 100) - (paid.get(`${order._id}|PUR`) || 0) : 0,
-        SHP: (order.paymentList || []).reduce((sum, pkg) => sum + Math.round(Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) * 100) + Math.round(Number(pkg.deliveredPackages?.domesticFee?.usd || 0) * 100), 0)
+        SHP: (order.paymentList || []).reduce((sum, pkg) => sum + require('../claims/keys').packageChargeCents(pkg) + Math.round(Number(pkg.deliveredPackages?.domesticFee?.usd || 0) * 100), 0)
           - (paid.get(`${order._id}|SHP`) || 0),
       };
       ['PUR', 'SHP'].forEach((kind) => {
         const difference = (books[kind] || 0) - system[kind];
-        if (Math.abs(difference) > tolerance) {
+        // Paid beyond the claim and moved to other revenue (decision 77): the system may count that
+        // payment (it shows the excess) or not (a dinar payment with no rate); either agrees
+        const beforeMove = difference - (books[`${kind}moved`] || 0);
+        if (Math.abs(difference) > tolerance && Math.abs(beforeMove) > tolerance) {
           items.push({ label: `${order.orderId} · ${kind === 'PUR' ? 'فاتورة شراء' : 'شحن'}`, usd: difference, note: `الدفاتر ${(books[kind] || 0) / 100}$ · المنظومة ${system[kind] / 100}$`, url: `/invoice/${order._id}/edit` });
         }
       });

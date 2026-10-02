@@ -20,10 +20,11 @@ const { emitAccountingEvent, emitOrdersByNumber } = require('../accounting/servi
 const { refreshPackageTrips } = require('../accounting/services/tripLinks');
 const { deleteOrder: deleteOrderWithLedger } = require('../accounting/services/orderDeletion');
 const { syncOrderDebtsOwner } = require('../utils/debts');
+const { returnOrderPayments } = require('../utils/orderCancellation');
 const { normalizePackages, guardMeasures } = require('../utils/packageMeasures');
 const roundFee = (n) => Math.round(n * 100) / 100;
 const { payFeesLYD } = require('../utils/helperApi');
-const { cancelInvoicePackages, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
+const { cancelInvoicePackages, deliveryInvoiceOf, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -868,22 +869,26 @@ module.exports.cancelOrder = async (req, res, next) => {
       query = { _id: id };
     }
 
-    const updateQuery = {
+    const existing = await Orders.findOne(query).lean();
+    if (!existing) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+    // Everything paid on the order goes back to the customer's wallet (owner's decision). Also
+    // works on an order cancelled before this rule, to give its payments back.
+    const returned = await returnOrderPayments(existing, req.user);
+
+    const updateQuery = existing.isCanceled ? {} : {
       isCanceled: true,
       cancelation: {
         reason: req.body.cancelationReason
       }
     }
 
-    const order = await Orders.findOneAndUpdate(query, updateQuery, { new: true }).populate('madeBy');
-
-    if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+    const order = await Orders.findOneAndUpdate({ _id: existing._id }, updateQuery, { new: true }).populate('madeBy');
     await emitAccountingEvent('order', order._id, {}, req.user);
-    
-    res.status(200).json(order);
+
+    res.status(200).json({ ...order.toObject(), returned });
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
 }
 
@@ -2012,7 +2017,11 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
           d.flight = inventory;
         }
       }
-      return data; // Return the updated payment data
+      // A delivery payment is cancelled with its invoice only, not from the order page
+      const invoice = await deliveryInvoiceOf(data, data.order?.orderId);
+      const result = data.toObject();
+      if (invoice) result.deliveryInvoice = { _id: invoice._id, referenceId: invoice.referenceId };
+      return result;
     }));
 
     res.status(200).json({
@@ -2051,7 +2060,7 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       attachments: files,
       paymentType,
       receivedAmount,
-      rate: Number(rate),
+      rate: Number(rate) || 0,
       currency,
       createdAt,
     };

@@ -158,7 +158,7 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
     const costInProgress = sum(books, WIP);
     const billed = recognized + deferred;
     const paid = billed - open;
-    const shipping = (order.paymentList || []).reduce((total, pkg) => total + Number(pkg.deliveredPackages?.weight?.total || 0) * Number(pkg.deliveredPackages?.exiosPrice || 0) + Number(pkg.deliveredPackages?.domesticFee?.usd || 0), 0);
+    const shipping = (order.paymentList || []).reduce((total, pkg) => total + require('../claims/keys').packageChargeCents(pkg) / 100 + Number(pkg.deliveredPackages?.domesticFee?.usd || 0), 0);
     let state = 'none';
     if (order.isDeleted) state = 'deleted';
     else if (order.isCanceled) state = 'canceled';

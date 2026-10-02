@@ -22,6 +22,8 @@ async function initAccounting() {
   }
   startWorker();
   startDailyReconciliation();
+  // The whole database, once a day, to the private backup bucket (only when BACKUP_BUCKET is set)
+  require('./services/backup').startDailyBackup();
 }
 
 // Spec 10: the reconciliation runs once a day (checked every hour, so a server that was down at

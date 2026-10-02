@@ -14,6 +14,7 @@ const { lydRateLimits } = require('../accounting/services/walletRate');
 const { assertOpenPeriod } = require('../accounting/services/periodGuard');
 const { moneyAccount } = require('../accounting/services/moneyAccounts');
 const { payOrderDebts, restoreOrderDebts } = require('../utils/debts');
+const { deliveryInvoiceOf, statementOfPayment } = require('../utils/helperApi');
 
 module.exports.getUserWallet = async (req, res, next) => {
   try {
@@ -311,7 +312,14 @@ module.exports.cancelPayment = async (req, res, next) => {
 
   try {
     const savedPayment = await OrderPaymentHistory.findById(payment._id).lean();
+    if (!savedPayment) return next(new ErrorHandler(404, 'Payment not found'));
     await assertOpenPeriod(req.user, savedPayment?.createdAt);
+    // A delivery payment is given back by cancelling its invoice, once, with the package status
+    const orderOfPayment = await Order.findById(savedPayment.order).select('orderId').lean();
+    const invoice = await deliveryInvoiceOf(savedPayment, orderOfPayment?.orderId);
+    if (invoice) {
+      return next(new ErrorHandler(400, `هذه دفعة فاتورة التسليم رقم #0${invoice.referenceId}. ألغِ الفاتورة نفسها من صفحة الفواتير، فترجع القيمة للمحفظة مرة واحدة ويعود الطرد غير مستلم.`));
+    }
     if (payment.paymentType !== 'wallet') {
       await emitAccountingEvent('cashPaymentDeleted', payment._id, {}, req.user);
       await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
@@ -345,10 +353,13 @@ module.exports.cancelPayment = async (req, res, next) => {
       total,
       note: `${payment.category} Cancellation Refund`,
       attachments: payment.attachments,
+      // The payment's own rate: the amount given back is worth what the payment counted for
+      ...(Number(savedPayment.rate) > 0 && payment.currency !== 'USD' && { rate: Number(savedPayment.rate) }),
       actionType: 'cancellation',
     });
     await emitAccountingEvent('statement', userStatement._id, {
-      reverses: savedPayment?.statementId,
+      // Old payments have no link to their wallet line: it is found, so the reversal is exact
+      reverses: await statementOfPayment(savedPayment),
       target: { orderId: savedPayment?.order, category: savedPayment?.category, packageIds: (savedPayment?.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
     }, req.user);
     await restoreOrderDebts(savedPayment?.debtPayments);
@@ -424,6 +435,24 @@ const adjustWalletBalance = async (userId, currency, delta) => {
   return { before: roundToTwo(after - delta), after };
 }
 
+// Incoming lines whose journal entry is not a plain deposit, so this screen cannot re-post them:
+// a payment given back to the wallet (its entry reverses that exact payment) and a line the
+// accounting wrote itself (a refund or netting made from its own document). Changing them here
+// would leave the wallet and the books apart.
+const PAYMENT_RETURN = /الغاء عملية الدفع كود|واسترجاع قيمة شحن\s+.+?\s+إلى المحفظة/;
+const RETURN_ACTIONS = ['cancellation', 'wallet'];
+const protectedStatement = (statement) => {
+  if (statement.accountingSource?.model) {
+    return 'This line was written by Accounting (for example a refund on the order page). Cancel it where it was made.';
+  }
+  if (RETURN_ACTIONS.includes(statement.actionType) || (!statement.actionType && PAYMENT_RETURN.test(String(statement.description || '')))) {
+    return 'This line gives a cancelled payment back to the wallet. Its amount, date, office and type cannot be changed, and it cannot be deleted.';
+  }
+  return null;
+};
+// The fields the journal entry is made from: changing only the text does not re-post it
+const POSTED_STATEMENT_FIELDS = ['createdAt', 'amount', 'office', 'actionType'];
+
 module.exports.deleteStatement = async (req, res, next) => {
   try {
     const { statementId, id } = req.params;
@@ -432,6 +461,8 @@ module.exports.deleteStatement = async (req, res, next) => {
     if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
     // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
     if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
+    const locked = protectedStatement(statement);
+    if (locked) return next(new ErrorHandler(400, locked));
     await assertOpenPeriod(req.user, statement.createdAt);
 
     const { currency } = statement;
@@ -515,6 +546,13 @@ module.exports.updateStatement = async (req, res, next) => {
     if (!Object.keys(changes).length) {
       return res.status(200).json({ results: statement });
     }
+    const postedChanged = POSTED_STATEMENT_FIELDS.some((field) => field in changes);
+    const locked = protectedStatement(statement);
+    if (locked && postedChanged) return next(new ErrorHandler(400, locked));
+    // A deposit cannot be turned into a payment given back: that kind reverses a payment
+    if (RETURN_ACTIONS.includes(changes.actionType) || changes.actionType === 'withdrawal') {
+      return next(new ErrorHandler(400, 'An incoming line can only be cash, bank, refund or compensation. A payment given back or a withdrawal is made by its own action.'));
+    }
     // Neither the old date nor a new one may be in a closed period (owner excepted)
     await assertOpenPeriod(req.user, statement.createdAt);
     if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt);
@@ -546,7 +584,8 @@ module.exports.updateStatement = async (req, res, next) => {
       openingBalance
     );
 
-    await emitAccountingEvent('statementUpdated', statement._id, {}, req.user);
+    // Re-posted (old entry reversed, new one posted) only when something it is made from changed
+    if (postedChanged) await emitAccountingEvent('statementUpdated', statement._id, {}, req.user);
     const updated = await UserStatement.findById(statement._id).populate('user');
     res.status(200).json({ results: updated });
   } catch (error) {
