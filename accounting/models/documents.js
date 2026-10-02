@@ -86,6 +86,9 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
   payableAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   isHistorical: { type: Boolean, default: false },
   migrationRunId: String,
+  // Paid before the count day, out of cash the count already left out (spec v8): posted against the
+  // opening balance, so the boxes counted on that day are not reduced a second time
+  paidBeforeCount: { type: Boolean, default: false },
   // Entered through the quick expense screen
   isQuickExpense: { type: Boolean, default: false },
   // Entered by office staff on the system's Expenses screen (spec 19.1): their office, the type

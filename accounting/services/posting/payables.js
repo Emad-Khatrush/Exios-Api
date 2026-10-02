@@ -88,6 +88,14 @@ async function validateBillInput(input, session) {
     }
   }
 
+  if (input.paidBeforeCount) {
+    const { settings } = await require('../config').getConfig();
+    if (!settings?.cutoffAt) throw fail('«دُفع قبل يوم الجرد» بعد اعتماد الترحيل التاريخي فقط؛ قبله أدخل المصروف عادياً ويدخل في التشغيل التجريبي');
+    const countDay = require('../dates').toDay(settings.cutoffAt);
+    if (input.day > countDay) throw fail(`«دُفع قبل يوم الجرد» لمصروف بتاريخ ${countDay} أو قبله`);
+    if (input.paidImmediatelyFrom || input.isCreditNote) throw fail('المصروف المدفوع قبل يوم الجرد لا يُدفع من خزينة ولا يكون إشعاراً دائناً');
+  }
+
   if (input.isCreditNote) {
     const original = await SupplierBill.findById(input.originalBillId).session(session);
     if (!original || original.status !== 'posted' || original.isCreditNote) throw fail('اختر الفاتورة الأصلية المُرحَّلة');
@@ -193,6 +201,10 @@ async function postBill(bill, { session, user, sync }) {
       .reduce((sum, note) => sum + (note.totalUsd || 0), 0);
     if (totalUsd > original.totalUsd - alreadyCredited) throw fail('مبلغ الإشعار الدائن أكبر من المتبقي من الفاتورة الأصلية');
     lines.push({ accountId: payable._id, debit: totalUsd, vendorId: vendor._id, apKey, label: `إشعار دائن على ${original.number}${originalOpen < totalUsd ? ' (مستحق لنا من المورد)' : ''}` });
+  } else if (bill.paidBeforeCount) {
+    // Paid before the count day: the counted boxes already lack this money, so it comes out of the
+    // opening balance instead of a box (spec v8)
+    lines.push({ accountId: (await resolveAccount('opening_balance'))._id, credit: totalUsd, label: `دُفع قبل يوم الجرد - ${vendor.name}` });
   } else {
     lines.push({ accountId: payable._id, credit: totalUsd, vendorId: vendor._id, apKey, label: `فاتورة ${vendor.name}${bill.vendorRef ? ` رقم ${bill.vendorRef}` : ''}` });
   }
@@ -244,7 +256,7 @@ async function postBill(bill, { session, user, sync }) {
   return bill;
 }
 
-const BILL_FIELDS = ['vendorId', 'vendorRef', 'day', 'currency', 'rate', 'lines', 'isCreditNote', 'originalBillId', 'paidImmediatelyFrom', 'employeeId', 'note', 'attachments', 'isQuickExpense', 'isHistorical', 'migrationRunId', 'officeExpense', 'office', 'expenseTypeId', 'enteredFrom', 'replaces'];
+const BILL_FIELDS = ['vendorId', 'vendorRef', 'day', 'currency', 'rate', 'lines', 'isCreditNote', 'originalBillId', 'paidImmediatelyFrom', 'employeeId', 'note', 'attachments', 'isQuickExpense', 'isHistorical', 'migrationRunId', 'officeExpense', 'office', 'expenseTypeId', 'enteredFrom', 'replaces', 'paidBeforeCount'];
 
 // `sync` carries the historical replay's context (as-of view of orders) to the order/trip sync
 async function createBill(input, { session, req, asDraft = false, sync }) {

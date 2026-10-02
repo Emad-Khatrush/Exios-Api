@@ -14,7 +14,7 @@ const { postEntry } = require('../ledger');
 const { isDay } = require('../dates');
 const { logAudit } = require('../audit');
 const { purchaseKey } = require('../claims/keys');
-const { fail, currencyOf, getAccount, toCurrencyMinor, moneyLine, nextDocNumber, findExisting, resolveAccount } = require('./common');
+const { fail, currencyOf, getAccount, toCurrencyMinor, moneyLine, nextDocNumber, findExisting, resolveAccount, RateBook } = require('./common');
 const { moveWallet } = require('./people');
 
 async function createCustomerRefund(input, { session, req }) {
@@ -30,9 +30,12 @@ async function createCustomerRefund(input, { session, req }) {
   const currency = currencyOf(to);
   const minor = await toCurrencyMinor(input.amount, currency);
   if (!minor) throw fail('المبلغ المستلم مطلوب');
-  // The dollars the bank says it is worth; on a dollar account it is the amount itself
-  const usd = currency === 'USD' ? minor : Math.round(Number(input.usdValue) * 100);
-  if (!(usd > 0)) throw fail('اكتب قيمته الحقيقية بالدولار كما في كشف البنك');
+  // Its dollars: the amount itself on a dollar account, else the day's rate (owner's decision: the
+  // amount received and what goes to the wallet are enough; a dollar value may still be given)
+  const rates = new RateBook(session);
+  const usd = currency === 'USD' ? minor
+    : Number(input.usdValue) > 0 ? Math.round(Number(input.usdValue) * 100) : await rates.toUsd(minor, currency, input.day);
+  if (!(usd > 0)) throw fail('تعذّر تقييم المبلغ بالدولار؛ أدخل سعر اليوم لهذه العملة');
   const walletUsd = Math.round(Number(input.walletUsd || 0) * 100);
   if (walletUsd < 0) throw fail('المبلغ المضاف للمحفظة غير صالح');
 
@@ -56,8 +59,9 @@ async function createCustomerRefund(input, { session, req }) {
   }
   const entry = await postEntry({
     eventType: 'REFUND', eventKey: `CUSTOMER_REFUND:${doc._id}`, date: input.day, description: label,
-    source: { model: 'AccountingCustomerRefund', id: doc._id }, lines,
+    source: { model: 'AccountingCustomerRefund', id: doc._id }, fallbacks: rates.fallbacks, lines,
   }, { session, user: req?.user });
+  await rates.lock();
   doc.entryId = entry._id;
 
   if (walletUsd > 0) {

@@ -317,3 +317,18 @@ test('D. a purchase invoice paid in part: the paid share is revenue, its cost in
   expect(await balanceOf('220300')).toBe(0);
   expect(await balanceOf('130200')).toBe(0);
 });
+
+test('E. an old expense paid before the count day comes out of the opening balance, not a box', async () => {
+  const expense = await account('530800');
+  const [shop] = await Vendor.create([{ name: 'Old shop', type: 'service' }]);
+  const line = [{ description: 'كهرباء سبتمبر', amount: 40, target: 'expense', accountId: expense._id, office: 'tripoli' }];
+  // Before the historical migration is committed it is refused (enter it normally then)
+  await expect(tx((session) => payables.createBill({ vendorId: shop._id, day: '2026-09-15', currency: 'USD', paidBeforeCount: true, lines: line }, { session, req }))).rejects.toThrow('بعد اعتماد');
+  await AccountingSettings.updateOne({ key: 'main' }, { $set: { cutoffAt: new Date('2026-09-30T20:00:00Z') } });
+  invalidateConfig();
+  await tx((session) => payables.createBill({ vendorId: shop._id, day: '2026-09-15', currency: 'USD', paidBeforeCount: true, lines: line }, { session, req }));
+  expect(await balanceOf('530800')).toBe(4000);
+  expect(await balanceOf('390000')).toBe(-4000);
+  expect(await balanceOf('110101')).toBe(0);
+  await expect(tx((session) => payables.createBill({ vendorId: shop._id, day: '2026-10-05', currency: 'USD', paidBeforeCount: true, lines: line }, { session, req }))).rejects.toThrow('قبله');
+});

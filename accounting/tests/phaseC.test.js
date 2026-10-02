@@ -86,7 +86,7 @@ test('C2: a supplier refund on a purchase: cost down by what came in, sale down 
 
   // 1200 lira came into the Kuveyt Türk account, worth 30$ by the bank; 29$ go to the wallet
   const bank = await account('110204');
-  const refund = await tx((session) => createCustomerRefund({ day: '2026-03-01', orderId, accountId: bank._id, amount: 1200, usdValue: 30, walletUsd: 29 }, { session, req }));
+  const refund = await tx((session) => createCustomerRefund({ day: '2026-03-01', orderId, accountId: bank._id, amount: 1200, walletUsd: 29 }, { session, req }));
   expect(await balanceOf('410300')).toBe(-17100);
   expect(await balanceOf('510400')).toBe(15000);
   expect(await getBalance(bank._id)).toEqual({ usd: 3000, foreign: 120000 });
