@@ -51,6 +51,9 @@ router.get('/acc/package-settings', STAFF, handle(async (req, res) => {
   res.json({ volumetricFactor: await volumetricFactor(), canEditMeasures: await canEditMeasures(req.user), rate });
 }));
 
+// An old dinar payment saved without a rate: an admin or the accountant writes it (paymentRate.js)
+router.put('/acc/order-payments/:paymentId/rate', STAFF, handle(async (req, res) => res.json(await require('./services/paymentRate').setPaymentRate(req.params.paymentId, req.body?.rate, req.user))));
+
 // The opening count day of the committed migration: money dated on or before it is already in the
 // counted boxes, so the screens warn that it goes to the opening balance instead (see ledger.js)
 router.get('/acc/count-day', STAFF, handle(async (req, res) => {

@@ -20,6 +20,7 @@ const HANDLERS = {
   statement: (id, payload, ctx) => operations.postStatement(id, { ...ctx, target: payload.target, reverses: payload.reverses }),
   statementUpdated: (id, payload, ctx) => operations.repostStatement(id, { ...ctx, target: payload.target }),
   statementDeleted: (id, payload, ctx) => operations.reverseStatement(id, ctx),
+  paymentRate: (id, payload, ctx) => operations.repostPaymentRate(id, { ...ctx, ...payload }),
   cashPayment: (id, payload, ctx) => operations.postCashPayment(id, { ...ctx, office: payload.office }),
   cashPaymentDeleted: (id, payload, ctx) => operations.reverseCashPayment(id, ctx),
   order: (id, payload, ctx) => syncOrder(id, ctx),

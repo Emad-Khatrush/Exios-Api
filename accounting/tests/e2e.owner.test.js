@@ -378,3 +378,43 @@ test('12. a refund cannot give the wallet more than was paid; transfer orders sh
   const row = (await customerInvoices({ search: other.orderId })).results.find((r) => r.orderNumber === other.orderId);
   expect(row).toMatchObject({ billed: 4000, recognized: 4000, status: 'paid' });
 });
+
+test('13. an old dinar payment saved without a rate: the accountant writes the rate, the line is posted again, the migration overpayment undone', async () => {
+  const { setPaymentRate } = require('../services/paymentRate');
+  const operations = require('../services/posting/operations');
+  const { postEntry } = require('../services/ledger');
+  const OrderPaymentHistory = require('../../models/orderPaymentHistory');
+  // The dinars were worth 8.23 a dollar that day, as the migration valued them
+  await CurrencyRate.create([{ currency: 'LYD', day: today(), rate: 8.23 }]);
+  await deposit(880, 'LYD', { rate: 8.23 });
+  await expectConsistent('dinars at 8.23');
+  const order = await purchase(96);
+  // As old screens saved it: a wallet line and a payment, no rate, not linked
+  const createdAt = new Date();
+  const statement = await UserStatement.create({ user: customer._id, createdBy: owner._id, calculationType: '-', paymentType: 'wallet', actionType: 'wallet', amount: 880, currency: 'LYD', total: 0, description: 'تم خصم 880LYD من المحفظة', note: `Order Id (${order.orderId}) => سداد فاتورة`, createdAt });
+  await mongoose.connection.collection('wallets').updateOne({ user: customer._id, currency: 'LYD' }, { $inc: { balance: -880 } });
+  const payment = await OrderPaymentHistory.create({ order: order._id, customer: customer._id, createdBy: owner._id, paymentType: 'wallet', receivedAmount: 880, currency: 'LYD', rate: 0, category: 'invoice', createdAt });
+  await tx((session) => operations.postStatement(statement._id, { session, target: { orderId: order._id, category: 'invoice' } }));
+  await tx((session) => require('../services/claims/sync').syncOrder(order._id, { session }));
+  // What the migration did with it: the dinars at the wallet's average paid 106.93$, the 10.93$ over called other revenue
+  const key = `PUR:${order._id}`;
+  const open = await usd('121000', { arKey: key });
+  expect(open).toBeLessThan(0);
+  await tx(async (session) => postEntry({
+    eventType: 'MIGRATION_ADJUST', eventKey: `OVERPAID:MIG-TEST:${key}:${customer._id}`, date: today(), description: 'دفع زائد', isHistorical: true,
+    lines: [{ accountId: (await account('121000'))._id, debit: -open, partnerId: customer._id, orderId: order._id, arKey: key }, { accountId: (await account('410600'))._id, credit: -open, office: 'tripoli' }],
+  }, { session }));
+  // A clerk may not; the accountant may
+  const clerk = { _id: new mongoose.Types.ObjectId(), roles: { isEmployee: true } };
+  await expect(setPaymentRate(String(payment._id), 9.1667, clerk)).rejects.toMatchObject({ statusCode: 403 });
+  const accountant = { _id: new mongoose.Types.ObjectId(), roles: { isAccountant: true } };
+  await setPaymentRate(String(payment._id), 880 / 96, accountant);
+  await expectConsistent('rate written');
+  expect((await OrderPaymentHistory.findById(payment._id).lean()).rate).toBeCloseTo(9.166667, 5);
+  expect((await UserStatement.findById(statement._id).lean()).rate).toBeCloseTo(9.166667, 5);
+  // Paid exactly; nothing left as other revenue; the gap is an exchange difference
+  expect(await usd('121000', { arKey: key })).toBe(0);
+  expect(await usd('410600', { arKey: key })).toBe(0);
+  expect(await JournalEntry.countDocuments({ eventKey: `OVERPAID:MIG-TEST:${key}:${customer._id}`, status: 'reversed' })).toBe(1);
+  await expect(setPaymentRate(String(payment._id), 9, accountant)).rejects.toThrow('للدفعة سعر مسجل');
+});
