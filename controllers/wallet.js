@@ -761,10 +761,10 @@ module.exports.getAllActiveWallets = async (req, res, next) => {
   }
 };
 
-// The system's dinar rate and the lowest rate a payment may use, for the wallet dialog
+// The accountant's dinar rate and the lowest rate a payment may use, for the wallet dialog
 module.exports.getPaymentRate = async (req, res, next) => {
   try {
-    res.status(200).json({ limits: await lydRateLimits() });
+    res.status(200).json({ limits: await lydRateLimits(req.query.date) });
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
@@ -775,13 +775,13 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
 
-    // Dinars paid on an order are counted at the rate typed, which may not be lower than the
-    // system's rate by more than the tolerance (like the delivery of packages)
+    // Dinars paid on an order are counted at a rate that may not be lower than the accountant's
+    // rate by more than the tolerance
     if (category && currency === 'LYD') {
       if (!(Number(rate) > 0)) return next(new ErrorHandler(400, 'Enter the exchange rate the dinars are counted at.'));
-      const limits = await lydRateLimits();
+      const limits = await lydRateLimits(createdAt);
       if (limits && Number(rate) < limits.minimum - 1e-9) {
-        return next(new ErrorHandler(400, `The rate ${Number(rate)} is too low. The system rate is ${limits.rate}, so the lowest allowed is ${limits.minimum}.`));
+        return next(new ErrorHandler(400, `The rate ${Number(rate)} is too low. The accountant's rate is ${limits.rate}, so the lowest allowed is ${limits.minimum}.`));
       }
     }
 
