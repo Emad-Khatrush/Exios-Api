@@ -155,6 +155,25 @@ const CHECKS = {
       items, '/accounting/reports?tab=purchases');
   },
 
+  // A purchase order whose supplier cost is below zero: a supplier refund bigger than the cost
+  // recorded on it, usually because the purchase itself was never entered. Its profit is too high
+  async negativeOrderCost() {
+    const roles = await roleIds(['purchase_cost_wip', 'cost_purchase_invoices', 'cost_remittance']);
+    const ids = Object.values(roles).filter(Boolean).map(oid);
+    const rows = await JournalEntry.aggregate([
+      { $match: { 'lines.accountId': { $in: ids }, 'lines.orderId': { $exists: true } } }, { $unwind: '$lines' },
+      // A free package's share of its trip (it carries the trip) is not the purchase
+      { $match: { 'lines.accountId': { $in: ids }, 'lines.orderId': { $ne: null }, 'lines.tripId': null } },
+      { $group: { _id: '$lines.orderId', cost: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+      { $match: { cost: { $lt: 0 } } },
+    ]);
+    const orders = new Map((await Order.find({ _id: { $in: rows.map((r) => r._id) } }).setOptions({ withDeleted: true }).select('orderId').lean()).map((o) => [String(o._id), o]));
+    const items = rows.map((row) => ({ label: orders.get(String(row._id))?.orderId || String(row._id), usd: row.cost, note: 'ريفاند المورد أكبر من تكلفة الشراء المسجلة', url: `/accounting/customer-invoices/${row._id}` }));
+    return result('negativeOrderCost', 'warn', 'طلب تكلفته بالسالب',
+      'أُدخل ريفاند من المورد على طلب ليس عليه تكلفة شراء مسجلة (أو أقل منه)، فظهر ربحه أكبر من الحقيقة. أدخل تكلفة الشراء الأصلية بتاريخها (سطر مشتريات على الطلب، أو إرسال حوالة Alipay).',
+      items, '/accounting/reports?tab=purchases');
+  },
+
   // 12. Trips that arrived with no cost entered
   async tripsWithoutCost() {
     const roles = await roleIds(['trip_cost_wip', 'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic']);

@@ -312,3 +312,43 @@ test('9. an expense paid in dinars is valued at the rate of its own date, or the
   expect(await rentOf(await expense('2026-04-21', 9.5))).toBe(8421);
   await expectConsistent('expenses in dinars');
 });
+
+test('10. cancelling an order after a supplier refund gives back exactly what was paid, not the refund twice', async () => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  const walletUsd = async () => Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'USD' }))?.balance || 0);
+  await deposit(200, 'USD');
+  const start = await walletUsd();
+  const order = await purchase(100);
+  await pay(order, 100);
+  await orderCost(order, 80);
+  // The supplier gave 30$ back; all of it to the customer's wallet
+  await tx(async (session) => createCustomerRefund({ orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 30, walletUsd: 30, day: today() }, { session, req: { user: owner } }));
+  await expectConsistent('refund');
+  expect(await walletUsd()).toBeCloseTo(start - 100 + 30, 2);
+  await call(orders.cancelOrder, { ...as(owner), params: { id: String(order._id) }, body: { cancelationReason: 'test' } });
+  await expectConsistent('cancelled after the refund');
+  // 100 back, the 30 of the refund taken off: in all the customer has what they had
+  expect(await walletUsd()).toBeCloseTo(start, 2);
+  expect(await usd('121000', { arKey: `PUR:${order._id}` })).toBe(0);
+});
+
+test('11. a supplier refund on an order with no cost recorded is flagged; on a transfer order its negative cost moves with it', async () => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  const { CHECKS } = require('../services/reports/exceptions');
+  const { emitAccountingEvent } = require('../services/events');
+  await deposit(100, 'USD');
+  const order = await purchase(60);
+  await pay(order, 60);
+  await tx(async (session) => createCustomerRefund({ orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 40, walletUsd: 40, day: today() }, { session, req: { user: owner } }));
+  await expectConsistent('refund with no cost');
+  expect((await CHECKS.negativeOrderCost()).items.map((i) => i.label)).toContain(order.orderId);
+  const byOrder = { orderId: new mongoose.Types.ObjectId(String(order._id)) };
+  expect(await usd('510400', byOrder)).toBe(-4000);
+  // Marked a transfer afterwards: the negative cost goes to the transfer cost with the revenue
+  await Order.updateOne({ _id: order._id }, { $set: { isRemittance: true } });
+  await emitAccountingEvent('order', order._id, {});
+  await expectConsistent('marked a transfer');
+  expect(await usd('510400', byOrder)).toBe(0);
+  expect(await usd('510700', byOrder)).toBe(-4000);
+  expect(-(await usd('410700', byOrder))).toBe(2000);
+});

@@ -6,6 +6,9 @@
 //   "cancellation" line in the wallet whose entry reverses that payment's entry.
 // - Cash paid on the order stays in the cash box; the customer gets it as wallet credit (the
 //   claim the cash paid is owed to the customer instead: receivable / wallet).
+// - What a supplier refund already gave the customer on this order is taken back from the wallet
+//   afterwards, so in all the customer gets exactly what they paid (owner's report 2026-10-04: an
+//   order paid 70.26$ with a 43$ refund would otherwise give back 113.26$).
 // The supplier cost already spent on the order stays in the accounting's "in progress" account,
 // listed for the accountant to settle (a supplier refund, or moved to another order).
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
@@ -15,6 +18,7 @@ const ErrorHandler = require('./errorHandler');
 const { emitAccountingEvent } = require('../accounting/services/events');
 const { refundWalletPayment } = require('./helperApi');
 const { restoreOrderDebts } = require('./debts');
+const { CustomerRefund } = require('../accounting/models/documents');
 
 const roundToTwo = (num) => Math.round(num * 100) / 100;
 const packageIdsOf = (payment) => (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean);
@@ -41,12 +45,39 @@ async function creditWallet(user, payment, description, note) {
   return amount;
 }
 
+// The refunds already in the wallet come off it: a payment on the order's purchase claim, which
+// the cancellation left owed by them
+async function takeBackRefunds(order, user, amount, refunds) {
+  const wallet = await Wallet.findOneAndUpdate({ user: order.user, currency: 'USD', balance: { $gte: amount - 0.001 } }, { $inc: { balance: -amount } }, { new: true });
+  if (!wallet) throw new ErrorHandler(400, 'رصيد الدولار في المحفظة تغيّر ولا يكفي لخصم الريفاند. أعد المحاولة.');
+  await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: roundToTwo(wallet.balance) });
+  const [last] = await UserStatement.find({ user: order.user, currency: 'USD' }).sort({ _id: -1 }).limit(1);
+  const statement = await UserStatement.create({
+    user: order.user, createdBy: user, calculationType: '-', paymentType: 'wallet', createdAt: new Date(), amount, currency: 'USD',
+    total: roundToTwo(Number(last?.total || 0) - amount), actionType: 'wallet',
+    description: `خصم ما أُرجع بالريفاند (${refunds.map((r) => r.number).join('، ')}) عند إلغاء الطلب ${order.orderId}`,
+    note: `Order Id (${order.orderId}) => إلغاء الطلب: الريفاند كان جزءاً من المدفوع`,
+  });
+  await emitAccountingEvent('statement', statement._id, { target: { arKeys: [`PUR:${order._id}`] } }, user);
+}
+
 // Gives every payment of the order back to the wallet; refused once a package was handed over
 async function returnOrderPayments(order, user) {
   const payments = await OrderPaymentHistory.find({ order: order._id }).sort({ createdAt: 1 }).lean();
   if (!payments.length) return [];
   if ((order.paymentList || []).some((p) => p?.status?.received)) {
     throw new ErrorHandler(400, 'لا يمكن إلغاء طلب سُلِّم طرد منه للعميل وعليه دفعات. ألغِ فاتورة التسليم أولاً.');
+  }
+  // Dollars already given back to the wallet by supplier refunds on this order
+  const refunds = await CustomerRefund.find({ orderId: order._id, status: 'posted', walletUsd: { $gt: 0 } }).select('number walletUsd').lean();
+  const refunded = roundToTwo(refunds.reduce((sum, r) => sum + r.walletUsd, 0) / 100);
+  if (refunded > 0) {
+    const usdWallet = Number((await Wallet.findOne({ user: order.user, currency: 'USD' }).lean())?.balance || 0);
+    // Every dollar payment comes back to the dollar wallet first (wallet or cash)
+    const usdBack = payments.filter((p) => p.currency === 'USD').reduce((sum, p) => sum + Number(p.receivedAmount || 0), 0);
+    if (usdWallet + usdBack < refunded - 0.001) {
+      throw new ErrorHandler(400, `أُرجع للعميل ${refunded}$ بالريفاند (${refunds.map((r) => r.number).join('، ')}) ولا يكفي رصيد الدولار في محفظته لخصمها عند الإلغاء. ألغِ الريفاند أولاً أو أضف الرصيد.`);
+    }
   }
   const returned = [];
   for (const payment of payments) {
@@ -59,6 +90,10 @@ async function returnOrderPayments(order, user) {
       await creditWallet(user, payment, description, note);
     }
     returned.push({ amount: roundToTwo(Number(payment.receivedAmount || 0)), currency: payment.currency, paymentType: payment.paymentType });
+  }
+  if (refunded > 0) {
+    await takeBackRefunds(order, user, refunded, refunds);
+    returned.push({ amount: -refunded, currency: 'USD', paymentType: 'refundTakenBack' });
   }
   return returned;
 }

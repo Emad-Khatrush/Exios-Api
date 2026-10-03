@@ -342,12 +342,13 @@ async function syncOrder(orderId, options = {}) {
   // ---- 2d. An order marked (or unmarked) "Alipay transfer" after its revenue or cost was
   // recognised: what was recognised moves to the accounts of its kind, so the Alipay screen and
   // the purchase invoices each show their own revenue and cost (spec 19.5)
+  // (a negative amount too: a supplier refund bigger than the cost recorded leaves a negative cost)
   if (order.isPayment) {
     const key = purchaseKey(order._id);
     const [revenueTo, revenueFrom] = order.isRemittance ? [a.revenue_remittance, a.revenue_purchase_invoices] : [a.revenue_purchase_invoices, a.revenue_remittance];
     const byAccount = state.recognized.get(key);
     const misplaced = byAccount?.get(String(revenueFrom._id)) || 0;
-    if (misplaced > 0) {
+    if (misplaced !== 0) {
       const dims = { arKey: key, orderId: order._id, office };
       posted.push(await post(ctx, 'RECLASS', key, `نقل إيراد فاتورة شراء ${order.isRemittance ? 'إلى حوالات Alipay' : 'من حوالات Alipay'} - طلب ${order.orderId}`, move(
         misplaced, { accountId: revenueFrom._id, ...dims }, { accountId: revenueTo._id, ...dims },
@@ -356,7 +357,7 @@ async function syncOrder(orderId, options = {}) {
       byAccount.set(String(revenueTo._id), (byAccount.get(String(revenueTo._id)) || 0) + misplaced);
     }
     const costMisplaced = order.isRemittance ? state.purchaseCostRecognized - state.remittanceCostRecognized : state.remittanceCostRecognized;
-    if (costMisplaced > 0) {
+    if (costMisplaced !== 0) {
       const [costTo, costFrom] = order.isRemittance ? [a.cost_remittance, a.cost_purchase_invoices] : [a.cost_purchase_invoices, a.cost_remittance];
       const dims = { orderId: order._id, office, arKey: key };
       posted.push(await post(ctx, 'RECLASS', `${key}:COST`, `نقل تكلفة فاتورة شراء ${order.isRemittance ? 'إلى حوالات Alipay' : 'من حوالات Alipay'} - طلب ${order.orderId}`, move(
