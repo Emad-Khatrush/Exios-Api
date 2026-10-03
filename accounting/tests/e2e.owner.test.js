@@ -416,5 +416,7 @@ test('13. an old dinar payment saved without a rate: the accountant writes the r
   expect(await usd('121000', { arKey: key })).toBe(0);
   expect(await usd('410600', { arKey: key })).toBe(0);
   expect(await JournalEntry.countDocuments({ eventKey: `OVERPAID:MIG-TEST:${key}:${customer._id}`, status: 'reversed' })).toBe(1);
+  // The revenue never left its month: no recognition was taken back and given again
+  expect(await JournalEntry.countDocuments({ eventType: 'RECOGNITION', 'lines.arKey': key })).toBe(1);
   await expect(setPaymentRate(String(payment._id), 9, accountant)).rejects.toThrow('للدفعة سعر مسجل');
 });

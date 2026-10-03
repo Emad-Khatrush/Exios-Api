@@ -496,14 +496,16 @@ async function reverseBalance(balanceId, options = {}) {
 
 // A rate written on an old dinar wallet payment (services/paymentRate.js): its wallet line is posted
 // again at that rate, and what the migration took for an overpayment on the order (the dinars
-// counted at the wallet's average) is undone; the order is then brought up to date
+// counted at the wallet's average) is undone; the order is then brought up to date. The
+// overpayment goes first: posted again before it, the payment looked short for a moment and the
+// revenue of that part was taken back from its month and recognised again today (6458-2723)
 async function repostPaymentRate(paymentId, options = {}) {
   const { session } = options;
   const { statementId, orderId, category } = options;
   if (!statementId || !orderId) return { skipped: 'nothing to post' };
-  const result = await repostStatement(statementId, { ...options, target: { orderId, category: category || 'invoice' } });
   const overpaid = await JournalEntry.find({ eventKey: new RegExp(`^OVERPAID:[^:]+:(PUR|SHP):${orderId}(:|$)`), status: 'posted', reversalOf: null }).session(session);
   for (const entry of overpaid) await reverseEntry(entry._id, { session, user: options.user, reason: 'كُتب سعر الدفعة: لم يكن دفعاً زائداً' });
+  const result = await repostStatement(statementId, { ...options, target: { orderId, category: category || 'invoice' } });
   await syncOrder(orderId, options);
   return { ...result, overpaidReversed: overpaid.length };
 }
