@@ -2,7 +2,7 @@
 // system, and situations the accountant should look at. Each check returns what it found; none
 // of them changes anything.
 const mongoose = require('mongoose');
-const { JournalEntry, AccountingEvent, Reconciliation } = require('../../models');
+const { JournalEntry, AccountingEvent, Reconciliation, ReviewedItem } = require('../../models');
 const { SupplierBill, FixedAsset, PrepaidExpense, BankStatementLine } = require('../../models/documents');
 const Wallet = require('../../../models/wallet');
 const Order = require('../../../models/order');
@@ -20,7 +20,23 @@ const { roleIds, netBy, receivables, payables, purchaseProfitability } = require
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const SAMPLE = 50;
-const result = (key, severity, title, hint, items, link) => ({ key, severity, title, hint, count: items.length, items: items.slice(0, SAMPLE), link });
+// An item is known by its link (one order, one trip) or else its text. Items the accountant marked
+// as reviewed are left out of items to review and notices (never out of errors) and counted apart
+const refOf = (item) => String(item.url || item.arKey || item.label || '');
+let reviewed = new Map();
+const loadReviewed = async () => {
+  reviewed = new Map();
+  (await ReviewedItem.find({}).select('check ref').lean()).forEach((r) => {
+    if (!reviewed.has(r.check)) reviewed.set(r.check, new Set());
+    reviewed.get(r.check).add(r.ref);
+  });
+};
+const result = (key, severity, title, hint, all, link) => {
+  const marked = severity === 'error' ? null : reviewed.get(key);
+  const items = marked ? all.filter((item) => !marked.has(refOf(item))) : all;
+  items.forEach((item) => { item.ref = refOf(item); });
+  return { key, severity, title, hint, count: items.length, reviewedCount: all.length - items.length, items: items.slice(0, SAMPLE), link };
+};
 
 const userNames = async (ids) => new Map((await User.find({ _id: { $in: ids.filter(mongoose.isValidObjectId) } }).select('firstName lastName customerId').lean())
   .map((u) => [String(u._id), `${u.customerId || ''} ${u.firstName || ''} ${u.lastName || ''}`.trim()]));
@@ -415,6 +431,7 @@ const CHECKS = {
 
 // Runs every check; one that fails is reported as such and the others still run
 async function runChecks({ only } = {}) {
+  await loadReviewed();
   const results = [];
   for (const [key, check] of Object.entries(CHECKS)) {
     if (only && !only.includes(key)) continue;
@@ -439,6 +456,39 @@ async function runAndStore() {
   return report;
 }
 
-const latest = () => Reconciliation.findOne({}).sort({ day: -1 }).lean();
+// A report stored before items carried their ref gets it here, so they can still be marked
+const latest = async () => {
+  const report = await Reconciliation.findOne({}).sort({ day: -1 }).lean();
+  (report?.results || []).forEach((r) => (r.items || []).forEach((item) => { if (!item.ref) item.ref = refOf(item); }));
+  return report;
+};
 
-module.exports = { runChecks, runAndStore, latest, CHECKS };
+// Runs one check again and puts its result in the latest stored report (after a mark is added or
+// taken back), so the list changes at once without running every check
+async function refreshCheck(key) {
+  const report = await latest();
+  if (!report || !CHECKS[key]) return runAndStore();
+  const fresh = (await runChecks({ only: [key] })).results[0];
+  const results = report.results.map((r) => (r.key === key ? fresh : r));
+  const found = results.filter((r) => r.count > 0);
+  const patch = { results, errorCount: found.filter((r) => r.severity === 'error').length, warningCount: found.filter((r) => r.severity === 'warn').length };
+  await Reconciliation.updateOne({ _id: report._id }, { $set: patch });
+  return { ...report, ...patch };
+}
+
+async function markReviewed({ check, ref, label, note }, user) {
+  if (!CHECKS[check]) throw Object.assign(new Error('فحص غير معروف'), { statusCode: 400 });
+  if (!ref) throw Object.assign(new Error('البند غير محدد'), { statusCode: 400 });
+  await ReviewedItem.updateOne({ check, ref }, { $set: { label: label || ref, note: note || '', by: user?._id } }, { upsert: true });
+  return refreshCheck(check);
+}
+
+async function unmarkReviewed(id) {
+  const item = await ReviewedItem.findByIdAndDelete(id).lean();
+  if (!item) throw Object.assign(new Error('البند غير موجود'), { statusCode: 404 });
+  return refreshCheck(item.check);
+}
+
+const listReviewed = () => ReviewedItem.find({}).sort({ createdAt: -1 }).populate('by', 'firstName lastName').lean();
+
+module.exports = { runChecks, runAndStore, latest, CHECKS, markReviewed, unmarkReviewed, listReviewed };

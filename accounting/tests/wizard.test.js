@@ -43,6 +43,12 @@ test('a fresh setup starts at the first step, and each step follows the data', a
   status = await wizardStatus();
   expect(status.completed).toBe(true);
   expect((await AccountingSettings.findOne({ key: 'main' }).lean()).wizard.completedAt).toBeTruthy();
+
+  // the next morning, before its rates are entered: still complete (the dashboard warns instead)
+  await CurrencyRate.deleteMany({ day: today() });
+  status = await wizardStatus();
+  expect(step(status, 'todayRates').done).toBe(false);
+  expect(status.completed).toBe(true);
 });
 
 test('only known steps and values can be marked, and a mark can be taken back', async () => {

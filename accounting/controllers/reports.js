@@ -41,7 +41,9 @@ module.exports.dashboard = handle(async (req, res) => {
 
   const foreignCurrencies = await Currency.find({ isActive: true, isBase: { $ne: true } }).lean();
   const todayRates = await CurrencyRate.find({ day }).lean();
-  const missingRates = foreignCurrencies.filter((c) => !todayRates.some((r) => r.currency === c.code)).map((c) => c.code);
+  // Only the currencies in use (the dinar and those a box holds) need a rate each day; the rest are optional
+  const needed = new Set(['LYD', ...cashAccounts.filter((a) => a.isActive !== false && a.currency && a.currency !== 'USD').map((a) => a.currency)]);
+  const missingRates = foreignCurrencies.filter((c) => needed.has(c.code) && !todayRates.some((r) => r.currency === c.code)).map((c) => c.code);
 
   res.json({
     setupDone: true,

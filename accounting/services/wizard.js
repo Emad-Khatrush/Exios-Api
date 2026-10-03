@@ -81,7 +81,9 @@ async function wizardStatus() {
   ];
 
   // Steps 3 and 4 can wait, but not past the commit (spec 7-ب.3)
-  const completed = steps.every((step) => step.done);
+  // Once finished it stays finished while the migration stands: a new day without its rates is a
+  // dashboard warning, not a reason to send the accountant back to the wizard every morning
+  const completed = (!!marks.completedAt && committed) || steps.every((step) => step.done);
   if (completed && !marks.completedAt) {
     await AccountingSettings.updateOne({ key: 'main' }, { $set: { 'wizard.completedAt': new Date() } });
     invalidateConfig();

@@ -176,6 +176,17 @@ const Reconciliation = mongoose.model('AccountingReconciliation', new Schema({
   results: Schema.Types.Mixed,
 }, { timestamps: true }));
 
+// A review item the accountant looked at and accepted (an old purchase whose cost will never be
+// known, a trip that really had no cost): it leaves the daily list until the mark is taken back.
+// Errors cannot be marked; only items to review and notices
+const ReviewedItem = mongoose.model('AccountingReviewedItem', new Schema({
+  check: { type: String, required: true },
+  ref: { type: String, required: true },
+  label: String,
+  note: String,
+  by: { type: Schema.Types.ObjectId, ref: 'User' },
+}, { timestamps: true }).index({ check: 1, ref: 1 }, { unique: true }));
+
 // A printed receipt or payment voucher (spec 7): one per entry that moved cash, numbered in its
 // own series the first time it is printed
 const Voucher = mongoose.model('AccountingVoucher', new Schema({
@@ -223,6 +234,7 @@ const AccountingMember = mongoose.model('AccountingMember', new Schema({
 }, { timestamps: true }));
 
 module.exports = {
+  ReviewedItem,
   AccountingMember,
   OdooExport,
   OdooComparison,

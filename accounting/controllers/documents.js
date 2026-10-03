@@ -173,7 +173,18 @@ module.exports.listBills = handle(async (req, res) => {
     const pattern = new RegExp(escapeRegex(req.query.search), 'i');
     query.$or = [{ number: pattern }, { vendorRef: pattern }, { 'lines.description': pattern }];
   }
-  res.json(await paged(docs.SupplierBill, query, req, [{ path: 'vendorId', select: 'name type' }]));
+  const result = await paged(docs.SupplierBill, query, req, [{ path: 'vendorId', select: 'name type' }]);
+  // The order number and trip name of each line, so the list says what the cost is for
+  const lines = result.results.flatMap((bill) => bill.lines || []);
+  const [trips, orders] = await Promise.all([
+    Inventory.find({ _id: { $in: lines.map((l) => l.tripId).filter(Boolean) } }).select('voyage').lean(),
+    Order.find({ _id: { $in: lines.map((l) => l.orderId).filter(Boolean) } }).select('orderId').setOptions({ withDeleted: true }).lean(),
+  ]);
+  const names = new Map([...trips.map((t) => [String(t._id), t.voyage]), ...orders.map((o) => [String(o._id), o.orderId])]);
+  result.results.forEach((bill) => {
+    bill.refs = [...new Set((bill.lines || []).map((l) => names.get(String(l.orderId || l.tripId || ''))).filter(Boolean))];
+  });
+  res.json(result);
 });
 
 module.exports.getBill = handle(async (req, res) => {

@@ -40,7 +40,7 @@ router.get('/backups', ownerOnly, handle(async (req, res) => res.json(await back
 router.post('/backups', ownerOnly, handle(async (req, res) => res.json(await backup().startManual(req.user))));
 router.post('/backups/download', ownerOnly, handle(async (req, res) => {
   const url = await backup().downloadUrl(req.body?.name);
-  await require('./services/audit').logAudit({ req, action: 'backup_download', model: 'SystemBackup', after: { name: req.body?.name } });
+  await require('./services/audit').logAudit({ req, action: 'backup.download', model: 'SystemBackup', after: { name: req.body?.name } });
   res.json({ url });
 }));
 // Office expenses entered by staff on the system's Expenses screen, from every office
@@ -111,6 +111,19 @@ router.get('/reports/payables', can('reports', 'payments'), statements.payables)
 router.get('/customers', P.reports, statements.customers);
 router.get('/customer-invoices', P.reports, statements.customerInvoices);
 router.get('/exceptions', P.reports, statements.exceptions);
+// Review items the accountant accepted leave the daily list; the mark can be taken back
+const exceptionsService = () => require('./services/reports/exceptions');
+router.get('/exceptions/reviewed', P.reports, handle(async (req, res) => res.json({ results: await exceptionsService().listReviewed() })));
+router.post('/exceptions/reviewed', P.closing, handle(async (req, res) => {
+  const report = await exceptionsService().markReviewed(req.body || {}, req.user);
+  await require('./services/audit').logAudit({ req, action: 'exception.reviewed', model: 'AccountingReviewedItem', after: req.body });
+  res.json(report);
+}));
+router.delete('/exceptions/reviewed/:id', P.closing, handle(async (req, res) => {
+  const report = await exceptionsService().unmarkReviewed(req.params.id);
+  await require('./services/audit').logAudit({ req, action: 'exception.unreviewed', model: 'AccountingReviewedItem', after: { id: req.params.id } });
+  res.json(report);
+}));
 router.get('/summary/order/:id', P.reports, statements.orderSummary);
 router.get('/summary/trip/:id', P.reports, statements.tripSummary);
 router.get('/summary/customer/:id', P.reports, statements.customerSummary);
@@ -120,7 +133,8 @@ router.get('/close/month', P.closing, statements.monthChecklist);
 router.post('/close/month', P.closing, statements.closeMonth);
 router.get('/close/year', P.closing, statements.yearStatus);
 router.post('/close/year', P.closing, statements.closeYear);
-router.post('/close/year/reopen', P.closing, statements.reopenYear);
+// Reopening a closed year: the owner only, as an emergency (decision 65)
+router.post('/close/year/reopen', ownerOnly, statements.reopenYear);
 
 router.get('/odoo', P.setup, odoo.overview);
 router.put('/odoo/settings', P.setup, odoo.saveSettings);
