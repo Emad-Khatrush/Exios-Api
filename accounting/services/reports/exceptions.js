@@ -351,7 +351,9 @@ const CHECKS = {
         // Paid beyond the claim and moved to other revenue (decision 77): the system may count that
         // payment (it shows the excess) or not (a dinar payment with no rate); either agrees
         const beforeMove = difference - (books[`${kind}moved`] || 0);
-        if (Math.abs(difference) > tolerance && Math.abs(beforeMove) > tolerance) {
+        // The system shows what was paid beyond the claim; the books took that excess as profit (decision 119)
+        const asProfit = system[kind] < 0 && (books[kind] || 0) >= system[kind] - tolerance && (books[kind] || 0) <= tolerance;
+        if (Math.abs(difference) > tolerance && Math.abs(beforeMove) > tolerance && !asProfit) {
           items.push({ label: `${order.orderId} · ${kind === 'PUR' ? 'فاتورة شراء' : 'شحن'}`, usd: difference, note: `الدفاتر ${(books[kind] || 0) / 100}$ · المنظومة ${system[kind] / 100}$`, url: `/invoice/${order._id}/edit` });
         }
       });

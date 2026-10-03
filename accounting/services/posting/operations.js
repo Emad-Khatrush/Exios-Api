@@ -85,6 +85,25 @@ function claimLines(parts, side, partnerId) {
   });
 }
 
+// A payment beyond what is owed on an order is the company's profit, not the customer's credit
+// (owner's decision 2026-10-04): dinars because the customer is charged a higher rate than the
+// market on purpose (exchange profit), and any other excess too (other revenue, labelled). Up to
+// 5 cents is left to the rounding rule. Live posting only: the historical replay keeps decision 77.
+// account: where the excess goes (exchange gain/loss for a foreign currency, other revenue for dollars)
+const OVERPAID_LABEL = 'دفع زائد على الطلب: مكسب (قرار 119)';
+
+async function rateMargin(keys, usd, currency, options, session) {
+  if (options.isHistorical || options.migrationRunId) return { claimUsd: usd, margin: 0 };
+  // A claim written off is owed again by what is paid on it (the order sync takes the write-off back)
+  const { ClaimWriteOff } = require('../../models/documents');
+  if (await ClaimWriteOff.exists({ arKey: { $in: keys }, status: 'posted' }).session(session)) return { claimUsd: usd, margin: 0 };
+  const open = await openBalances(keys, session);
+  const owed = keys.reduce((sum, key) => sum + Math.max(open.get(key) || 0, 0), 0);
+  const margin = usd - owed;
+  if (margin <= 5) return { claimUsd: usd, margin: 0 };
+  return { claimUsd: owed, margin, role: currency === 'USD' ? 'revenue_other' : 'fx_gain_loss' };
+}
+
 const ordersOf = (keys) => [...new Set(keys.filter((k) => !k.startsWith('GEN:')).map((k) => k.split(':')[1]))];
 
 // The office of a staff member: the one set by the owner, else their city when it is an office
@@ -265,8 +284,11 @@ async function postStatement(statementId, options = {}) {
     const keys = await resolveClaimKeys(options.target, session);
     if (keys.length) {
       const receivable = await resolveAccount('customer_receivable');
-      const parts = await splitOverClaims(keys, atRate, session);
+      // What is paid beyond what is owed is profit, not the customer's credit
+      const { claimUsd, margin, role } = await rateMargin(keys, atRate, currency, options, session);
+      const parts = await splitOverClaims(keys, claimUsd, session);
       claimLines(parts, 'credit', partnerId).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
+      if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL });
       affectedKeys = keys;
     } else {
       fallbacks.push('دفعة من المحفظة غير مربوطة بطلب أو دين؛ سُجّلت في حساب المعلّق');
@@ -389,8 +411,10 @@ async function postCashPayment(paymentId, options = {}) {
   const receivable = await resolveAccount('customer_receivable');
   const lines = [cashLine];
   if (keys.length) {
-    const parts = await splitOverClaims(keys, usd, session);
+    const { claimUsd, margin, role } = await rateMargin(keys, usd, currency, options, session);
+    const parts = await splitOverClaims(keys, claimUsd, session);
     claimLines(parts, 'credit', oid(order?.user || payment.customer)).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
+    if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL });
   } else {
     fallbacks.push('الدفعة غير مربوطة بطلب');
     lines.push({ accountId: (await resolveAccount('migration_suspense'))._id, credit: usd });

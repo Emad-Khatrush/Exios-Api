@@ -207,6 +207,7 @@ test('10. an invoice lowered below what was paid: the customer has credit on it,
   const order = await purchase(100);
   await deposit(customer, 100, 'USD');
   await pay(customer, order, 100, 'USD');
+  await expectConsistent('paid');
   await call(orders.updateOrderItems, { ...as(owner), params: { id: String(order._id) }, body: { items: [{ description: 'x', unitPrice: 80, quantity: 1 }] } });
   const fresh = await Order.findById(order._id).lean();
   await call(orders.confirmItemsChanges, { ...as(owner), params: { id: String(order._id) }, body: { status: 'accepted', requestedEditDetails: fresh.requestedEditDetails } });

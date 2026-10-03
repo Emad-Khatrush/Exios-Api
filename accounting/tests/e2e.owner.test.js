@@ -394,7 +394,8 @@ test('13. an old dinar payment saved without a rate: the accountant writes the r
   const statement = await UserStatement.create({ user: customer._id, createdBy: owner._id, calculationType: '-', paymentType: 'wallet', actionType: 'wallet', amount: 880, currency: 'LYD', total: 0, description: 'تم خصم 880LYD من المحفظة', note: `Order Id (${order.orderId}) => سداد فاتورة`, createdAt });
   await mongoose.connection.collection('wallets').updateOne({ user: customer._id, currency: 'LYD' }, { $inc: { balance: -880 } });
   const payment = await OrderPaymentHistory.create({ order: order._id, customer: customer._id, createdBy: owner._id, paymentType: 'wallet', receivedAmount: 880, currency: 'LYD', rate: 0, category: 'invoice', createdAt });
-  await tx((session) => operations.postStatement(statement._id, { session, target: { orderId: order._id, category: 'invoice' } }));
+  // Posted as the historical replay did
+  await tx((session) => operations.postStatement(statement._id, { session, isHistorical: true, target: { orderId: order._id, category: 'invoice' } }));
   await tx((session) => require('../services/claims/sync').syncOrder(order._id, { session }));
   // What the migration did with it: the dinars at the wallet's average paid 106.93$, the 10.93$ over called other revenue
   const key = `PUR:${order._id}`;
@@ -418,10 +419,10 @@ test('13. an old dinar payment saved without a rate: the accountant writes the r
   expect(await JournalEntry.countDocuments({ eventKey: `OVERPAID:MIG-TEST:${key}:${customer._id}`, status: 'reversed' })).toBe(1);
   // The revenue never left its month: no recognition was taken back and given again
   expect(await JournalEntry.countDocuments({ eventType: 'RECOGNITION', 'lines.arKey': key })).toBe(1);
-  // A slip corrected: written 9 first (the customer would keep 1.78$), then the rate that closed it
+  // Corrected to 9: the 1.78$ the dinars pay beyond the invoice is exchange profit too (decision 119)
   await setPaymentRate(String(payment._id), 9, accountant);
-  await expectConsistent('rate 9', { allow: ['overpaid'] });
-  expect(await usd('121000', { arKey: key })).toBe(-178);
+  await expectConsistent('rate 9');
+  expect(await usd('121000', { arKey: key })).toBe(0);
   await setPaymentRate(String(payment._id), 880 / 96, accountant);
   await expectConsistent('rate corrected');
   expect(await usd('121000', { arKey: key })).toBe(0);
@@ -430,4 +431,29 @@ test('13. an old dinar payment saved without a rate: the accountant writes the r
   const made = await OrderPaymentHistory.create({ order: order._id, customer: customer._id, createdBy: owner._id, paymentType: 'wallet', receivedAmount: 10, currency: 'LYD', rate: 9.5, category: 'invoice' });
   await expect(setPaymentRate(String(made._id), 9, accountant)).rejects.toThrow('للدفعة سعر مسجل');
   await OrderPaymentHistory.deleteOne({ _id: made._id });
+});
+
+
+test('14. any payment beyond the invoice is profit: dinars as exchange profit, dollars as other revenue', async () => {
+  const fx = () => usd('710100');
+  await deposit(2000, 'LYD');
+  await deposit(200, 'USD');
+  // 100$ invoice paid with 1,100 LYD at 10.5: they count 104.76$, the 4.76$ over is profit
+  const order = await purchase(100);
+  const before = await fx();
+  await pay(order, 1100, 'LYD', 10.5);
+  await expectConsistent('dinars over the invoice');
+  expect(await usd('121000', { arKey: 'PUR:' + order._id })).toBe(0);
+  expect(before - (await fx())).toBeGreaterThanOrEqual(476);
+  // Dinars on an invoice already paid: all of it is profit too
+  await pay(order, 105, 'LYD', 10.5);
+  await expectConsistent('dinars on a paid invoice');
+  expect(await usd('121000', { arKey: 'PUR:' + order._id })).toBe(0);
+  // Dollars over the invoice: other revenue, labelled
+  const other = await purchase(50);
+  const otherRevenue = await usd('410600');
+  await pay(other, 60, 'USD');
+  await expectConsistent('dollars over the invoice');
+  expect(await usd('121000', { arKey: 'PUR:' + other._id })).toBe(0);
+  expect(otherRevenue - (await usd('410600'))).toBe(1000);
 });

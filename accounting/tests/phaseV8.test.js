@@ -480,7 +480,7 @@ test('8. a dinar wallet payment counts at its own rate: on the statement, or on 
   expect(await balanceOf('121000', { arKey: `PUR:${orderId}` })).toBe(0);
   // The migration passes the rate it found on the matching payment
   const other = await UserStatement.create({ user: customer, createdBy: admin._id, description: 'خصم', amount: 95, currency: 'LYD', total: 0, paymentType: 'wallet', calculationType: '-', actionType: 'wallet', createdAt: new Date('2026-03-03') });
-  await tx((session) => operations.postStatement(other._id, { session, target: { orderId, category: 'invoice', rate: 9.5 } }));
+  await tx((session) => operations.postStatement(other._id, { session, isHistorical: true, target: { orderId, category: 'invoice', rate: 9.5 } }));
   const entry = await JournalEntry.findOne({ eventKey: `WALLET_PAYMENT:${other._id}` }).lean();
   expect(entry.lines.find((l) => l.arKey).credit).toBe(1000);
 });
