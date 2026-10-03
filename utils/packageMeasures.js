@@ -120,4 +120,16 @@ async function guardMeasures(before, packages, user) {
   }
 }
 
-module.exports = { FEE_FIELDS, normalizePackages, normalizeDetails, guardMeasures, canEditMeasures, volumetricFactor, cbmOf, DEFAULT_FACTOR };
+// 'Received' (handed to the customer) is never ticked by hand (owner's decision 2026-10-04): it is
+// set by delivering the packages with their payment (markPackagesAsDelivered) and undone by
+// cancelling that delivery invoice. A package keeps what is stored; a new one is not received.
+function keepDeliveryState(oldOrder, packages) {
+  (packages || []).forEach((pkg) => {
+    if (!pkg) return;
+    const old = pkg._id && (oldOrder?.paymentList || []).find((p) => String(p._id) === String(pkg._id));
+    pkg.status = { ...(pkg.status || {}), received: !!old?.status?.received };
+  });
+  return packages;
+}
+
+module.exports = { keepDeliveryState, FEE_FIELDS, normalizePackages, normalizeDetails, guardMeasures, canEditMeasures, volumetricFactor, cbmOf, DEFAULT_FACTOR };

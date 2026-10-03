@@ -21,7 +21,7 @@ const { refreshPackageTrips } = require('../accounting/services/tripLinks');
 const { deleteOrder: deleteOrderWithLedger } = require('../accounting/services/orderDeletion');
 const { syncOrderDebtsOwner } = require('../utils/debts');
 const { returnOrderPayments } = require('../utils/orderCancellation');
-const { normalizePackages, guardMeasures } = require('../utils/packageMeasures');
+const { normalizePackages, guardMeasures, keepDeliveryState } = require('../utils/packageMeasures');
 const roundFee = (n) => Math.round(n * 100) / 100;
 const { payFeesLYD } = require('../utils/helperApi');
 const { cancelInvoicePackages, deliveryInvoiceOf, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
@@ -689,7 +689,8 @@ module.exports.createOrder = async (req, res, next) => {
         arrived: data.arrived,
         arrivedLibya: data.arrivedLibya,
         paid: data.paid,
-        received: data.received
+        // Handed to the customer only by delivering it with its payment (keepDeliveryState)
+        received: false
       },
       deliveredPackages: {
         weight: {
@@ -930,6 +931,7 @@ module.exports.updateOrder = async (req, res, next) => {
       try {
         await guardMeasures(oldOrder, req.body.paymentList, req.user);
         await normalizePackages(req.body.paymentList);
+        keepDeliveryState(oldOrder, req.body.paymentList);
       } catch (error) {
         return next(new ErrorHandler(error.statusCode || 400, error.message));
       }
@@ -1115,6 +1117,7 @@ module.exports.updateSinglePackage = async (req, res, next) => {
       try {
         await guardMeasures(oldOrder, [req.body.paymentList], req.user);
         await normalizePackages([req.body.paymentList]);
+        keepDeliveryState(oldOrder, [req.body.paymentList]);
       } catch (error) {
         return next(new ErrorHandler(error.statusCode || 400, error.message));
       }

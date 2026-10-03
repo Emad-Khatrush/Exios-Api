@@ -466,3 +466,27 @@ test('14. any payment beyond the invoice is profit: dinars as exchange profit, d
   expect(listed.some((label) => label.startsWith(small.orderId))).toBe(false);
   expect(listed.some((label) => label.startsWith(order.orderId))).toBe(false);
 });
+
+test('15. "received" is never ticked by hand: creating or editing an order keeps it, only delivery sets it', async () => {
+  const order = (await call(orders.createOrder, {
+    ...as(owner),
+    body: {
+      customerId: 'C100', fullName: 'X', fromWhere: 'china', toWhere: 'tripoli', method: 'air', isPayment: 'false', isShipment: 'true', placedAt: 'tripoli', items: '[]',
+      paymentList: JSON.stringify([{ arrived: true, arrivedLibya: true, received: true, deliveredPackages: { weight: 2, measureUnit: 'KG', exiosPrice: 10, trackingNumber: `RCV${Date.now()}`, shipmentMethod: 'air' } }]),
+    },
+  })).body;
+  let full = await Order.findById(order._id).lean();
+  expect(full.paymentList[0].status.received).toBe(false);
+  // Ticked in the order form: ignored
+  await call(orders.updateOrder, { ...as(owner), params: { id: String(order._id) }, body: { paymentList: full.paymentList.map((p) => ({ ...p, status: { ...p.status, received: true } })) } });
+  full = await Order.findById(order._id).lean();
+  expect(full.paymentList[0].status.received).toBe(false);
+  // Delivered with its payment: received, and an edit cannot untick it
+  await deposit(20, 'USD');
+  await call(orders.markPackagesAsDelivered, { ...as(owner), params: { id: String(customer._id) }, body: { selectedPackages: [{ id: String(full.paymentList[0]._id), orderId: full.orderId }], payment: { amountUSD: 20 } } });
+  full = await Order.findById(order._id).lean();
+  expect(full.paymentList[0].status.received).toBe(true);
+  await call(orders.updateOrder, { ...as(owner), params: { id: String(order._id) }, body: { paymentList: full.paymentList.map((p) => ({ ...p, status: { ...p.status, received: false } })) } });
+  expect((await Order.findById(order._id).lean()).paymentList[0].status.received).toBe(true);
+  await expectConsistent('delivered');
+});
