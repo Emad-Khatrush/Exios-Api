@@ -45,4 +45,35 @@ async function debtSource({ accountId, currency, orderLinked }) {
   return { kind: account.cashKind === 'current' ? 'partner' : 'cash', accountId: account._id };
 }
 
-module.exports = { listMoneyAccounts, moneyAccount, debtSource, KIND_LABELS };
+// Where a cash or bank deposit in `currency` can go (owner's request 2026-10-03): the offices and
+// the banks of the deposit screen that have an active box in that currency, so a dinar deposit is
+// never put in an office that only keeps dollars (it would wait for a box that does not exist)
+async function depositPlaces(currency) {
+  const { settings, accountsById, offices } = await getConfig();
+  const { STATEMENT_OFFICE_ALIASES } = require('../seed/defaults');
+  const places = [];
+  Object.entries(settings?.officeAccounts || {}).forEach(([place, byCurrency]) => {
+    const account = accountsById.get(String(byCurrency?.[currency] || ''));
+    if (!account?.isActive) return;
+    const office = offices.get(place);
+    if (office) {
+      if (office.isActive !== false) places.push({ value: place, label: `مكتب ${office.name}`, kind: 'office' });
+    } else if (STATEMENT_OFFICE_ALIASES[place]) {
+      places.push({ value: place, label: account.name, kind: 'bank' });
+    }
+  });
+  return places;
+}
+
+// A deposit of real money names a place with a box in its currency (once accounting is set up)
+async function assertDepositPlace(place, currency, actionType) {
+  if (!place || !['cash', 'bank', undefined, null, ''].includes(actionType)) return;
+  const { settings } = await getConfig();
+  if (!Object.keys(settings?.officeAccounts || {}).length) return;
+  const places = await depositPlaces(currency);
+  if (!places.some((p) => p.value === place)) {
+    throw new ErrorHandler(400, `لا توجد خزينة ${currency} في «${place}». اختر من: ${places.map((p) => p.label).join('، ') || '—'}`);
+  }
+}
+
+module.exports = { listMoneyAccounts, moneyAccount, debtSource, depositPlaces, assertDepositPlace, KIND_LABELS };

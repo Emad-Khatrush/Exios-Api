@@ -1,4 +1,4 @@
-const { Account, Currency, AccountingSettings, AccountingOffice } = require('../models');
+const { Account, Currency, AccountingSettings, AccountingOffice, MigrationRun } = require('../models');
 
 // Settings, currencies, offices and the chart change rarely but are read on every posting.
 // Cached, cleared on every change made through the accounting API, and refreshed after a
@@ -8,11 +8,12 @@ let cache = null;
 let loadedAt = 0;
 
 async function load() {
-  const [settings, currencies, accounts, offices] = await Promise.all([
+  const [settings, currencies, accounts, offices, committed] = await Promise.all([
     AccountingSettings.findOne({ key: 'main' }).lean(),
     Currency.find({}).lean(),
     Account.find({}).lean(),
     AccountingOffice.find({}).lean(),
+    MigrationRun.findOne({ status: 'committed' }).sort({ committedAt: -1 }).select('cutoff countAt config.countDay config.openingCounts.accountId').lean(),
   ]);
   const byId = new Map(accounts.map((account) => [String(account._id), account]));
   const byCode = new Map(accounts.map((account) => [account.code, account]));
@@ -22,7 +23,21 @@ async function load() {
     offices: new Map(offices.map((office) => [office.code, office])),
     accountsById: byId,
     accountsByCode: byCode,
+    // The opening count of the committed migration: when the boxes were counted and which ones.
+    // Money dated before that is already in the counted amount (see ledger.js)
+    count: committed ? countOf(committed) : null,
   };
+}
+
+// A count on an earlier day stands for the end of that day; a count on the day of the run stands
+// for the moment the dry run read the books (older runs: the commit), so what was done later that
+// day is not in it
+function countOf(run) {
+  const { toDay, dayEnd } = require('./dates');
+  const at = run.countAt || run.cutoff;
+  const day = run.config?.countDay || toDay(at);
+  const endOfDay = day < toDay(at);
+  return { day, at: endOfDay ? dayEnd(day) : new Date(at), endOfDay, accountIds: new Set((run.config?.openingCounts || []).map((c) => String(c.accountId))) };
 }
 
 async function getConfig() {

@@ -9,6 +9,10 @@ const UserStatement = require('../models/userStatement');
 const OrderPaymentHistory = require('../models/orderPaymentHistory');
 const mongodb = require('mongodb');
 const { emitAccountingEvent } = require('../accounting/services/events');
+const { FEE_FIELDS } = require('./packageMeasures');
+
+// Each fee a package carries is its own claim in accounting, keyed SHP:<order>:<package>:<suffix>
+const FEE_KEYS = [{ field: 'domesticFee', suffix: 'DOM', label: 'رسوم النقل الداخلي' }, { field: 'customsFee', suffix: 'CUS', label: 'رسوم التخليص الجمركي' }];
 
 const { ObjectId } = mongodb;
 
@@ -30,7 +34,8 @@ const toAmount = (value) => {
 };
 
 // Returns the payment as clean numbers so later steps never work with strings or NaN
-function validatePayment(payment) {
+// allowZero: the caller checks afterwards that nothing was owed (free packages, owner's offer)
+function validatePayment(payment, { allowZero = false } = {}) {
   if (!payment || typeof payment !== 'object') {
     throw new ErrorHandler(400, 'Payment details are missing');
   }
@@ -44,7 +49,7 @@ function validatePayment(payment) {
   if (amountUSD < 0 || amountLYD < 0) {
     throw new ErrorHandler(400, 'Payment amounts cannot be negative');
   }
-  if (amountLYD === 0 && amountUSD === 0) {
+  if (amountLYD === 0 && amountUSD === 0 && !allowZero) {
     throw new ErrorHandler(400, 'Payment amount cannot be zero');
   }
 
@@ -96,25 +101,30 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
 
     const weight = Number(item.deliveredPackages?.weight?.total || 0);
     const exiosPrice = Number(item.deliveredPackages?.exiosPrice || 0);
-    const fee = item.deliveredPackages?.domesticFee;
+    // The fees beside the shipping: transport to another office and customs clearance (same rules)
     let feeUSD = 0;
-    if (Number(fee?.amount) > 0) {
+    const feesOf = {};
+    for (const field of FEE_FIELDS) {
+      const fee = item.deliveredPackages?.[field];
+      if (!(Number(fee?.amount) > 0)) continue;
+      feesOf[field] = fee;
       if (fee.currency === 'LYD') {
         if (todayRate === null) {
           const ExchangeRate = require('../models/exchangeRate');
           todayRate = Number((await ExchangeRate.findOne({ fromCurrency: 'usd' }).lean())?.rate) || 0;
-          if (!todayRate) throw new ErrorHandler(400, 'No dinar rate in the settings to price the transport fee');
+          if (!todayRate) throw new ErrorHandler(400, 'No dinar rate in the settings to price the package fees');
         }
         const usd = roundToTwo(Number(fee.amount) / todayRate);
         if (usd !== Number(fee.usd)) {
-          await Orders.updateOne({ _id: order._id, 'paymentList._id': item._id }, { $set: { 'paymentList.$.deliveredPackages.domesticFee.usd': usd } });
+          await Orders.updateOne({ _id: order._id, 'paymentList._id': item._id }, { $set: { [`paymentList.$.deliveredPackages.${field}.usd`]: usd } });
         }
-        if (feeMode === 'usd') feeUSD = usd;
-        else feesLYD.push({ packageId, orderId: order.orderId, orderMongoId: order._id, trackingNumber: item.deliveredPackages?.trackingNumber || '', amount: Number(fee.amount), rate: todayRate });
+        if (feeMode === 'usd') feeUSD += usd;
+        else feesLYD.push({ packageId, orderId: order.orderId, orderMongoId: order._id, trackingNumber: item.deliveredPackages?.trackingNumber || '', amount: Number(fee.amount), rate: todayRate, field });
       } else {
-        feeUSD = Number(fee.amount);
+        feeUSD += Number(fee.amount);
       }
     }
+    const feeView = (fee) => (fee ? { amount: Number(fee.amount), currency: fee.currency || 'USD', paidIn: fee.currency === 'LYD' && feeMode !== 'usd' ? 'LYD' : 'USD' } : undefined);
 
     packages.push({
       ...selected,
@@ -126,9 +136,16 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
       exiosPrice,
       boxesCount: item.deliveredPackages?.boxesCount || '',
       locationPlace: item.deliveredPackages?.locationPlace || '',
-      // The transport fee: in dollars with the shipping, or in dinars on its own (feesLYD)
-      domesticFee: Number(fee?.amount) > 0 ? { amount: Number(fee.amount), currency: fee.currency || 'USD', paidIn: fee.currency === 'LYD' && feeMode !== 'usd' ? 'LYD' : 'USD' } : undefined,
-      separateFee: fee?.currency === 'LYD' && feeMode !== 'usd' && Number(fee?.amount) > 0,
+      // The fees: in dollars with the shipping, or in dinars each on its own (feesLYD)
+      domesticFee: feeView(feesOf.domesticFee),
+      customsFee: feeView(feesOf.customsFee),
+      // A fee in dinars is paid on its own from the dinar wallet
+      separateFee: Object.values(feesOf).some((fee) => fee.currency === 'LYD' && feeMode !== 'usd'),
+      // What the shipping payment pays: the shipping, then the fees paid with it in dollars
+      payKeys: Object.keys(feesOf).length ? [
+        `SHP:${order._id}:${packageId}`,
+        ...FEE_KEYS.filter(({ field }) => feesOf[field] && !(feesOf[field].currency === 'LYD' && feeMode !== 'usd')).map(({ suffix }) => `SHP:${order._id}:${packageId}:${suffix}`),
+      ] : undefined,
       cost: Number((weight * exiosPrice + feeUSD).toFixed(2)),
     });
   }
@@ -256,7 +273,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       calculationType: '-',
       paymentType: 'wallet',
       createdAt: new Date(),
-      description: pkg?.feeOnly ? `رسوم النقل الداخلي ${pkg?.trackingNumber || ''}` : `تم دفع قيمة الشحن ${pkg?.trackingNumber || ''}`,
+      description: pkg?.feeOnly ? `${(FEE_KEYS.find((f) => f.field === pkg.feeField) || FEE_KEYS[0]).label} ${pkg?.trackingNumber || ''}` : `تم دفع قيمة الشحن ${pkg?.trackingNumber || ''}`,
       amount: amountToDeduct,
       currency,
       total: statementTotal,
@@ -283,8 +300,8 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       });
     }
     const target = pkg?.feeOnly
-      ? { arKeys: [`SHP:${order?._id}:${pkg.id}:DOM`] }
-      : pkg?.separateFee ? { arKeys: [`SHP:${order?._id}:${pkg.id}`] } : { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) };
+      ? { arKeys: [`SHP:${order?._id}:${pkg.id}:${(FEE_KEYS.find((f) => f.field === pkg.feeField) || FEE_KEYS[0]).suffix}`] }
+      : pkg?.payKeys ? { arKeys: pkg.payKeys } : { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) };
     await emitAccountingEvent('statement', userStatement._id, { target }, req.user);
 
     return userStatement;
@@ -297,7 +314,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
 // The transport fees in dinars, each paid from the dinar wallet on its own (spec v8)
 async function payFeesLYD(req, res, next, id, feesLYD) {
   for (const fee of feesLYD || []) {
-    await useWalletBalance(req, res, next, id, { id: fee.packageId, orderId: fee.orderId, trackingNumber: fee.trackingNumber, feeOnly: true }, fee.amount, 'LYD', fee.rate, false);
+    await useWalletBalance(req, res, next, id, { id: fee.packageId, orderId: fee.orderId, trackingNumber: fee.trackingNumber, feeOnly: true, feeField: fee.field }, fee.amount, 'LYD', fee.rate, false);
   }
 }
 
@@ -366,6 +383,7 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
       exiosPrice: pkg?.exiosPrice || 0,
       orderId: pkg?.orderId,
       ...(pkg?.domesticFee && { domesticFee: pkg.domesticFee }),
+      ...(pkg?.customsFee && { customsFee: pkg.customsFee }),
     }))
   };
 

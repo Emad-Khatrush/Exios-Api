@@ -51,8 +51,11 @@ const billLineSchema = new Schema({
   description: { type: String, required: true },
   // In the bill currency
   amount: { type: Number, required: true },
-  target: { type: String, enum: ['order', 'trip', 'expense', 'asset', 'prepaid'], required: true },
+  // customs: the clearance of one package, owed to the clearing agent and sold to the customer
+  // with the package (its cost waits until that sale is recognised)
+  target: { type: String, enum: ['order', 'trip', 'expense', 'asset', 'prepaid', 'customs'], required: true },
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
+  packageId: { type: Schema.Types.ObjectId },
   tripId: { type: Schema.Types.ObjectId, ref: 'Inventory' },
   // A trip's cost by kind, for the trip report (spec v8): shipping, customs, clearance, transport, other
   costCategory: { type: String, enum: ['shipping', 'customs', 'clearance', 'transport', 'other', null] },

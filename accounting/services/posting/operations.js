@@ -12,7 +12,7 @@ const { getConfig } = require('../config');
 const { walletRole, resolveCashAccount, resolveStaffCashAccount } = require('../roles');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
-const { purchaseKey, shipmentKey, generalDebtKey, domesticFeeKey } = require('../claims/keys');
+const { purchaseKey, shipmentKey, generalDebtKey, PACKAGE_FEES } = require('../claims/keys');
 const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount } = require('./common');const { roundHalfAway } = require('../money');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
@@ -43,13 +43,14 @@ async function resolveClaimKeys(target, session) {
     if (balance?.order) target = { ...target, orderId: balance.order, category: target.category || balance.debtType };
   }
   if (!target.orderId) return [];
-  const order = await Order.findById(target.orderId).select('paymentList._id paymentList.deliveredPackages.domesticFee isPayment').session(session).lean();
+  const order = await Order.findById(target.orderId).select('paymentList._id paymentList.deliveredPackages.domesticFee paymentList.deliveredPackages.customsFee isPayment').session(session).lean();
   if (!order) return [];
   if (target.category === 'invoice' || (!target.category && !target.packageIds?.length && order.isPayment)) return [purchaseKey(order._id)];
   const packageIds = target.packageIds?.length ? target.packageIds : (order.paymentList || []).map((p) => p._id);
-  // A package with a transport fee is paid for both: its shipping, then its fee
-  const withFee = new Set((order.paymentList || []).filter((p) => Number(p.deliveredPackages?.domesticFee?.usd) > 0).map((p) => String(p._id)));
-  const keys = packageIds.flatMap((id) => [shipmentKey(order._id, id), ...(withFee.has(String(id)) ? [domesticFeeKey(order._id, id)] : [])]);
+  // A package with fees (transport, customs clearance) is paid for all: its shipping, then its fees
+  const byId = new Map((order.paymentList || []).map((p) => [String(p._id), p]));
+  const feeKeys = (id) => PACKAGE_FEES.filter(({ field }) => Number(byId.get(String(id))?.deliveredPackages?.[field]?.usd) > 0).map(({ key }) => key(order._id, id));
+  const keys = packageIds.flatMap((id) => [shipmentKey(order._id, id), ...feeKeys(id)]);
   if (target.packageIds?.length) return keys;
   // "received goods" without packages: the ones still owed, oldest first
   const open = await openBalances(keys, session);
@@ -328,7 +329,14 @@ async function repostStatement(statementId, options = {}) {
     target = first?.payload?.target;
   }
   if (!target && oldKeys.length) target = { arKeys: oldKeys };
-  const result = await postStatement(statementId, { ...options, target, version: (statement.editHistory || []).length + 1 });
+  // Each re-post gets a version no entry of this line has used yet. Taken from the edit count it
+  // collided when two edits were queued before either was processed: the second reversed the
+  // entry, found its version taken and left the line with no entry at all
+  const made = await JournalEntry.find({ 'source.model': 'UserStatement', 'source.id': statement._id, reversalOf: null }).select('eventKey').session(session).lean();
+  const taken = new Set(made.map((entry) => Number(String(entry.eventKey).match(/:v(\d+)$/)?.[1] || 1)));
+  let version = made.length + 1;
+  while (taken.has(version)) version += 1;
+  const result = await postStatement(statementId, { ...options, target, version });
   // Orders the old entry touched are brought up to date too
   for (const orderId of ordersOf(oldKeys)) await syncOrder(orderId, options);
   return { reversed: reversals.length, ...result };

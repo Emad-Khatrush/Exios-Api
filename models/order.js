@@ -317,6 +317,14 @@ const orderSchema = new Schema({
         currency: { type: String, enum: ['USD', 'LYD'] },
         usd: Number
       },
+      // Customs clearance sold with this package (owner's request 2026-10-03), e.g. a full container
+      // cleared for 2,500 LYD and charged 3,000 LYD: its own claim, revenue 410900 when delivered and
+      // paid. The agent's invoice is a supplier bill line of kind 'customs' on this package
+      customsFee: {
+        amount: Number,
+        currency: { type: String, enum: ['USD', 'LYD'] },
+        usd: Number
+      },
       // Not collected for too long (spec v8): declared abandoned, then possibly sold
       abandoned: {
         status: { type: String, enum: ['abandoned', 'sold'] },

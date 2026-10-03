@@ -14,7 +14,7 @@ const { resolveAccount } = require('../roles');
 const { getConfig } = require('../config');
 const { nextSeq } = require('../counter');
 const { toMinor } = require('../money');
-const { purchaseKey, shipmentKey, domesticFeeKey, isDomesticFeeKey, CLAIM_EVENTS } = require('./keys');
+const { purchaseKey, shipmentKey, isDomesticFeeKey, customsFeeKey, isCustomsFeeKey, PACKAGE_FEES, CLAIM_EVENTS } = require('./keys');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 
@@ -38,7 +38,7 @@ async function roleIds() {
     'customer_receivable', 'deferred_shipping_revenue', 'deferred_purchase_revenue', 'trip_cost_wip', 'purchase_cost_wip',
     'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices',
     'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices',
-    'revenue_remittance', 'cost_remittance', 'rounding',
+    'revenue_remittance', 'cost_remittance', 'rounding', 'revenue_customs', 'cost_customs', 'customs_cost_wip',
   ];
   const accounts = {};
   for (const role of roles) accounts[role] = await resolveAccount(role);
@@ -71,7 +71,8 @@ async function tripAllocation(tripId, ctx) {
   const link = domestic ? 'domesticTripId' : 'tripId';
   let result = { total: 0, shares: new Map(), shippingType: trip?.shippingType };
   if (isTrip) {
-    const costAccounts = [ctx.accounts.trip_cost_wip, ctx.accounts.cost_shipping_air, ctx.accounts.cost_shipping_sea, ctx.accounts.cost_shipping_domestic].map((a) => a._id);
+    // Free packages' shares sit on the purchase cost with the trip's id (step 4)
+    const costAccounts = [ctx.accounts.trip_cost_wip, ctx.accounts.cost_shipping_air, ctx.accounts.cost_shipping_sea, ctx.accounts.cost_shipping_domestic, ctx.accounts.cost_purchase_invoices].map((a) => a._id);
     const [cost] = await JournalEntry.aggregate([
       { $match: { 'lines.tripId': oid(tripId) } },
       { $unwind: '$lines' },
@@ -113,12 +114,12 @@ async function orderLedger(orderId, ctx) {
 
   const a = ctx.accounts;
   const is = (row, account) => String(row._id.accountId) === String(account._id);
-  const revenueIds = new Set(['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices', 'revenue_remittance'].map((r) => String(a[r]._id)));
+  const revenueIds = new Set(['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices', 'revenue_remittance', 'revenue_customs'].map((r) => String(a[r]._id)));
   const shippingCostIds = new Set(['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'].map((r) => String(a[r]._id)));
 
   const state = {
     ar: new Map(), arByPartner: new Map(), billed: new Map(), recognized: new Map(), refunded: new Map(), writtenOff: new Map(),
-    shipCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0, remittanceCostRecognized: 0,
+    shipCost: new Map(), customsCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0, remittanceCostRecognized: 0,
   };
   const add = (map, key, value) => map.set(key, (map.get(key) || 0) + value);
 
@@ -139,10 +140,19 @@ async function orderLedger(orderId, ctx) {
       if (!state.recognized.has(arKey)) state.recognized.set(arKey, new Map());
       add(state.recognized.get(arKey), String(row._id.accountId), -row.net);
     }
-    if (shippingCostIds.has(String(row._id.accountId)) && packageId && tripId) {
-      add(state.shipCost, `${packageId}|${tripId}`, row.net);
+    // The clearing agent's invoice for a package: waiting, then cost of sales (step 4)
+    if (packageId && (is(row, a.customs_cost_wip) || is(row, a.cost_customs))) {
+      const item = state.customsCost.get(String(packageId)) || { total: 0, recognized: 0 };
+      item.total += row.net;
+      if (is(row, a.cost_customs)) item.recognized += row.net;
+      state.customsCost.set(String(packageId), item);
+      return;
     }
-    if (is(row, a.purchase_cost_wip) || is(row, a.cost_purchase_invoices) || is(row, a.cost_remittance)) {
+    // A package's share of a trip; a free package's share sits on the purchase cost (see step 4)
+    const tripShare = packageId && tripId && (shippingCostIds.has(String(row._id.accountId)) || is(row, a.cost_purchase_invoices));
+    if (tripShare) {
+      add(state.shipCost, `${packageId}|${tripId}`, row.net);
+    } else if (is(row, a.purchase_cost_wip) || is(row, a.cost_purchase_invoices) || is(row, a.cost_remittance)) {
       state.purchaseCostTotal += row.net;
       if (!is(row, a.purchase_cost_wip)) state.purchaseCostRecognized += row.net;
       if (is(row, a.cost_remittance)) state.remittanceCostRecognized += row.net;
@@ -217,9 +227,12 @@ async function syncOrder(orderId, options = {}) {
   packages.forEach((pkg, id) => {
     const charge = active ? packageCharge(pkg) : 0;
     if (charge > 0) desired.set(shipmentKey(order._id, id), charge);
-    // The transport fee to another office: its own claim beside the shipping (spec v8)
-    const fee = active ? toMinor(Number(pkg?.deliveredPackages?.domesticFee?.usd || 0), 2) : 0;
-    if (fee > 0) desired.set(domesticFeeKey(order._id, id), fee);
+    // The transport fee to another office and the customs clearance: each its own claim beside the
+    // shipping (spec v8; owner's request 2026-10-03)
+    PACKAGE_FEES.forEach(({ field, key }) => {
+      const fee = active ? toMinor(Number(pkg?.deliveredPackages?.[field]?.usd || 0), 2) : 0;
+      if (fee > 0) desired.set(key(order._id, id), fee);
+    });
   });
   // A refund given to the customer on a claim lowers what they are billed (never below zero)
   state.refunded.forEach((refunded, key) => {
@@ -230,7 +243,7 @@ async function syncOrder(orderId, options = {}) {
   // if delivered, and its whole cost goes to cost of sales. The wallet is not touched.
   const abandoned = new Set([...packages].filter(([, p]) => p?.deliveredPackages?.abandoned?.status).map(([id]) => id));
   if (active) {
-    abandoned.forEach((id) => [shipmentKey(order._id, id), domesticFeeKey(order._id, id)].forEach((key) => {
+    abandoned.forEach((id) => [shipmentKey(order._id, id), ...PACKAGE_FEES.map(({ key }) => key(order._id, id))].forEach((key) => {
       if (!desired.has(key)) return;
       const paidSoFar = Math.max((state.billed.get(key) || 0) - (state.ar.get(key) || 0), 0);
       desired.set(key, Math.min(desired.get(key), paidSoFar));
@@ -246,7 +259,7 @@ async function syncOrder(orderId, options = {}) {
     const deferred = packageId ? a.deferred_shipping_revenue : a.deferred_purchase_revenue;
     const pkg = packageId && packages.get(packageId);
     const fee = isDomesticFeeKey(key);
-    const what = packageId ? `${fee ? 'نقل داخلي' : 'شحن'} ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
+    const what = packageId ? `${fee ? 'نقل داخلي' : isCustomsFeeKey(key) ? 'تخليص جمركي' : 'شحن'} ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
     const reason = !active ? 'إلغاء' : !have ? 'مطالبة' : want > have ? 'زيادة' : 'تخفيض';
     const dims = { arKey: key, orderId: order._id, ...(packageId && { packageId: oid(packageId) }), ...(fee && pkg?.domesticTripId && { tripId: oid(pkg.domesticTripId) }) };
     posted.push(await post(ctx, 'CLAIM', key, `${reason} ${what} - طلب ${order.orderId}`, move(
@@ -326,6 +339,33 @@ async function syncOrder(orderId, options = {}) {
     }
   }
 
+  // ---- 2d. An order marked (or unmarked) "Alipay transfer" after its revenue or cost was
+  // recognised: what was recognised moves to the accounts of its kind, so the Alipay screen and
+  // the purchase invoices each show their own revenue and cost (spec 19.5)
+  if (order.isPayment) {
+    const key = purchaseKey(order._id);
+    const [revenueTo, revenueFrom] = order.isRemittance ? [a.revenue_remittance, a.revenue_purchase_invoices] : [a.revenue_purchase_invoices, a.revenue_remittance];
+    const byAccount = state.recognized.get(key);
+    const misplaced = byAccount?.get(String(revenueFrom._id)) || 0;
+    if (misplaced > 0) {
+      const dims = { arKey: key, orderId: order._id, office };
+      posted.push(await post(ctx, 'RECLASS', key, `نقل إيراد فاتورة شراء ${order.isRemittance ? 'إلى حوالات Alipay' : 'من حوالات Alipay'} - طلب ${order.orderId}`, move(
+        misplaced, { accountId: revenueFrom._id, ...dims }, { accountId: revenueTo._id, ...dims },
+      )));
+      byAccount.set(String(revenueFrom._id), 0);
+      byAccount.set(String(revenueTo._id), (byAccount.get(String(revenueTo._id)) || 0) + misplaced);
+    }
+    const costMisplaced = order.isRemittance ? state.purchaseCostRecognized - state.remittanceCostRecognized : state.remittanceCostRecognized;
+    if (costMisplaced > 0) {
+      const [costTo, costFrom] = order.isRemittance ? [a.cost_remittance, a.cost_purchase_invoices] : [a.cost_purchase_invoices, a.cost_remittance];
+      const dims = { orderId: order._id, office, arKey: key };
+      posted.push(await post(ctx, 'RECLASS', `${key}:COST`, `نقل تكلفة فاتورة شراء ${order.isRemittance ? 'إلى حوالات Alipay' : 'من حوالات Alipay'} - طلب ${order.orderId}`, move(
+        costMisplaced, { accountId: costTo._id, ...dims }, { accountId: costFrom._id, ...dims },
+      )));
+      state.remittanceCostRecognized = order.isRemittance ? state.purchaseCostRecognized : 0;
+    }
+  }
+
   // ---- 3. Revenue: recognised when paid (and, for a package, delivered) ----
   // A written-off claim counts as settled; its revenue is only what was paid
   const recognizedNow = new Map();
@@ -357,6 +397,9 @@ async function syncOrder(orderId, options = {}) {
       if (isDomesticFeeKey(key)) {
         // The transport fee: domestic shipping revenue
         revenueAccount = a.revenue_shipping_domestic;
+      } else if (isCustomsFeeKey(key)) {
+        // The customs clearance sold with the package (owner's request 2026-10-03)
+        revenueAccount = a.revenue_customs;
       } else if (packageId) {
         const { role, fallback } = revenueRoleFor(pkg, await internationalTrip(pkg, ctx), order);
         revenueAccount = a[role];
@@ -373,7 +416,7 @@ async function syncOrder(orderId, options = {}) {
       const [accountId] = [...byAccount.entries()].sort((x, y) => y[1] - x[1])[0] || [];
       revenueAccount = { _id: accountId ? oid(accountId) : (packageId ? a.revenue_other._id : a.revenue_purchase_invoices._id) };
     }
-    const what = packageId ? `${isDomesticFeeKey(key) ? 'نقل داخلي' : 'شحن'} ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
+    const what = packageId ? `${isDomesticFeeKey(key) ? 'نقل داخلي' : isCustomsFeeKey(key) ? 'تخليص جمركي' : 'شحن'} ${pkg?.deliveredPackages?.trackingNumber || packageId}` : 'فاتورة شراء';
     posted.push(await post(ctx, 'RECOGNITION', key, `${want > have ? 'الاعتراف بإيراد' : 'عكس الاعتراف بإيراد'} ${what} - طلب ${order.orderId}`, move(
       want - have,
       { accountId: deferred._id, ...dims },
@@ -404,8 +447,12 @@ async function syncOrder(orderId, options = {}) {
 
   const packageIds = new Set([...packages.keys(), ...[...state.shipCost.keys()].map((k) => k.split('|')[0])]);
   for (const packageId of packageIds) {
-    const recognized = recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
     const pkg = packages.get(packageId);
+    // Free shipping (owner's offer with purchases, 2026-10-03): the package is weighed but priced at
+    // zero, so it has no revenue to wait for. Its share of the trip is a cost of the order once
+    // delivered: of the purchase invoice when the order has one, else of the shipping
+    const free = active && !!pkg && !!pkg.status?.received && packageCharge(pkg) === 0 && Number(pkg.deliveredPackages?.weight?.total) > 0;
+    const recognized = free || recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
     const trip = await internationalTrip(pkg, ctx);
     // The air or sea trip that carried it, and the domestic trip that took it on (spec v8)
     const tripIds = new Set([
@@ -417,15 +464,35 @@ async function syncOrder(orderId, options = {}) {
       const want = recognized ? (allocation.shares.get(packageId) || 0) : 0;
       const have = state.shipCost.get(`${packageId}|${tripId}`) || 0;
       if (want === have) continue;
-      const role = allocation.shippingType === 'sea' ? 'cost_shipping_sea' : allocation.shippingType === 'domestic' ? 'cost_shipping_domestic' : 'cost_shipping_air';
+      const shippingRole = allocation.shippingType === 'sea' ? 'cost_shipping_sea' : allocation.shippingType === 'domestic' ? 'cost_shipping_domestic' : 'cost_shipping_air';
+      const role = free && order.isPayment ? 'cost_purchase_invoices' : shippingRole;
       const dims = { tripId: oid(tripId), packageId: oid(packageId), orderId: order._id, office };
       const tracking = packages.get(packageId)?.deliveredPackages?.trackingNumber || packageId;
-      posted.push(await post(ctx, 'COST_RECOGNITION', `${packageId}:${tripId}`, `حصة الطرد ${tracking} من تكلفة الرحلة - طلب ${order.orderId}`, move(
+      posted.push(await post(ctx, 'COST_RECOGNITION', `${packageId}:${tripId}`, `حصة الطرد ${tracking} من تكلفة الرحلة${free ? ' (شحن مجاني)' : ''} - طلب ${order.orderId}`, move(
         want - have,
         { accountId: a[role]._id, ...dims },
         { accountId: a.trip_cost_wip._id, ...dims },
       )));
     }
+  }
+
+  // The clearing agent's invoice of a package follows the customs clearance it sold: cost of sales
+  // once that is recognised (delivered and paid in full) or written off. Cleared but sold to nobody
+  // (no fee on the package), it is a cost once the package is delivered. A cancelled order keeps it
+  // waiting, like a purchase cost, until the accountant settles it.
+  for (const [packageId, cost] of state.customsCost) {
+    const pkg = packages.get(packageId);
+    const key = customsFeeKey(order._id, packageId);
+    const sold = (state.billed.get(key) || 0) > 0;
+    const recognized = active && (recognizedNow.get(key) > 0 || writtenOffKeys.has(key) || (!sold && !!pkg?.status?.received));
+    const want = recognized ? cost.total : 0;
+    if (want === cost.recognized) continue;
+    const dims = { orderId: order._id, packageId: oid(packageId), office, arKey: key };
+    posted.push(await post(ctx, 'COST_RECOGNITION', key, `تكلفة تخليص جمركي ${pkg?.deliveredPackages?.trackingNumber || packageId} - طلب ${order.orderId}`, move(
+      want - cost.recognized,
+      { accountId: a.cost_customs._id, ...dims },
+      { accountId: a.customs_cost_wip._id, ...dims },
+    )));
   }
 
   if (!active) await hideCancelledClaims(order._id, ctx);

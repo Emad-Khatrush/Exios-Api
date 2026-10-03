@@ -99,6 +99,42 @@ async function resolveJournal({ journalId, journalCode, eventType }, lines, conf
   return Journal.findOne({ code }).session(session);
 }
 
+// Money dated before the opening count (owner's decision 2026-10-03): whatever moved through the
+// counted boxes by then is already in the counted amount. An operation entered later with such a
+// date (an expense or a deposit forgotten until after go-live) must not move a counted box a
+// second time: its box line goes to the opening balance account instead, with a note on the
+// entry. The profit of its month is still right, since the expense or revenue line keeps its date.
+// What is done on the count day after the count (a withdrawal that afternoon) moves the box as
+// usual (config.count.at). The migration's own entries, cash counts and manual entries are left
+// alone; a reversal follows the rule only when it undoes a historical entry (otherwise it mirrors
+// its original exactly, which was already moved if it had to be).
+async function beforeCountLines(input, lines, config, notes) {
+  const { count } = config;
+  if (!count || input.isHistorical || input.migrationRunId || input.countRule === 'skip') return lines;
+  // A count, and a manual entry (suspense settlements among them): the accountant names the box on purpose
+  if (['CASHCOUNT', 'OPENING_CASH', 'MANUAL', 'YEAR_CLOSE'].includes(input.eventType)) return lines;
+  // In the count: a day before it, the count day itself when the count is its end, or (for an
+  // operation with its time) any moment up to the count
+  const inputDate = input.date || new Date();
+  const day = toDay(inputDate);
+  const inCount = isDay(inputDate) ? day < count.day || (day === count.day && count.endOfDay) : new Date(inputDate) <= count.at;
+  if (!inCount) return lines;
+  const counted = lines.filter((line) => count.accountIds.has(String(line.accountId)));
+  if (!counted.length) return lines;
+  const opening = await resolveAccount('opening_balance');
+  const nameOf = (line) => config.accountsById.get(String(line.accountId))?.name;
+  notes.push(`تاريخ العملية ${day} قبل الجرد (${count.day})، والجرد احتسب هذا المال: سُجّل على الأرصدة الافتتاحية بدل ${[...new Set(counted.map(nameOf))].join('، ')}`);
+  return lines.flatMap((line) => {
+    if (!count.accountIds.has(String(line.accountId))) return [line];
+    // A foreign-currency line worth no cents moves nothing once it is in dollars
+    if (!line.debit && !line.credit) return [];
+    return [{
+      accountId: opening._id, accountCode: opening.code, debit: line.debit, credit: line.credit, currency: USD, amountCurrency: line.debit - line.credit,
+      label: `قبل يوم الجرد - ${nameOf(line)}${line.label ? `: ${line.label}` : ''}`, ...(line.office && { office: line.office }),
+    }];
+  });
+}
+
 // Validates and saves one journal entry inside the caller's transaction.
 // Posting the same eventKey twice returns the first entry instead of creating a second one.
 async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
@@ -115,10 +151,12 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
   if (!Array.isArray(input.lines) || input.lines.length < 2) {
     throw new ErrorHandler(400, 'القيد يحتاج سطرين على الأقل');
   }
-  const lines = [];
+  let lines = [];
   for (let i = 0; i < input.lines.length; i++) {
     lines.push(await buildLine(input.lines[i], i, config));
   }
+  const notes = [...(input.notes || [])];
+  lines = await beforeCountLines(input, lines, config, notes);
 
   const totalDebit = lines.reduce((sum, line) => sum + line.debit, 0);
   const totalCredit = lines.reduce((sum, line) => sum + line.credit, 0);
@@ -141,7 +179,6 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
     });
   }
 
-  const notes = [...(input.notes || [])];
   const inputDate = input.date || new Date();
   let day = toDay(inputDate);
   // A plain day is stored as the start of that day in Libya; an instant keeps its time
@@ -215,6 +252,8 @@ async function reverseEntry(entryId, { session, user, reason, eventKey, eventTyp
     source: original.source,
     reversalOf: original._id,
     ...(migrationRunId && { migrationRunId, isHistorical: !!isHistorical }),
+    // A live entry was already moved off a counted box if it had to be: it is undone line for line
+    ...(!original.isHistorical && { countRule: 'skip' }),
     lines: original.lines.map((line) => {
       const plain = line.toObject ? line.toObject() : { ...line };
       return {

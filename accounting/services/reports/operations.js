@@ -49,7 +49,7 @@ const COST_CATEGORIES = ['shipping', 'customs', 'clearance', 'transport', 'other
 async function tripProfitability({ status, search, shippingType } = {}) {
   const roles = await roleIds([
     'trip_cost_wip', 'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'deferred_shipping_revenue',
-    'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other',
+    'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'cost_purchase_invoices',
   ]);
   const query = { inventoryType: 'inventoryGoods' };
   if (status) query.status = status;
@@ -77,7 +77,8 @@ async function tripProfitability({ status, search, shippingType } = {}) {
   const domesticTrips = new Map((await Inventory.find({ _id: { $in: domesticIds.map(oid) } }).select('inventoryPlace').lean()).map((t) => [String(t._id), t]));
   const weightOf = (pkg) => Number(pkg.deliveredPackages?.weight?.total || 0);
 
-  const costIds = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'].map((r) => roles[r]);
+  // A free package's share of its trip is a cost of its purchase, still part of what the trip cost
+  const costIds = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices'].map((r) => roles[r]);
   const revenueIds = ['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other'].map((r) => roles[r]);
   const allTripIds = [...new Set([...tripIds.map(String), ...domesticIds])];
   const [byTrip, byPackage, feesByTrip, bills] = await Promise.all([
@@ -121,6 +122,7 @@ async function tripProfitability({ status, search, shippingType } = {}) {
       tripId: trip._id, voyage: trip.voyage, shippingType: trip.shippingType, status: trip.status, office: trip.inventoryPlace,
       date: trip.arrivalDate || trip.createdAt, packages: packages.length, weight, unit, mixedUnits: !unit && units.length > 1,
       cost, costInProgress, totalCost, byCategory: categories.get(String(trip._id)) || {},
+      freeShippingCost: ledger?.get(roles.cost_purchase_invoices) || 0,
       volumetricPackages: packages.filter((p) => p.deliveredPackages?.volumetric?.enabled).length,
     };
     if (!international) {

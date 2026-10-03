@@ -13,7 +13,19 @@ const {
 } = require('./common');
 const { getBalance, valueOutflow } = require('../carrying');
 
-const TARGETS = ['order', 'trip', 'expense', 'asset', 'prepaid'];
+const TARGETS = ['order', 'trip', 'expense', 'asset', 'prepaid', 'customs'];
+// Costs that exist only against an order: an Alipay transfer's yuan and a package's customs
+// clearance. (Shipping and purchase costs may still be typed as plain expenses: bank rules post
+// unlinked card purchases there.)
+const ORDER_ONLY_COST_ROLES = ['cost_remittance', 'cost_customs'];
+
+async function isOrderOnlyCost(account) {
+  for (const role of ORDER_ONLY_COST_ROLES) {
+    const roleAccount = await resolveAccount(role).catch(() => null);
+    if (roleAccount && String(roleAccount._id) === String(account._id)) return true;
+  }
+  return false;
+}
 const MONTH = /^\d{4}-\d{2}$/;
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 
@@ -62,6 +74,11 @@ async function validateBillInput(input, session) {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('placedAt').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
     }
+    if (line.target === 'customs') {
+      const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('paymentList._id').session(session);
+      if (!order) throw fail(`${where}: الطلب غير موجود`);
+      if (!line.packageId || !order.paymentList.id(line.packageId)) throw fail(`${where}: اختر الطرد الذي خُلِّص`);
+    }
     if (line.target === 'trip') {
       const trip = line.tripId && mongoose.isValidObjectId(line.tripId) && await Inventory.findById(line.tripId).select('inventoryType').session(session);
       if (!trip) throw fail(`${where}: الرحلة غير موجودة`);
@@ -72,6 +89,12 @@ async function validateBillInput(input, session) {
       const account = await getAccount(line.accountId, `${where}: حساب المصروف`);
       if (account.type !== 'expense') throw fail(`${where}: اختر حساب مصروف`);
       if (!(await officeExists(line.office))) throw fail(`${where}: المكتب مطلوب`);
+      // Typed as a plain expense such a cost is counted beside the order's own and shows as a loss
+      // with no revenue (a yuan transfer entered once on the order and again as "حوالة للعميل" on
+      // 510700, 2026-10-03)
+      if (!input.isHistorical && await isOrderOnlyCost(account)) {
+        throw fail(`${where}: «${account.name}» تكلفة مبيعات تُسجَّل على الطلب نفسه (إرسال حوالة Alipay من صفحة الطلب، أو سطر «تخليص جمركي لطرد»)، لا كمصروف عام`);
+      }
     }
     if (line.target === 'asset') {
       const account = await getAccount(line.accountId, `${where}: حساب الأصل`);
@@ -89,9 +112,9 @@ async function validateBillInput(input, session) {
   }
 
   if (input.paidBeforeCount) {
-    const { settings } = await require('../config').getConfig();
+    const { settings, count } = await require('../config').getConfig();
     if (!settings?.cutoffAt) throw fail('«دُفع قبل يوم الجرد» بعد اعتماد الترحيل التاريخي فقط؛ قبله أدخل المصروف عادياً ويدخل في التشغيل التجريبي');
-    const countDay = require('../dates').toDay(settings.cutoffAt);
+    const countDay = count?.day || require('../dates').toDay(settings.cutoffAt);
     if (input.day > countDay) throw fail(`«دُفع قبل يوم الجرد» لمصروف بتاريخ ${countDay} أو قبله`);
     if (input.paidImmediatelyFrom || input.isCreditNote) throw fail('المصروف المدفوع قبل يوم الجرد لا يُدفع من خزينة ولا يكون إشعاراً دائناً');
   }
@@ -114,6 +137,12 @@ async function costLine(bill, line, usd, session, user) {
     // the bill moves it to cost of sales
     const account = await resolveAccount('purchase_cost_wip');
     return { ...base, accountId: account._id, orderId: toId(line.orderId), office: order.placedAt };
+  }
+  if (line.target === 'customs') {
+    // The clearance of one package, waiting until the clearance sold with it is recognised
+    const order = await Order.findById(line.orderId).select('placedAt').session(session);
+    const account = await resolveAccount('customs_cost_wip');
+    return { ...base, accountId: account._id, orderId: toId(line.orderId), packageId: toId(line.packageId), office: order.placedAt };
   }
   if (line.target === 'trip') {
     const trip = await Inventory.findById(line.tripId).select('inventoryPlace shippingType').session(session);
@@ -151,9 +180,13 @@ async function costLine(bill, line, usd, session, user) {
   return { ...base, accountId: account._id, prepaidId: line.prepaidId, office: line.office };
 }
 
-// { shares: USD cents per line } when the bill is valued at the paying account's average rate
+// { shares: USD cents per line } when the bill is valued at the paying account's average rate:
+// yuan sent from Alipay only (the transfer's cost is the yuan at what they cost, spec 19.5). Any
+// other bill or expense is valued at the rate of its own date, or the rate typed on it (owner's
+// decision 2026-10-03); the box still gives its money at its average rate, the difference being
+// an exchange gain or loss
 async function carriedValue(bill, session) {
-  if (!bill.paidImmediatelyFrom || bill.isHistorical || bill.isCreditNote || Number(bill.rate) > 0 || bill.currency === 'USD') return null;
+  if (!bill.paidImmediatelyFrom || bill.isHistorical || bill.isCreditNote || Number(bill.rate) > 0 || bill.currency !== 'CNY') return null;
   const from = await getAccount(bill.paidImmediatelyFrom, 'حساب الدفع');
   if (!from.isCash || currencyOf(from) !== bill.currency) return null;
   const minors = [];

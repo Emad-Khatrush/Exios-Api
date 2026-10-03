@@ -21,6 +21,12 @@ const {
 
 const PENDING_DAYS = 7;
 
+// Yuan moves when it moves: a later date takes it out of the balance before it is spent (a transfer
+// dated tomorrow was counted out of the box twice by the opening count, 2026-10-03)
+const notFuture = (day) => {
+  if (day > today()) throw fail(`التاريخ ${day} في المستقبل؛ سجّل العملية بتاريخ حدوثها`);
+};
+
 async function alipayAccount(id) {
   const account = await getAccount(id, 'حساب Alipay');
   if (!account.isCash || currencyOf(account) !== 'CNY') throw fail('اختر حساب Alipay باليوان');
@@ -31,6 +37,7 @@ async function createYuanPurchase(input, { session, req }) {
   const existing = await findExisting(YuanPurchase, input.idempotencyKey, session);
   if (existing) return existing;
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
+  notFuture(input.day);
   const broker = await Vendor.findById(input.vendorId).session(session);
   if (!broker) throw fail('اختر الوسيط');
   const from = await getAccount(input.fromAccountId, 'الحساب الدافع');
@@ -77,6 +84,7 @@ async function completeYuanPurchase(id, input, { session, req }) {
   if (doc.arrived) throw fail('اليوان وصل مسبقاً');
   const day = input.day || today();
   if (!isDay(day)) throw fail('التاريخ غير صالح');
+  notFuture(day);
   const cny = Number(input.cnyReceived || doc.cnyExpected);
   if (!(cny > 0)) throw fail('الكمية الواصلة مطلوبة');
   const to = await alipayAccount(input.toAccountId || doc.toAccountId);
@@ -229,6 +237,7 @@ async function sendRemittance(orderId, input, { session, req }) {
   if (cny > account.cny + 0.001) throw fail(`رصيد ${account.name} ${account.cny} يوان فقط`);
   const day = input.day || today();
   if (!isDay(day)) throw fail('التاريخ غير صالح');
+  notFuture(day);
   const vendor = await remittanceVendor(session);
   const { createBill } = require('./payables');
   return createBill({

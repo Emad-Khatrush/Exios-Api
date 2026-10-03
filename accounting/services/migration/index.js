@@ -85,7 +85,9 @@ async function rebuildCounters() {
     { $lookup: { from: JournalEntry.collection.name, localField: 'entryId', foreignField: '_id', as: 'entry' } }, { $match: { entry: { $size: 0 } } }, { $project: { _id: 1 } },
   ]);
   if (orphaned.length) await Voucher.deleteMany({ _id: { $in: orphaned.map((v) => v._id) } });
-  const numbered = [Voucher, docs.SupplierBill, docs.SupplierPayment, docs.TreasuryTransfer, docs.CashCount, docs.FixedAsset, docs.PrepaidExpense, docs.SalaryPayment, docs.EquityTransaction, docs.Netting];
+  // Every document numbered by nextDocNumber: one left out would restart at 1 and collide with its
+  // own existing numbers ('القيمة موجودة مسبقاً')
+  const numbered = [Voucher, docs.SupplierBill, docs.SupplierPayment, docs.SupplierReceipt, docs.TreasuryTransfer, docs.CashCount, docs.FixedAsset, docs.PrepaidExpense, docs.SalaryPayment, docs.EquityTransaction, docs.Netting, docs.YuanPurchase, docs.CustomerRefund, docs.ClaimWriteOff];
   // Document numbers look like BILL/2026/0007
   const highest = new Map();
   for (const Model of numbered) {
@@ -168,6 +170,7 @@ async function commitRun(runId, { user } = {}) {
   if (!run) throw new ErrorHandler(404, 'التشغيل غير موجود');
   if (run.status !== 'review') throw fail('يُعتمد التشغيل بعد انتهائه ومراجعة تقريره فقط');
   run.status = 'committing';
+  run.countAt = run.cutoff;
   await run.save();
   const since = run.cutoff;
   try {
@@ -184,6 +187,8 @@ async function commitRun(runId, { user } = {}) {
     run.message = `اعتُمد؛ أُضيفت ${catchUp.events} عملية حدثت أثناء المراجعة`;
     run.report = { ...(run.report || {}), catchUp: { events: catchUp.events, walletDifferences: catchUp.walletDifferences.length, coveredEvents: covered }, renumbered: numbering.changed, committedBy: user?._id };
     await run.save();
+    // The count day of this run now applies to new entries (config.count)
+    invalidateConfig();
     return run;
   } catch (error) {
     run.cutoff = since;

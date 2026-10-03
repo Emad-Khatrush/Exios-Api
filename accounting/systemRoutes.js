@@ -6,7 +6,7 @@ const multer = require('multer');
 const { protect, allowAdminsAndEmployee } = require('../middleware/check-auth');
 const { handle } = require('./controllers/util');
 const staff = require('./services/staffOperations');
-const { listMoneyAccounts } = require('./services/moneyAccounts');
+const { listMoneyAccounts, depositPlaces } = require('./services/moneyAccounts');
 const customerChange = require('./services/customerChange');
 
 const router = express.Router();
@@ -29,6 +29,8 @@ async function uploadReceipts(files) {
 router.get('/acc/options', STAFF, handle(async (req, res) => res.json(await staff.options(req.user, { currency: req.query.currency }))));
 // Where a deposit can go or a debt's money came from: cash boxes, banks, partners' current accounts
 router.get('/acc/money-accounts', STAFF, handle(async (req, res) => res.json({ results: await listMoneyAccounts({ currency: req.query.currency }) })));
+// The offices and banks a cash deposit in this currency can go to (each has a box in it)
+router.get('/acc/deposit-places', STAFF, handle(async (req, res) => res.json({ results: await depositPlaces(String(req.query.currency || 'USD')) })));
 // An order marked as an Alipay transfer: send its yuan from Alipay in one step (owner's decision, v8)
 router.route('/acc/orders/:orderId/alipay')
   .get(STAFF, handle(async (req, res) => res.json(await require('./services/posting/alipay').remittanceStatus(req.params.orderId))))
@@ -47,6 +49,13 @@ router.get('/acc/package-settings', STAFF, handle(async (req, res) => {
   const ExchangeRate = require('../models/exchangeRate');
   const rate = Number((await ExchangeRate.findOne({ fromCurrency: 'usd' }).lean())?.rate) || null;
   res.json({ volumetricFactor: await volumetricFactor(), canEditMeasures: await canEditMeasures(req.user), rate });
+}));
+
+// The opening count day of the committed migration: money dated on or before it is already in the
+// counted boxes, so the screens warn that it goes to the opening balance instead (see ledger.js)
+router.get('/acc/count-day', STAFF, handle(async (req, res) => {
+  const { count } = await require('./services/config').getConfig();
+  res.json({ day: count?.day || null, at: count?.at || null, endOfDay: !!count?.endOfDay });
 }));
 
 // Offices and currencies as data (spec C4): the system's dropdowns read them here

@@ -699,6 +699,7 @@ module.exports.createOrder = async (req, res, next) => {
         },
         ...(data.deliveredPackages?.volumetric && { volumetric: data.deliveredPackages.volumetric }),
         ...(Number(data.deliveredPackages?.domesticFee?.amount) > 0 && { domesticFee: data.deliveredPackages.domesticFee }),
+        ...(Number(data.deliveredPackages?.customsFee?.amount) > 0 && { customsFee: data.deliveredPackages.customsFee }),
         trackingNumber: data.deliveredPackages?.trackingNumber,
         originPrice: data.deliveredPackages.originPrice,
         exiosPrice: data.deliveredPackages.exiosPrice,
@@ -1786,11 +1787,15 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
   try {
     const id = req.params.id;
     validatePackages(req.body.selectedPackages);
-    const paymentAmounts = validatePayment(req.body.payment);
+    const paymentAmounts = validatePayment(req.body.payment, { allowZero: true });
 
     // Costs and totals come from the database; the client's totalCost and rate are ignored
     const feeMode = req.body.feeMode === 'usd' ? 'usd' : 'separate';
     const { packages: selectedPackages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode });
+    // Nothing paid is right only for packages that cost nothing (free shipping with a purchase)
+    if (!paymentAmounts.amountUSD && !paymentAmounts.amountLYD && (totalCost > 0 || totalFeeLYD > 0)) {
+      throw new ErrorHandler(400, 'Payment amount cannot be zero');
+    }
 
     const payment = withCalculatedRate(paymentAmounts, totalCost);
 

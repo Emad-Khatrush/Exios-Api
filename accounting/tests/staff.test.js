@@ -78,8 +78,8 @@ test('without an office set, an employee is told to ask the owner; the owner set
   const type = await ExpenseType.findOne({ seedKey: 'other' });
   const refused = await call('post', '/api/office-expenses', clerk).send({ expenseTypeId: type._id, amount: 1, currency: 'USD' });
   expect(refused.status).toBe(400);
-  expect((await call('put', `/api/accounting/access/staff/${clerk._id}`, owner).send({ office: 'misurata' })).status).toBe(200);
-  expect((await call('get', '/api/office-expenses/options', clerk)).body.office).toBe('misurata');
+  expect((await call('put', `/api/accounting/access/staff/${clerk._id}`, owner).send({ office: 'china' })).status).toBe(200);
+  expect((await call('get', '/api/office-expenses/options', clerk)).body.office).toBe('china');
 });
 
 test('a closed period refuses a staff expense; the accountant reviews every office', async () => {

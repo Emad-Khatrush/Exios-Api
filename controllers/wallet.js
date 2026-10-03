@@ -12,7 +12,7 @@ const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { emitAccountingEvent } = require('../accounting/services/events');
 const { lydRateLimits } = require('../accounting/services/walletRate');
 const { assertOpenPeriod } = require('../accounting/services/periodGuard');
-const { moneyAccount } = require('../accounting/services/moneyAccounts');
+const { moneyAccount, assertDepositPlace } = require('../accounting/services/moneyAccounts');
 const { payOrderDebts, restoreOrderDebts } = require('../utils/debts');
 const { deliveryInvoiceOf, statementOfPayment } = require('../utils/helperApi');
 
@@ -239,6 +239,7 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
     // The account the money went into, when chosen (a bank, or a partner's current account such as Wasl)
     let accountId;
     if (req.body.accountId) accountId = (await moneyAccount(req.body.accountId, { currency, what: 'الحساب' }))._id;
+    else await assertDepositPlace(office, currency, actionType);
 
     const existWallet = await Wallet.findOne({ user: id, currency });
 
@@ -566,6 +567,9 @@ module.exports.updateStatement = async (req, res, next) => {
       if ((current?.balance || 0) + (Number(changes.amount) - Number(statement.amount)) < -0.001) return next(new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.'));
     }
     if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt);
+    if (('office' in changes || 'actionType' in changes) && !statement.accountId) {
+      await assertDepositPlace(changes.office ?? statement.office, statement.currency, changes.actionType ?? statement.actionType);
+    }
 
     if (!String(changes.description ?? statement.description).trim()) {
       return next(new ErrorHandler(400, 'Description is required'));
@@ -757,10 +761,10 @@ module.exports.getAllActiveWallets = async (req, res, next) => {
   }
 };
 
-// The accountant's dinar rate and the lowest rate a payment may use, for the wallet dialog
+// The system's dinar rate and the lowest rate a payment may use, for the wallet dialog
 module.exports.getPaymentRate = async (req, res, next) => {
   try {
-    res.status(200).json({ limits: await lydRateLimits(req.query.date) });
+    res.status(200).json({ limits: await lydRateLimits() });
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
@@ -771,13 +775,13 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
 
-    // Dinars paid on an order are counted at a rate that may not be lower than the accountant's
-    // rate by more than the tolerance
+    // Dinars paid on an order are counted at the rate typed, which may not be lower than the
+    // system's rate by more than the tolerance (like the delivery of packages)
     if (category && currency === 'LYD') {
       if (!(Number(rate) > 0)) return next(new ErrorHandler(400, 'Enter the exchange rate the dinars are counted at.'));
-      const limits = await lydRateLimits(createdAt);
+      const limits = await lydRateLimits();
       if (limits && Number(rate) < limits.minimum - 1e-9) {
-        return next(new ErrorHandler(400, `The rate ${Number(rate)} is too low. The accountant's rate is ${limits.rate}, so the lowest allowed is ${limits.minimum}.`));
+        return next(new ErrorHandler(400, `The rate ${Number(rate)} is too low. The system rate is ${limits.rate}, so the lowest allowed is ${limits.minimum}.`));
       }
     }
 

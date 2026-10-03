@@ -11,6 +11,9 @@
 const ErrorHandler = require('./errorHandler');
 
 const DEFAULT_FACTOR = 167;
+// Fees charged on a package beside its shipping: transport to another office, customs clearance
+const FEE_FIELDS = ['domesticFee', 'customsFee'];
+const FEE_NAMES = { domesticFee: 'transport fee', customsFee: 'customs clearance fee' };
 const round = (value, places) => Math.round(Number(value) * 10 ** places) / 10 ** places;
 
 async function volumetricFactor() {
@@ -56,26 +59,28 @@ function normalizeDetails(details, { factor, rate }) {
     // A sea package is already measured in CBM: nothing to convert
     details.volumetric = { ...volumetric, enabled: false };
   }
-  const fee = details.domesticFee;
-  if (fee && Number(fee.amount) > 0) {
-    const currency = fee.currency === 'LYD' ? 'LYD' : 'USD';
-    let usd = Number(fee.usd);
-    if (currency === 'USD') usd = Number(fee.amount);
-    else if (!(usd > 0)) {
-      if (!rate) throw new ErrorHandler(400, 'No dinar rate in the settings to price the transport fee');
-      usd = Number(fee.amount) / rate;
+  FEE_FIELDS.forEach((field) => {
+    const fee = details[field];
+    if (fee && Number(fee.amount) > 0) {
+      const currency = fee.currency === 'LYD' ? 'LYD' : 'USD';
+      let usd = Number(fee.usd);
+      if (currency === 'USD') usd = Number(fee.amount);
+      else if (!(usd > 0)) {
+        if (!rate) throw new ErrorHandler(400, `No dinar rate in the settings to price the ${FEE_NAMES[field]}`);
+        usd = Number(fee.amount) / rate;
+      }
+      details[field] = { amount: Number(fee.amount), currency, usd: round(usd, 2) };
+    } else if (fee) {
+      details[field] = undefined;
     }
-    details.domesticFee = { amount: Number(fee.amount), currency, usd: round(usd, 2) };
-  } else if (fee) {
-    details.domesticFee = undefined;
-  }
+  });
   return details;
 }
 
 async function normalizePackages(packages) {
   if (!Array.isArray(packages) || !packages.length) return packages;
   const factor = await volumetricFactor();
-  const needsRate = packages.some((p) => p?.deliveredPackages?.domesticFee?.currency === 'LYD' && !(Number(p.deliveredPackages.domesticFee.usd) > 0));
+  const needsRate = packages.some((p) => FEE_FIELDS.some((field) => p?.deliveredPackages?.[field]?.currency === 'LYD' && !(Number(p.deliveredPackages[field].usd) > 0)));
   const rate = needsRate ? await settingsRate() : null;
   packages.forEach((pkg) => normalizeDetails(pkg?.deliveredPackages, { factor, rate }));
   return packages;
@@ -115,4 +120,4 @@ async function guardMeasures(before, packages, user) {
   }
 }
 
-module.exports = { normalizePackages, normalizeDetails, guardMeasures, canEditMeasures, volumetricFactor, cbmOf, DEFAULT_FACTOR };
+module.exports = { FEE_FIELDS, normalizePackages, normalizeDetails, guardMeasures, canEditMeasures, volumetricFactor, cbmOf, DEFAULT_FACTOR };

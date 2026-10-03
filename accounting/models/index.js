@@ -145,6 +145,9 @@ const MigrationRun = mongoose.model('AccountingMigrationRun', new Schema({
   status: { type: String, enum: ['running', 'review', 'failed', 'discarded', 'committing', 'committed'], default: 'running' },
   // Everything that happened up to this moment is replayed; commit catches up what came after
   cutoff: { type: Date, required: true },
+  // The moment the opening counts stand for when they were taken on the day of the run: the dry
+  // run read the books then, so what was posted after it is not in the counts (set at commit)
+  countAt: Date,
   historyStart: Date,
   config: {
     // [{ kind: 'trip' | 'order', key, accountId }] - which cash box paid old costs
