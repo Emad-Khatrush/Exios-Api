@@ -53,6 +53,10 @@ const orderPaymentHistorySchema = new Schema({
   // For wallet payments: the customer statement line that took the money, so cancelling the
   // payment can reverse exactly that accounting entry
   statementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
+  // A rate written later on an old dinar payment saved without one (accounting/services/paymentRate.js):
+  // such a rate may be corrected the same way
+  rateSetAt: Date,
+  rateSetBy: { type: Schema.Types.ObjectId, ref: 'User' },
   // Debts of the order that this payment paid down, so cancelling the payment reopens them:
   // the debt, what was taken off it (in the debt's currency) and the line added to its history
   debtPayments: [{

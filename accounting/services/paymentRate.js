@@ -2,7 +2,8 @@
 // 6458-2723: 880 LYD paid on a 96$ invoice with no rate). Without it the order page cannot count
 // the payment and shows the invoice unpaid, while the books valued the dinars at the wallet's
 // average and called the difference an overpayment. An admin or the accountant writes the rate;
-// the payment and its wallet line keep it, and the posting queue posts the line again at it.
+// the payment and its wallet line keep it, and the posting queue posts the line again at it. A
+// rate written here can be corrected here (a typing slip: 9 instead of 9.1667).
 const mongoose = require('mongoose');
 const ErrorHandler = require('../../utils/errorHandler');
 const OrderPaymentHistory = require('../../models/orderPaymentHistory');
@@ -11,6 +12,7 @@ const Order = require('../../models/order');
 const { isOwner } = require('./access');
 const { assertOpenPeriod } = require('./periodGuard');
 const { emitAccountingEvent } = require('./events');
+const { AccountingEvent } = require('../models');
 
 const fail = (message, code = 400) => new ErrorHandler(code, message);
 
@@ -33,10 +35,13 @@ async function setPaymentRate(paymentId, rateInput, user) {
   const payment = await OrderPaymentHistory.findById(paymentId);
   if (!payment) throw fail('الدفعة غير موجودة', 404);
   if (!payment.currency || payment.currency === 'USD') throw fail('الدفعة بالدولار لا تحتاج سعراً');
-  if (Number(payment.rate) > 0) throw fail(`للدفعة سعر مسجل (${payment.rate}). لتغييره احذف الدفعة وأعد إدخالها.`);
+  // A rate written here may be corrected here; one the payment was made with stays
+  const writtenHere = !!payment.rateSetAt || !!(await AccountingEvent.exists({ type: 'paymentRate', refId: payment._id }));
+  if (Number(payment.rate) > 0 && !writtenHere) throw fail(`للدفعة سعر مسجل (${payment.rate}). لتغييره احذف الدفعة وأعد إدخالها.`);
   if (payment.paymentType !== 'wallet') throw fail('هذه دفعة نقدية: احذفها وأعد إدخالها بالسعر.');
   const rate = Math.round(Number(rateInput) * 1e6) / 1e6;
   if (!(rate > 0)) throw fail('اكتب السعر (عدد الدنانير مقابل دولار واحد)');
+  if (rate === Number(payment.rate)) throw fail('هذا هو السعر المسجل على الدفعة');
   await assertOpenPeriod(user, payment.createdAt);
   const order = await Order.findById(payment.order).setOptions({ withDeleted: true }).select('orderId user').lean();
   if (!order) throw fail('الطلب غير موجود', 404);
@@ -45,6 +50,8 @@ async function setPaymentRate(paymentId, rateInput, user) {
 
   payment.rate = rate;
   payment.statementId = statement._id;
+  payment.rateSetAt = new Date();
+  payment.rateSetBy = user._id;
   await payment.save();
   await UserStatement.updateOne({ _id: statement._id }, { $set: { rate } });
   await emitAccountingEvent('paymentRate', payment._id, { statementId: String(statement._id), orderId: String(order._id), category: payment.category }, user);

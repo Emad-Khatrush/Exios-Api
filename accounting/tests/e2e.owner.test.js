@@ -418,5 +418,16 @@ test('13. an old dinar payment saved without a rate: the accountant writes the r
   expect(await JournalEntry.countDocuments({ eventKey: `OVERPAID:MIG-TEST:${key}:${customer._id}`, status: 'reversed' })).toBe(1);
   // The revenue never left its month: no recognition was taken back and given again
   expect(await JournalEntry.countDocuments({ eventType: 'RECOGNITION', 'lines.arKey': key })).toBe(1);
-  await expect(setPaymentRate(String(payment._id), 9, accountant)).rejects.toThrow('للدفعة سعر مسجل');
+  // A slip corrected: written 9 first (the customer would keep 1.78$), then the rate that closed it
+  await setPaymentRate(String(payment._id), 9, accountant);
+  await expectConsistent('rate 9', { allow: ['overpaid'] });
+  expect(await usd('121000', { arKey: key })).toBe(-178);
+  await setPaymentRate(String(payment._id), 880 / 96, accountant);
+  await expectConsistent('rate corrected');
+  expect(await usd('121000', { arKey: key })).toBe(0);
+  expect(await JournalEntry.countDocuments({ eventType: 'RECOGNITION', 'lines.arKey': key })).toBe(1);
+  // A rate the payment was made with is not changed here
+  const made = await OrderPaymentHistory.create({ order: order._id, customer: customer._id, createdBy: owner._id, paymentType: 'wallet', receivedAmount: 10, currency: 'LYD', rate: 9.5, category: 'invoice' });
+  await expect(setPaymentRate(String(made._id), 9, accountant)).rejects.toThrow('للدفعة سعر مسجل');
+  await OrderPaymentHistory.deleteOne({ _id: made._id });
 });
