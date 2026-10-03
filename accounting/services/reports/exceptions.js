@@ -138,6 +138,28 @@ const CHECKS = {
     return result('overpaid', 'warn', 'مطالبة دُفع عليها أكثر من قيمتها', 'دفعة مكررة، أو سعر خُفّض بعد الدفع. الزائد يُعاد للعميل أو يُوجَّه لمطالبة أخرى.', items, '/accounting/reports?tab=receivables');
   },
 
+  // Dollars paid beyond what was owed, taken as profit (decision 119): above 5$ the accountant
+  // confirms each one (marks it reviewed) or corrects it if it was the customer's money
+  async overpaidProfit() {
+    const { OVERPAID_LABEL, OVERPAID_REVIEW_CENTS } = require('../posting/operations');
+    const roles = await roleIds(['revenue_other']);
+    const revenue = oid(roles.revenue_other);
+    const entries = await JournalEntry.find({ status: 'posted', reversalOf: null, lines: { $elemMatch: { accountId: revenue, label: OVERPAID_LABEL, credit: { $gt: OVERPAID_REVIEW_CENTS } } } })
+      .select('number day lines').sort({ day: -1 }).lean();
+    const orderIds = entries.map((e) => e.lines.find((l) => l.label === OVERPAID_LABEL)?.orderId).filter(Boolean);
+    const orders = new Map((await Order.find({ _id: { $in: orderIds } }).setOptions({ withDeleted: true }).select('orderId').lean()).map((o) => [String(o._id), o.orderId]));
+    const items = entries.map((entry) => {
+      const line = entry.lines.find((l) => String(l.accountId) === String(revenue) && l.label === OVERPAID_LABEL);
+      return {
+        label: `${orders.get(String(line.orderId)) || 'دين'} · ${entry.number}`, usd: line.credit, day: entry.day,
+        url: line.orderId ? `/accounting/customer-invoices/${line.orderId}?entry=${entry.number}` : `/accounting/entries?search=${entry.number}`,
+      };
+    });
+    return result('overpaidProfit', 'warn', 'دفع زائد بالدولار أكثر من 5$ سُجّل مكسباً',
+      'سُجّل إيرادات أخرى (القرار 119). إن كان صحيحاً علّمه «تمت المراجعة». إن كان مال العميل (دفعة مكررة مثلاً) احذف الدفعة من تبويب Payments في الطلب وأعد إدخالها بالمبلغ الصحيح.',
+      items, '/accounting/reports?tab=receivables');
+  },
+
   // 11. Purchase orders sold with no cost
   async purchases() {
     const { results } = await purchaseProfitability({});

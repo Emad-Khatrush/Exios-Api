@@ -91,6 +91,8 @@ function claimLines(parts, side, partnerId) {
 // 5 cents is left to the rounding rule. Live posting only: the historical replay keeps decision 77.
 // account: where the excess goes (exchange gain/loss for a foreign currency, other revenue for dollars)
 const OVERPAID_LABEL = 'دفع زائد على الطلب: مكسب (قرار 119)';
+// Above this a dollar overpayment is also listed for the accountant to confirm (exceptions: overpaidProfit)
+const OVERPAID_REVIEW_CENTS = 500;
 
 async function rateMargin(keys, usd, currency, options, session) {
   if (options.isHistorical || options.migrationRunId) return { claimUsd: usd, margin: 0 };
@@ -288,7 +290,7 @@ async function postStatement(statementId, options = {}) {
       const { claimUsd, margin, role } = await rateMargin(keys, atRate, currency, options, session);
       const parts = await splitOverClaims(keys, claimUsd, session);
       claimLines(parts, 'credit', partnerId).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
-      if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL });
+      if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL, partnerId, ...(ordersOf(keys)[0] && { orderId: oid(ordersOf(keys)[0]) }) });
       affectedKeys = keys;
     } else {
       fallbacks.push('دفعة من المحفظة غير مربوطة بطلب أو دين؛ سُجّلت في حساب المعلّق');
@@ -414,7 +416,7 @@ async function postCashPayment(paymentId, options = {}) {
     const { claimUsd, margin, role } = await rateMargin(keys, usd, currency, options, session);
     const parts = await splitOverClaims(keys, claimUsd, session);
     claimLines(parts, 'credit', oid(order?.user || payment.customer)).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
-    if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL });
+    if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL, partnerId: oid(order?.user || payment.customer), ...(payment.order && { orderId: oid(payment.order) }) });
   } else {
     fallbacks.push('الدفعة غير مربوطة بطلب');
     lines.push({ accountId: (await resolveAccount('migration_suspense'))._id, credit: usd });
@@ -535,6 +537,7 @@ async function repostPaymentRate(paymentId, options = {}) {
 }
 
 module.exports = {
+  OVERPAID_LABEL, OVERPAID_REVIEW_CENTS,
   repostPaymentRate,
   postStatement, repostStatement, reverseStatement, postCashPayment, reverseCashPayment,
   postGeneralDebt, postDebtWriteOff, reverseBalance, resolveClaimKeys, splitOverClaims, openBalances, statementKind,

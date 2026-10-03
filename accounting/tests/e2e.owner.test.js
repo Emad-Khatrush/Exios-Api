@@ -456,4 +456,13 @@ test('14. any payment beyond the invoice is profit: dinars as exchange profit, d
   await expectConsistent('dollars over the invoice');
   expect(await usd('121000', { arKey: 'PUR:' + other._id })).toBe(0);
   expect(otherRevenue - (await usd('410600'))).toBe(1000);
+  // Above 5$ in dollars it is also listed for the accountant to confirm; 3$ is not
+  const small = await purchase(20);
+  await pay(small, 23, 'USD');
+  await expectConsistent('3$ over');
+  const { CHECKS } = require('../services/reports/exceptions');
+  const listed = (await CHECKS.overpaidProfit()).items.map((item) => item.label);
+  expect(listed.some((label) => label.startsWith(other.orderId))).toBe(true);
+  expect(listed.some((label) => label.startsWith(small.orderId))).toBe(false);
+  expect(listed.some((label) => label.startsWith(order.orderId))).toBe(false);
 });
