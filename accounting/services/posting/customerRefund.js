@@ -17,6 +17,30 @@ const { purchaseKey } = require('../claims/keys');
 const { fail, currencyOf, getAccount, toCurrencyMinor, moneyLine, nextDocNumber, findExisting, resolveAccount, RateBook } = require('./common');
 const { moveWallet } = require('./people');
 
+// What the customer paid on the purchase invoice, in USD cents: the larger of the order's own
+// payments (the Payments tab, dinars at the rate each was taken at; a payment just made may still
+// be waiting for live posting) and what the books credited to the invoice (old payments that are
+// a wallet line only)
+async function paidOnInvoice(orderId, session) {
+  const OrderPaymentHistory = require('../../../models/orderPaymentHistory');
+  const { JournalEntry } = require('../../models');
+  const { CLAIM_EVENTS } = require('../claims/keys');
+  const payments = await OrderPaymentHistory.find({ order: orderId, category: { $ne: 'receivedGoods' } }).select('receivedAmount currency rate').session(session || null).lean();
+  const system = payments.reduce((sum, p) => {
+    const amount = Number(p.receivedAmount || 0);
+    if (p.currency === 'USD') return sum + amount;
+    return Number(p.rate) > 0 ? sum + amount / Number(p.rate) : sum;
+  }, 0);
+  const receivable = await resolveAccount('customer_receivable');
+  const key = purchaseKey(orderId);
+  const [row] = await JournalEntry.aggregate([
+    { $match: { 'lines.arKey': key, eventType: { $nin: [...CLAIM_EVENTS, 'REFUND', 'CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY', 'ROUNDING'] } } }, { $unwind: '$lines' },
+    { $match: { 'lines.arKey': key, 'lines.accountId': receivable._id } },
+    { $group: { _id: null, net: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+  ]).session(session || null);
+  return Math.max(Math.round(system * 100), row?.net || 0, 0);
+}
+
 async function createCustomerRefund(input, { session, req }) {
   const existing = await findExisting(CustomerRefund, input.idempotencyKey, session);
   if (existing) return existing;
@@ -41,6 +65,18 @@ async function createCustomerRefund(input, { session, req }) {
   if (!(usd > 0)) throw fail('تعذّر تقييم المبلغ بالدولار؛ أدخل سعر اليوم لهذه العملة');
   const walletUsd = Math.round(Number(input.walletUsd || 0) * 100);
   if (walletUsd < 0) throw fail('المبلغ المضاف للمحفظة غير صالح');
+  // The wallet gets back at most what the customer paid on the invoice, less what earlier refunds
+  // gave already (order 2770-4993: 70.26$ paid, 143$ refunded, 2026-10-04)
+  if (walletUsd > 0) {
+    const paid = await paidOnInvoice(order._id, session);
+    const earlier = (await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd').session(session).lean())
+      .reduce((sum, r) => sum + (r.walletUsd || 0), 0);
+    const left = Math.max(paid - earlier, 0);
+    if (walletUsd > left) {
+      const before = earlier ? ` وأُرجع له بالريفاند ${earlier / 100}$` : '';
+      throw fail(`العميل دفع على الفاتورة ${paid / 100}$${before}؛ أقصى ما يُضاف لمحفظته الآن ${left / 100}$`);
+    }
+  }
 
   const [doc] = await CustomerRefund.create([{
     day: input.day, orderId: order._id, partnerId: order.user, accountId: to._id, currency, amount: Number(input.amount), usd, walletUsd,

@@ -352,3 +352,29 @@ test('11. a supplier refund on an order with no cost recorded is flagged; on a t
   expect(await usd('510700', byOrder)).toBe(-4000);
   expect(-(await usd('410700', byOrder))).toBe(2000);
 });
+
+test('12. a refund cannot give the wallet more than was paid; transfer orders show their revenue on the order screens', async () => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  const { orderSummary } = require('../services/reports/summaries');
+  const { customerInvoices } = require('../services/reports/customers');
+  await deposit(100, 'USD');
+  const order = await purchase(70);
+  await pay(order, 70);
+  await orderCost(order, 50);
+  const refund = (walletUsd) => tx(async (session) => createCustomerRefund({ orderId: String(order._id), accountId: String((await account('110101'))._id), amount: walletUsd, walletUsd, day: today() }, { session, req: { user: owner } }));
+  await refund(43);
+  await expect(refund(30)).rejects.toThrow('أقصى ما يُضاف لمحفظته الآن 27$');
+  await refund(27);
+  await expectConsistent('refunded up to what was paid');
+  // Marked an Alipay transfer: the order screens read the transfer accounts too
+  await Order.updateOne({ _id: order._id }, { $set: { isRemittance: true } });
+  await require('../services/events').emitAccountingEvent('order', order._id, {});
+  await deposit(50, 'USD');
+  const other = await purchase(40);
+  await Order.updateOne({ _id: other._id }, { $set: { isRemittance: true } });
+  await pay(other, 40);
+  await expectConsistent('transfer paid');
+  expect((await orderSummary(String(other._id))).totals).toMatchObject({ billed: 4000, recognized: 4000, open: 0 });
+  const row = (await customerInvoices({ search: other.orderId })).results.find((r) => r.orderNumber === other.orderId);
+  expect(row).toMatchObject({ billed: 4000, recognized: 4000, status: 'paid' });
+});

@@ -9,7 +9,7 @@ const Wallet = require('../../../models/wallet');
 const ErrorHandler = require('../../../utils/errorHandler');
 const { getConfig } = require('../config');
 const { roleIds, receivables, customerStatement } = require('./operations');
-const { purchaseKey, shipmentKey, CLAIM_EVENTS } = require('../claims/keys');
+const { purchaseKey, shipmentKey, customsFeeKey, CLAIM_EVENTS } = require('../claims/keys');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const notFound = (what) => new ErrorHandler(404, `${what} غير موجود`);
@@ -18,6 +18,8 @@ const ROLES = [
   'customer_receivable', 'deferred_shipping_revenue', 'deferred_purchase_revenue', 'trip_cost_wip', 'purchase_cost_wip',
   'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices',
   'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices',
+  // Alipay transfers and customs clearance have their own accounts (spec 19.5, decision 111)
+  'revenue_remittance', 'cost_remittance', 'revenue_customs', 'cost_customs', 'customs_cost_wip',
 ];
 const SHIP_REVENUE = ['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other'];
 const SHIP_COST = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'];
@@ -52,7 +54,7 @@ async function orderSummary(orderId) {
   if (!order) throw notFound('الطلب');
   const roles = await roleIds(ROLES);
   const match = { 'lines.orderId': oid(orderId) };
-  const rows = await ledgerBy(match, match, { arKey: '$lines.arKey', packageId: '$lines.packageId', claim: { $in: ['$eventType', CLAIM_EVENTS] } });
+  const rows = await ledgerBy(match, match, { arKey: '$lines.arKey', packageId: '$lines.packageId', tripId: '$lines.tripId', claim: { $in: ['$eventType', CLAIM_EVENTS] } });
 
   const is = (row, role) => String(row._id.accountId) === roles[role];
   const among = (row, list) => list.some((role) => is(row, role));
@@ -70,11 +72,16 @@ async function orderSummary(orderId) {
       claim(arKey).open += row.net;
       if (isClaim) claim(arKey).billed += row.net;
     }
-    if (key && among(row, [...SHIP_REVENUE, 'revenue_purchase_invoices'])) claim(key).recognized -= row.net;
+    if (key && among(row, [...SHIP_REVENUE, 'revenue_purchase_invoices', 'revenue_remittance', 'revenue_customs'])) claim(key).recognized -= row.net;
     if (key && among(row, ['deferred_shipping_revenue', 'deferred_purchase_revenue'])) claim(key).deferred -= row.net;
     if (packageId && among(row, SHIP_COST)) claim(shipmentKey(orderId, packageId)).cost += row.net;
-    if (is(row, 'cost_purchase_invoices')) purchaseCost += row.net;
-    if (is(row, 'purchase_cost_wip')) purchaseCostInProgress += row.net;
+    // A free package's share of its trip sits on the purchase cost with its package (decision 110)
+    if (among(row, ['cost_purchase_invoices', 'cost_remittance'])) {
+      if (packageId && row._id.tripId) claim(shipmentKey(orderId, packageId)).cost += row.net;
+      else purchaseCost += row.net;
+    }
+    if (packageId && is(row, 'cost_customs')) claim(customsFeeKey(orderId, packageId)).cost += row.net;
+    if (among(row, ['purchase_cost_wip', 'customs_cost_wip'])) purchaseCostInProgress += row.net;
   });
   if (claims.has(purchaseKey(orderId))) claims.get(purchaseKey(orderId)).cost = purchaseCost;
 
@@ -82,10 +89,10 @@ async function orderSummary(orderId) {
   const list = [...claims.values()].map((item) => {
     const [first, , packageId] = item.arKey.split(':');
     // The transport fee of a package is its own claim beside the shipping (spec v8)
-    const kind = item.arKey.endsWith(':DOM') ? 'DOM' : first;
+    const kind = item.arKey.endsWith(':DOM') ? 'DOM' : item.arKey.endsWith(':CUS') ? 'CUS' : first;
     const pkg = packages.get(packageId);
     return {
-      ...item, kind, packageId: packageId || null, tracking: pkg?.deliveredPackages?.trackingNumber, delivered: kind === 'SHP' || kind === 'DOM' ? !!pkg?.status?.received : null,
+      ...item, kind, packageId: packageId || null, tracking: pkg?.deliveredPackages?.trackingNumber, delivered: ['SHP', 'DOM', 'CUS'].includes(kind) ? !!pkg?.status?.received : null,
       paid: item.billed - item.open, profit: item.recognized - item.cost,
     };
   }).sort((a, b) => a.kind.localeCompare(b.kind));

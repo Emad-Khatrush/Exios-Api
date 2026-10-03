@@ -101,10 +101,11 @@ async function customersList({ search, view = 'all', limit = 500 } = {}) {
   return { totals, results: shown.map((item) => ({ ...item, customer: users.get(String(item.partnerId)) || null })), truncated: list.length > shown.length };
 }
 
-const REVENUE = ['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices'];
+// Alipay transfers and customs clearance have their own revenue and cost accounts (spec 19.5, decision 111)
+const REVENUE = ['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'revenue_purchase_invoices', 'revenue_remittance', 'revenue_customs'];
 const DEFERRED = ['deferred_shipping_revenue', 'deferred_purchase_revenue'];
-const COST = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices'];
-const WIP = ['purchase_cost_wip'];
+const COST = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices', 'cost_remittance', 'cost_customs'];
+const WIP = ['purchase_cost_wip', 'customs_cost_wip'];
 
 const dayStart = (day) => moment.tz(day, TZ).startOf('day').toDate();
 const dayEnd = (day) => moment.tz(day, TZ).endOf('day').toDate();
