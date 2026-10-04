@@ -12,6 +12,7 @@ const { resolveAccount } = require('./roles');
 const { isOwner } = require('./access');
 const { getBalance } = require('./carrying');
 const { currencyOf, isForeign, decimalsOf } = require('./posting/common');
+const { getConfig } = require('./config');
 
 const CURRENCIES = ['USD', 'LYD'];
 const ROLES = {
@@ -83,6 +84,15 @@ const KIND_OF = {
   BILL: () => 'spent', VENDOR_PAYMENT: () => 'spent', SALARY: () => 'deducted',
   CANCEL: () => 'canceled', REVERSAL: () => 'canceled',
 };
+// The box or bank the money came from or went to, in its own currency (500 LYD from the dinar box)
+async function cashSide(entry, account, accountsById) {
+  const line = entry.lines.find((l) => String(l.accountId) !== String(account._id) && accountsById.get(String(l.accountId))?.isCash);
+  if (!line) return null;
+  const currency = line.currency || 'USD';
+  const minor = line.currency ? Math.abs(line.amountCurrency || 0) : Math.abs((line.debit || 0) - (line.credit || 0));
+  return { currency, amount: minor / 10 ** await decimalsOf(currency), name: accountsById.get(String(line.accountId)).name };
+}
+
 async function movements(employeeId, kind, { limit = 200 } = {}) {
   if (!mongoose.isValidObjectId(employeeId)) throw new ErrorHandler(404, 'الموظف غير موجود');
   const max = Math.min(Number(limit) || 200, 1000);
@@ -94,15 +104,17 @@ async function movements(employeeId, kind, { limit = 200 } = {}) {
     const decimals = await decimalsOf(currencyOf(account));
     const match = { 'lines.accountId': account._id, 'lines.employeeId': toId(employeeId) };
     const entries = await JournalEntry.find(match).select('number day eventType description lines createdAt status').sort({ day: -1, createdAt: -1 }).limit(max).lean();
-    entries.forEach((entry) => {
+    const { accountsById } = await getConfig();
+    for (const entry of entries) {
       const mine = entry.lines.filter((l) => String(l.accountId) === String(account._id) && String(l.employeeId) === String(employeeId));
       const amount = mine.reduce((sum, l) => sum + lineAmount(l, account), 0) / 10 ** decimals;
       rows.push({
         entryId: entry._id, number: entry.number, day: entry.day, createdAt: entry.createdAt, currency, amount,
         usd: mine.reduce((sum, l) => sum + (l.debit || 0) - (l.credit || 0), 0), description: entry.description,
         kind: (KIND_OF[entry.eventType] || (() => (amount > 0 ? 'given' : 'other')))(amount > 0), canceled: entry.status === 'reversed',
+        cash: await cashSide(entry, account, accountsById),
       });
-    });
+    }
     const [all] = await JournalEntry.aggregate([
       { $match: match }, { $unwind: '$lines' }, { $match: match },
       {
