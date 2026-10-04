@@ -207,6 +207,8 @@ async function officeExpenseOptions(user, requestedOffice) {
     offices: profile.anyOffice ? [...offices.values()].filter((o) => o.isActive !== false).map((o) => ({ code: o.code, name: o.name })) : [],
     types: types.map((t) => ({ _id: t._id, name: t.name })),
     currencies: office ? (await officeBoxes(office)).map((b) => b.currency) : [],
+    // The custody this staff member holds, which they may pay expenses from (USD cents)
+    custody: await require('./posting/people').employeeAdvanceBalance(user._id),
   };
 }
 
@@ -214,6 +216,7 @@ const expenseView = (bill) => ({
   _id: bill._id, number: bill.number, day: bill.day, office: bill.office, type: bill.expenseTypeId?.name || '', expenseTypeId: bill.expenseTypeId?._id || bill.expenseTypeId,
   amount: bill.total ?? bill.lines.reduce((sum, line) => sum + line.amount, 0), currency: bill.currency, usd: bill.totalUsd, note: bill.note || '',
   attachments: bill.attachments || [], status: bill.status, createdAt: bill.createdAt,
+  paidFrom: bill.employeeId ? 'custody' : 'box',
   createdBy: bill.createdBy?._id ? { _id: bill.createdBy._id, name: `${bill.createdBy.firstName || ''} ${bill.createdBy.lastName || ''}`.trim() } : bill.createdBy,
   editable: bill.status === 'posted' && toDay(bill.createdAt) === today(),
   cancelReason: bill.cancelReason, replaces: bill.replaces,
@@ -236,11 +239,29 @@ async function buildExpense(input, user, files) {
   const amount = Number(input.amount);
   if (!(amount > 0)) throw fail('المبلغ يجب أن يكون أكبر من صفر');
   const currency = String(input.currency || '');
-  const box = (await officeBoxes(office)).find((b) => b.currency === currency);
-  if (!box) throw fail(`لا توجد خزينة ${currency || ''} لهذا المكتب`);
   const vendor = await Vendor.findOne({ seedKey: 'cash_expenses' }).lean();
   if (!vendor) throw fail('إعداد المحاسبة غير مكتمل (مورد المصروفات النقدية)');
   const note = String(input.note || '').trim();
+  // Paid from the custody the staff member holds (owner's request 2026-10-04): custody is kept in
+  // dollars, so an expense in another currency is entered at its rate in dollars
+  if (input.payFrom === 'custody') {
+    const { resolveAccount } = require('./roles');
+    const { getRate } = require('./rates');
+    const { employeeAdvanceBalance } = require('./posting/people');
+    const custody = await resolveAccount('employee_advances');
+    const rate = currency === 'USD' ? 1 : (await getRate(currency, day)).rate;
+    const usd = Math.round((amount / rate) * 100) / 100;
+    const held = await employeeAdvanceBalance(user._id);
+    if (Math.round(usd * 100) > held) throw fail(`عهدتك ${held / 100}$ لا تكفي لهذا المصروف (${usd}$)`);
+    const original = currency === 'USD' ? '' : ` (${amount} ${currency} بسعر ${rate})`;
+    return {
+      vendorId: vendor._id, day, currency: 'USD', paidImmediatelyFrom: custody._id, employeeId: user._id, isQuickExpense: true, officeExpense: true, office,
+      expenseTypeId: type._id, enteredFrom: 'officeExpense', note: `${note}${original}`.trim(), attachments: files,
+      lines: [{ description: `${note ? `${type.name} - ${note}` : type.name}${original}`, amount: usd, target: 'expense', accountId: type.accountId, office }],
+    };
+  }
+  const box = (await officeBoxes(office)).find((b) => b.currency === currency);
+  if (!box) throw fail(`لا توجد خزينة ${currency || ''} لهذا المكتب`);
   return {
     vendorId: vendor._id, day, currency, paidImmediatelyFrom: box.accountId, isQuickExpense: true, officeExpense: true, office,
     expenseTypeId: type._id, enteredFrom: 'officeExpense', note, attachments: files,
@@ -267,6 +288,7 @@ async function updateOfficeExpense(id, input, files, req) {
   await assertOwnSameDay(old, req.user);
   const data = await buildExpense({
     office: old.office, day: old.day, expenseTypeId: old.expenseTypeId, amount: old.total, currency: old.currency, note: old.note,
+    payFrom: old.employeeId ? 'custody' : undefined,
     // A field sent empty keeps its old value, except the note, which may be cleared
     ...Object.fromEntries(Object.entries(input).filter(([field, value]) => value !== undefined && (value !== '' || field === 'note'))),
   }, req.user, files?.length ? files : old.attachments || []);

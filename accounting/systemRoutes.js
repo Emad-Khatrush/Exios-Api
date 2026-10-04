@@ -54,6 +54,11 @@ router.get('/acc/package-settings', STAFF, handle(async (req, res) => {
 // An old dinar payment saved without a rate: an admin or the accountant writes it (paymentRate.js)
 router.put('/acc/order-payments/:paymentId/rate', STAFF, handle(async (req, res) => res.json(await require('./services/paymentRate').setPaymentRate(req.params.paymentId, req.body?.rate, req.user))));
 
+// Custody and loans (owner's request 2026-10-04): a staff member's own, on their Home page; and the
+// overview of everyone's, for the accountant and the admin
+router.get('/acc/my-custody', STAFF, handle(async (req, res) => res.json(await require('./services/custody').mine(req.user))));
+router.get('/acc/custody-summary', STAFF, handle(async (req, res) => res.json(await require('./services/custody').summary(req.user))));
+
 // The opening count day of the committed migration: money dated on or before it is already in the
 // counted boxes, so the screens warn that it goes to the opening balance instead (see ledger.js)
 router.get('/acc/count-day', STAFF, handle(async (req, res) => {

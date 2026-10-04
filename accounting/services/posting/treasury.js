@@ -15,8 +15,10 @@ const toId = (value) => new mongoose.Types.ObjectId(String(value));
 
 async function treasuryAccount(id, what, employeeId) {
   const account = await getAccount(id, what);
+  // A staff member's custody or loan: kept in USD, by employee
   const advances = await resolveAccount('employee_advances');
-  const isAdvance = String(account._id) === String(advances._id);
+  const loans = await resolveAccount('employee_loans').catch(() => null);
+  const isAdvance = String(account._id) === String(advances._id) || (!!loans && String(account._id) === String(loans._id));
   if (!account.isCash && !isAdvance) throw fail(`${what}: اختر خزينة أو بنكاً أو محفظة إلكترونية أو عهدة موظف`);
   if (isAdvance && !employeeId) throw fail('اختر الموظف صاحب العهدة');
   return { account, isAdvance };

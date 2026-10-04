@@ -137,6 +137,13 @@ module.exports.audit = handle(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const query = {};
   if (req.query.model) query.model = req.query.model;
+  // Filters of the audit screen: what was done, by whom, between which days (Libya time)
+  if (req.query.action) query.action = new RegExp(`^${String(req.query.action).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+  if (req.query.userId && /^[0-9a-f]{24}$/i.test(req.query.userId)) query.userId = req.query.userId;
+  if (req.query.from || req.query.to) {
+    const { dayStart, dayEnd } = require('../services/dates');
+    query.at = { ...(req.query.from && { $gte: dayStart(req.query.from) }), ...(req.query.to && { $lte: dayEnd(req.query.to) }) };
+  }
   const [results, total] = await Promise.all([
     AuditLog.find(query).sort({ at: -1 }).skip((page - 1) * limit).limit(limit).populate('userId', 'firstName lastName').lean(),
     AuditLog.countDocuments(query),

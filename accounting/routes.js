@@ -191,6 +191,8 @@ router.get('/prepaid', P.assets, documents.listPrepaid);
 router.post('/prepaid/amortize', P.assets, documents.runAmortization);
 
 router.get('/employees', can('payroll', 'purchases', 'treasury'), documents.listEmployees);
+// One employee's custody or loan movements (?kind=custody|loan)
+router.get('/employees/:id/movements', can('payroll', 'purchases', 'treasury'), handle(async (req, res) => res.json(await require('./services/custody').movements(req.params.id, req.query.kind === 'loan' ? 'loan' : 'custody'))));
 router.get('/trips', ANY, documents.listTrips);
 router.get('/balances/:id', can('treasury', 'payments', 'purchases', 'payroll', 'reports'), documents.accountBalance);
 

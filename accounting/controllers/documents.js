@@ -163,6 +163,21 @@ module.exports.vendorOpenBills = handle(async (req, res) => {
 
 // ---- Bills ----
 
+// What is still owed on each bill, in USD cents (its payable lines, keyed BILL:<id>)
+async function billsOpen(billIds) {
+  if (!billIds.length) return new Map();
+  const keys = billIds.map((id) => payables.billKey(id));
+  const rows = await JournalEntry.aggregate([
+    { $match: { 'lines.apKey': { $in: keys } } }, { $unwind: '$lines' },
+    { $match: { 'lines.apKey': { $in: keys } } },
+    { $group: { _id: '$lines.apKey', open: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+  ]);
+  return new Map(rows.map((row) => [row._id.slice('BILL:'.length), row.open]));
+}
+
+// A cent or two left by rounding counts as paid
+const paymentStatusOf = (bill, open) => (open <= 2 ? 'paid' : open >= (bill.totalUsd || 0) - 2 ? 'unpaid' : 'partial');
+
 module.exports.listBills = handle(async (req, res) => {
   const query = listQuery(req);
   if (isObjectId(req.query.vendorId)) query.vendorId = req.query.vendorId;
@@ -173,7 +188,22 @@ module.exports.listBills = handle(async (req, res) => {
     const pattern = new RegExp(escapeRegex(req.query.search), 'i');
     query.$or = [{ number: pattern }, { vendorRef: pattern }, { 'lines.description': pattern }];
   }
+  if (isObjectId(req.query.expenseTypeId)) query.expenseTypeId = oid(req.query.expenseTypeId);
+  if (req.query.office) query.office = req.query.office;
+  if (req.query.target) query['lines.target'] = req.query.target;
+  // Paid, partly paid or unpaid (owner's request 2026-10-04): what is still owed on each posted bill
+  if (['paid', 'partial', 'unpaid'].includes(req.query.payment)) {
+    const posted = await docs.SupplierBill.find({ ...query, status: 'posted', isCreditNote: { $ne: true } }).select('_id totalUsd').lean();
+    const open = await billsOpen(posted.map((b) => b._id));
+    query._id = { $in: posted.filter((b) => paymentStatusOf(b, open.get(String(b._id)) || 0) === req.query.payment).map((b) => b._id) };
+  }
   const result = await paged(docs.SupplierBill, query, req, [{ path: 'vendorId', select: 'name type' }]);
+  const open = await billsOpen(result.results.filter((b) => b.status === 'posted' && !b.isCreditNote).map((b) => b._id));
+  result.results.forEach((bill) => {
+    if (bill.status !== 'posted' || bill.isCreditNote) return;
+    bill.open = open.get(String(bill._id)) || 0;
+    bill.paymentStatus = paymentStatusOf(bill, bill.open);
+  });
   // The order number and trip name of each line, so the list says what the cost is for
   const lines = result.results.flatMap((bill) => bill.lines || []);
   const [trips, orders] = await Promise.all([
@@ -202,7 +232,7 @@ module.exports.getBill = handle(async (req, res) => {
     Inventory.find({ _id: { $in: tripIds } }).select('voyage shippingType inventoryPlace status').lean(),
     Order.find({ _id: { $in: orderIds } }).select('orderId customerInfo.fullName isDeleted').setOptions({ withDeleted: true }).lean(),
   ]);
-  res.json({ bill, payments, creditNotes, entries, open, trips, orders });
+  res.json({ bill, payments, creditNotes, entries, open, paymentStatus: open === null ? null : paymentStatusOf(bill, open), trips, orders });
 });
 
 module.exports.createBill = handle(async (req, res) => {
@@ -244,6 +274,12 @@ module.exports.listDocuments = (kind) => handle(async (req, res) => {
   if (isObjectId(req.query.vendorId)) extra.vendorId = req.query.vendorId;
   if (isObjectId(req.query.employeeId)) extra.employeeId = req.query.employeeId;
   if (isObjectId(req.query.accountId)) extra.$or = [{ accountId: oid(req.query.accountId) }, { fromAccountId: oid(req.query.accountId) }, { toAccountId: oid(req.query.accountId) }];
+  // The document number or its note
+  if (req.query.search) {
+    const pattern = new RegExp(escapeRegex(String(req.query.search)), 'i');
+    extra.$and = [{ $or: [{ number: pattern }, { note: pattern }] }];
+  }
+  if (req.query.type) extra.type = req.query.type;
   res.json(await paged(Model, listQuery(req, extra), req, populate));
 });
 
@@ -334,15 +370,13 @@ module.exports.runAmortization = handle(async (req, res) => {
 module.exports.listEmployees = handle(async (req, res) => {
   const employees = await User.find({ $or: [{ 'roles.isEmployee': true }, { 'roles.isAdmin': true }, { 'roles.isAccountant': true }] })
     .select('firstName lastName customerId roles').sort({ firstName: 1 }).lean();
-  const advances = await resolveAccount('employee_advances');
-  const rows = await JournalEntry.aggregate([
-    { $match: { 'lines.accountId': advances._id } },
-    { $unwind: '$lines' },
-    { $match: { 'lines.accountId': advances._id } },
-    { $group: { _id: '$lines.employeeId', usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
-  ]);
-  const byEmployee = new Map(rows.map((row) => [String(row._id), row.usd]));
-  res.json({ results: employees.map((employee) => ({ ...employee, advance: byEmployee.get(String(employee._id)) || 0 })) });
+  // Custody and loans apart (owner's request 2026-10-04); the accounts the screen moves money to
+  const custody = require('../services/custody');
+  const [held, lent, custodyAccount, loanAccount] = await Promise.all([custody.balances('custody'), custody.balances('loan'), custody.accountOf('custody'), custody.accountOf('loan')]);
+  res.json({
+    custodyAccountId: custodyAccount?._id || null, loanAccountId: loanAccount?._id || null,
+    results: employees.map((employee) => ({ ...employee, custody: held.get(String(employee._id)) || 0, loan: lent.get(String(employee._id)) || 0, advance: held.get(String(employee._id)) || 0 })),
+  });
 });
 
 // ---- Treasury ----

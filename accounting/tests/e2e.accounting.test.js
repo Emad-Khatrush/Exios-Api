@@ -139,11 +139,11 @@ test('4. cash count short in dinars; a manual entry; a salary with an advance ta
   expect((await net('110102')).foreign).toBe(4950000);
   expect(await usd('530900')).toBe(500);
   const employee = (await mongoose.connection.collection('users').insertOne({ username: 'emp', firstName: 'Emp', lastName: 'L', phone: 910000005, customerId: 'EMP1', roles: { isEmployee: true } })).insertedId;
-  await create('transfers', { day, fromAccountId: String(usdBank._id), fromAmount: 200, toAccountId: String((await account('140100'))._id), toAmount: 200, employeeId: String(employee) });
+  await create('transfers', { day, fromAccountId: String(usdBank._id), fromAmount: 200, toAccountId: String((await account('140300'))._id), toAmount: 200, employeeId: String(employee) });
   await create('salaries', { employeeId: String(employee), month: '2026-03', office: 'tripoli', day, grossAmount: 800, currency: 'USD', advanceDeduction: 200, paidFromAccountId: String(usdBank._id) });
   await expectConsistent('salary');
   expect(await usd('530100')).toBe(80000);
-  expect(await usd('140100')).toBe(0);
+  expect(await usd('140300')).toBe(0);
   const expense = await account('530800');
   await Account.updateOne({ _id: expense._id }, { $set: { allowManualEntry: true } });
   invalidateConfig();

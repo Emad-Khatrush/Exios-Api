@@ -19,8 +19,9 @@ const {
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 const MONTH = /^\d{4}-\d{2}$/;
 
-async function employeeAdvanceBalance(employeeId, session) {
-  const advances = await resolveAccount('employee_advances');
+// What a staff member holds on one of their accounts (custody or loan), in USD cents
+async function employeeAdvanceBalance(employeeId, session, role = 'employee_advances') {
+  const advances = await resolveAccount(role);
   const [row] = await JournalEntry.aggregate([
     { $match: { 'lines.accountId': advances._id, 'lines.employeeId': toId(employeeId) } },
     { $unwind: '$lines' },
@@ -53,7 +54,8 @@ async function createSalary(input, { session, req }) {
   const rates = new RateBook(session);
   const grossUsd = await rates.toUsd(gross, currency, input.day, input.rate);
   const deductionUsd = deduction ? await rates.toUsd(deduction, currency, input.day, input.rate) : 0;
-  if (deductionUsd > await employeeAdvanceBalance(employee._id, session)) throw fail('الخصم أكبر من رصيد سلفة الموظف');
+  // A loan is taken back from the salary; custody is settled by expenses (owner's request 2026-10-04)
+  if (deductionUsd > await employeeAdvanceBalance(employee._id, session, 'employee_loans')) throw fail('الخصم أكبر من رصيد سلفة الموظف');
   const net = gross - deduction;
 
   const [doc] = await SalaryPayment.create([{
@@ -63,7 +65,7 @@ async function createSalary(input, { session, req }) {
     number: await nextDocNumber('SAL', input.day, session),
   }], { session });
 
-  const [salaries, advances] = await Promise.all([resolveAccount('salaries_expense'), resolveAccount('employee_advances')]);
+  const [salaries, advances] = await Promise.all([resolveAccount('salaries_expense'), resolveAccount('employee_loans')]);
   const name = `${employee.firstName} ${employee.lastName}`;
   const lines = [{ accountId: salaries._id, debit: grossUsd, office: input.office, employeeId: employee._id, label: `راتب ${name} ${input.month}` }];
   if (deductionUsd) lines.push({ accountId: advances._id, credit: deductionUsd, employeeId: employee._id, label: 'خصم سلفة' });

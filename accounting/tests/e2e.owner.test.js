@@ -490,3 +490,66 @@ test('15. "received" is never ticked by hand: creating or editing an order keeps
   expect((await Order.findById(order._id).lean()).paymentList[0].status.received).toBe(true);
   await expectConsistent('delivered');
 });
+
+test('16. custody and loans apart: custody given, spent by the employee on expenses (dollars and dinars), returned; a loan taken from the salary', async () => {
+  const { createTransfer } = require('../services/posting/treasury');
+  const { createSalary } = require('../services/posting/people');
+  const staff = require('../services/staffOperations');
+  const custody = require('../services/custody');
+  const clerkId = (await users().insertOne({ username: 'clerk-c', firstName: 'Clerk', lastName: 'C', phone: 910000077, customerId: 'STF7', office: 'tripoli', roles: { isEmployee: true } })).insertedId;
+  const clerk = await users().findOne({ _id: clerkId });
+  const box = await account('110101');
+  const custodyAccount = await account('140100');
+  const loanAccount = await account('140300');
+  // 300$ custody and a 100$ loan, from the box
+  await tx((session) => createTransfer({ day: today(), employeeId: String(clerkId), fromAccountId: box._id, toAccountId: custodyAccount._id, fromAmount: 300, toAmount: 300 }, { session, req: { user: owner } }));
+  await tx((session) => createTransfer({ day: today(), employeeId: String(clerkId), fromAccountId: box._id, toAccountId: loanAccount._id, fromAmount: 100, toAmount: 100 }, { session, req: { user: owner } }));
+  expect((await staff.officeExpenseOptions(clerk)).custody).toBe(30000);
+  // The employee pays from custody: 50$ and 100 LYD (at the day's rate)
+  const type = await docs.ExpenseType.findOne({ isActive: true }).lean();
+  await staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 50, currency: 'USD', payFrom: 'custody', note: 'وقود' }, [], { user: clerk });
+  await staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 100, currency: 'LYD', payFrom: 'custody', note: 'ضيافة' }, [], { user: clerk });
+  await expectConsistent('custody spent');
+  const mine = await custody.mine(clerk);
+  const rate = (await require('../services/rates').getRate('LYD', today())).rate;
+  expect(mine.custody.balance).toBe(30000 - 5000 - Math.round((100 / rate) * 100));
+  expect(mine.custody.movements.filter((m) => m.kind === 'spent')).toHaveLength(2);
+  expect(mine.custody.movements.some((m) => m.kind === 'given' && m.usd === 30000)).toBe(true);
+  expect(mine.loan.balance).toBe(10000);
+  // More than the custody holds: refused
+  await expect(staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 1000, currency: 'USD', payFrom: 'custody' }, [], { user: clerk })).rejects.toThrow('لا تكفي');
+  // The loan comes back from the salary; custody is not touched by it
+  await tx((session) => createSalary({ employeeId: String(clerkId), month: today().slice(0, 7), day: today(), office: 'tripoli', paidFromAccountId: box._id, grossAmount: 500, advanceDeduction: 100 }, { session, req: { user: owner } }));
+  expect((await custody.mine(clerk)).loan.balance).toBe(0);
+  expect((await custody.mine(clerk)).custody.balance).toBe(mine.custody.balance);
+  // The overview for the accountant and the admin, not for the employee
+  const overview = await custody.summary({ _id: owner._id, roles: { isAccountant: true } });
+  expect(overview.results.find((r) => String(r._id) === String(clerkId))).toMatchObject({ custody: mine.custody.balance, loan: 0 });
+  await expect(custody.summary(clerk)).rejects.toMatchObject({ statusCode: 403 });
+  await expectConsistent('custody and loan');
+});
+
+test('17. supplier bills say paid, partly paid or unpaid, and can be filtered by it', async () => {
+  const documents = require('../controllers/documents');
+  const payables = require('../services/posting/payables');
+  const vendor = await docs.Vendor.create({ name: 'مورد الحالة', type: 'supplier' });
+  const rent = await account('530200');
+  const bill = (amount, paid) => tx(async (session) => payables.createBill({
+    vendorId: vendor._id, day: today(), currency: 'USD', ...(paid && { paidImmediatelyFrom: (await account('110101'))._id }),
+    lines: [{ description: 'x', amount, target: 'expense', accountId: rent._id, office: 'tripoli' }],
+  }, { session, req: { user: owner } }));
+  const paid = await bill(40, true);
+  const unpaid = await bill(60, false);
+  const partial = await bill(80, false);
+  const box = await account('110101');
+  await tx((session) => payables.createPayment({ vendorId: vendor._id, day: today(), fromAccountId: box._id, amount: 30, allocations: [{ billId: partial._id, amountUsd: 3000 }] }, { session, req: { user: owner } }));
+  const list = async (query) => (await call(documents.listBills, { ...as(owner), query: { vendorId: String(vendor._id), ...query } })).body.results;
+  const all = await list({});
+  const statusOf = (doc) => all.find((b) => String(b._id) === String(doc._id))?.paymentStatus;
+  expect(statusOf(paid)).toBe('paid');
+  expect(statusOf(unpaid)).toBe('unpaid');
+  expect(statusOf(partial)).toBe('partial');
+  expect(all.find((b) => String(b._id) === String(partial._id)).open).toBe(5000);
+  expect((await list({ payment: 'unpaid' })).map((b) => String(b._id))).toEqual([String(unpaid._id)]);
+  expect((await list({ payment: 'paid' })).map((b) => String(b._id))).toEqual([String(paid._id)]);
+});

@@ -161,15 +161,15 @@ test('scenario 15: salary with an advance deducted', async () => {
   await fund('110101', 5000);
   const employeeId = (await mongoose.connection.collection('users').insertOne({ firstName: 'موظف', lastName: 'أ', roles: { isEmployee: true } })).insertedId;
   const cash = await account('110101');
-  const advances = await account('140100');
+  const advances = await account('140300');
   await tx((session) => treasury.createTransfer({ day: '2026-03-01', fromAccountId: cash._id, fromAmount: 200, toAccountId: advances._id, toAmount: 200, employeeId }, { session, req }));
-  expect((await balanceOf('140100', { })).usd).toBe(20000);
+  expect((await balanceOf('140300', { })).usd).toBe(20000);
 
   await tx((session) => people.createSalary({
     employeeId, month: '2026-03', day: '2026-03-31', office: 'tripoli', paidFromAccountId: cash._id, grossAmount: 800, advanceDeduction: 200,
   }, { session, req }));
   expect((await balanceOf('530100')).usd).toBe(80000);
-  expect((await balanceOf('140100')).usd).toBe(0);
+  expect((await balanceOf('140300')).usd).toBe(0);
   expect((await balanceOf('110101')).usd).toBe(500000 - 20000 - 60000);
 });
 
