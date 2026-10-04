@@ -352,3 +352,45 @@ test('14. statement lines: a deposit retyped as a refund and back; a payment giv
   await call(wallet.deleteStatement, { params: { id: String(customer._id), statementId: String(line._id) } });
   await expectConsistent('deposit deleted');
 });
+
+test('a delivery invoice cancelled one package at a time: only that package comes back, then the rest', async () => {
+  await deposit(60, 'USD');
+  const order = await newShipmentOrder([{ weight: 2, price: 10 }, { weight: 3, price: 10 }]);
+  const full = await Order.findById(order._id).lean();
+  const selected = full.paymentList.map((p) => ({ id: String(p._id), orderId: full.orderId, trackingNumber: p.deliveredPackages.trackingNumber }));
+  await call(orders.markPackagesAsDelivered, { params: { id: String(customer._id) }, body: { selectedPackages: selected, payment: { amountUSD: 50 } } });
+  await expectConsistent('delivered');
+  const [first, second] = full.paymentList;
+  const keyOf = (p) => `SHP:${order._id}:${p._id}`;
+  const usdWallet = async () => (await Wallet.findOne({ user: customer._id, currency: 'USD' }).lean()).balance;
+  const Invoice = require('../../models/invoice');
+  const invoice = await Invoice.findOne({ 'list.orderId': full.orderId }).sort({ createdAt: -1 }).lean();
+  const before = await usdWallet();
+
+  // The first package only: its 20$ back, it is open again, the second stays paid and handed over
+  const partial = (await call(orders.cancelInvoice, { params: { id: String(invoice._id) }, body: { packageIds: [String(first._id)] } })).body.results;
+  expect(partial.whole).toBe(false);
+  expect(partial.refundedUSD).toBe(20);
+  expect(await usdWallet()).toBe(before + 20);
+  await expectConsistent('one package cancelled');
+  expect(await usd('121000', { arKey: keyOf(first) })).toBe(2000);
+  expect(await usd('121000', { arKey: keyOf(second) })).toBe(0);
+  let saved = await Invoice.findById(invoice._id).lean();
+  expect(saved.isCanceled).toBe(false);
+  expect(saved.list.filter((p) => p.canceledAt)).toHaveLength(1);
+  const after = await Order.findById(order._id).lean();
+  expect(after.paymentList.find((p) => String(p._id) === String(first._id)).status.received).toBe(false);
+  expect(after.paymentList.find((p) => String(p._id) === String(second._id)).status.received).toBe(true);
+  // The same package again: refused
+  await expect(call(orders.cancelInvoice, { params: { id: String(invoice._id) }, body: { packageIds: [String(first._id)] } })).rejects.toMatchObject({ statusCode: 400 });
+
+  // The rest: the invoice is now cancelled, all 50$ back
+  const rest = (await call(orders.cancelInvoice, { params: { id: String(invoice._id) }, body: {} })).body.results;
+  expect(rest.whole).toBe(true);
+  expect(await usdWallet()).toBe(before + 50);
+  saved = await Invoice.findById(invoice._id).lean();
+  expect(saved.isCanceled).toBe(true);
+  expect(saved.cancellation.refundedUSD).toBe(50);
+  await expectConsistent('whole invoice cancelled');
+  expect(await usd('121000', { arKey: keyOf(second) })).toBe(3000);
+});

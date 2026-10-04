@@ -133,7 +133,31 @@ async function movements(employeeId, kind, { limit = 200 } = {}) {
     balance[currency] = (into - out) / 10 ** decimals;
   }
   rows.sort((a, b) => (a.day === b.day ? new Date(b.createdAt) - new Date(a.createdAt) : a.day < b.day ? 1 : -1));
-  return { balance, given, used, movements: rows.slice(0, max) };
+  const shown = rows.slice(0, max);
+  await addDetails(shown);
+  return { balance, given, used, movements: shown };
+}
+
+// What each movement was for, for the custody papers: the expense paid (its bill's lines, number
+// and receipts) or the note typed on the transfer that gave or took the money back
+async function addDetails(rows) {
+  const { SupplierPayment, SupplierBill, TreasuryTransfer } = require('../models/documents');
+  const entries = await JournalEntry.find({ _id: { $in: rows.map((r) => r.entryId) } }).select('source').lean();
+  const sourceOf = new Map(entries.map((e) => [String(e._id), e.source || {}]));
+  for (const row of rows) {
+    const source = sourceOf.get(String(row.entryId)) || {};
+    if (source.model === 'AccountingSupplierPayment') {
+      const payment = await SupplierPayment.findById(source.id).select('allocations note').lean();
+      const bills = await SupplierBill.find({ _id: { $in: (payment?.allocations || []).map((a) => a.billId) } }).select('number lines.description note attachments').lean();
+      row.detail = bills.map((b) => b.lines.map((l) => l.description).join('، ')).join(' / ') || payment?.note || '';
+      row.reference = bills.map((b) => b.number).join('، ');
+      row.receipts = bills.reduce((sum, b) => sum + (b.attachments || []).length, 0);
+    } else if (source.model === 'AccountingTreasuryTransfer') {
+      const transfer = await TreasuryTransfer.findById(source.id).select('number note').lean();
+      row.detail = transfer?.note || '';
+      row.reference = transfer?.number;
+    }
+  }
 }
 
 // A staff member's own custody and loan, for their Home page

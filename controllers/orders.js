@@ -1846,23 +1846,47 @@ module.exports.getInvoicesByCustomer = async (req, res, next) => {
 module.exports.cancelInvoice = async (req, res, next) => {
   try {
     const { id } = req.params;
+    // Some of its packages only (owner's request 2026-10-04: one shipment of several handed over
+    // together), or, with none named, every package not cancelled yet
+    const wanted = Array.isArray(req.body?.packageIds) ? req.body.packageIds.map(String) : [];
 
-    // Flip the flag first and atomically, so the same invoice can never be refunded twice
-    const invoice = await Invoices.findOneAndUpdate(
-      { _id: id, isCanceled: { $ne: true } },
-      { $set: { isCanceled: true, canceledAt: new Date(), canceledBy: req.user._id } },
-      { new: true }
-    );
-    if (!invoice) {
-      const exists = await Invoices.exists({ _id: id });
-      return next(new ErrorHandler(exists ? 400 : 404, exists ? 'Invoice is already cancelled' : 'Invoice not found'));
-    }
+    const current = await Invoices.findById(id).lean();
+    if (!current) return next(new ErrorHandler(404, 'Invoice not found'));
+    if (current.isCanceled) return next(new ErrorHandler(400, 'Invoice is already cancelled'));
+    const chosen = (current.list || []).map((pkg, index) => ({ pkg, index }))
+      .filter(({ pkg }) => !pkg.canceledAt && (!wanted.length || wanted.includes(String(pkg.packageId))));
+    if (!chosen.length) return next(new ErrorHandler(400, 'Choose a package of this invoice that is not cancelled yet'));
+    const whole = chosen.length === (current.list || []).filter((pkg) => !pkg.canceledAt).length;
 
-    const cancellation = await cancelInvoicePackages(req.user, invoice);
-    await Invoices.updateOne({ _id: invoice._id }, { $set: { cancellation } });
-    await emitOrdersByNumber((invoice.list || []).map(pkg => pkg.orderId), req.user);
+    // Marked first and atomically, so the same package can never be refunded twice
+    const now = new Date();
+    const guard = { _id: id, isCanceled: { $ne: true } };
+    const marks = {};
+    chosen.forEach(({ index }) => {
+      guard[`list.${index}.canceledAt`] = { $exists: false };
+      marks[`list.${index}.canceledAt`] = now;
+      marks[`list.${index}.canceledBy`] = req.user._id;
+    });
+    if (whole) Object.assign(marks, { isCanceled: true, canceledAt: now, canceledBy: req.user._id });
+    const invoice = await Invoices.findOneAndUpdate(guard, { $set: marks }, { new: true });
+    if (!invoice) return next(new ErrorHandler(409, 'This invoice was just changed by someone else. Refresh and try again.'));
 
-    res.status(200).json({ results: cancellation });
+    const result = await cancelInvoicePackages(req.user, { ...invoice.toObject(), list: chosen.map(({ pkg }) => pkg) });
+    // What came back for each package stays on its line; the invoice's totals add up every cancellation
+    const round = (value) => Math.round(value * 100) / 100;
+    const before = current.cancellation || {};
+    const saved = {
+      cancellation: {
+        refundedUSD: round((before.refundedUSD || 0) + result.refundedUSD),
+        refundedLYD: round((before.refundedLYD || 0) + result.refundedLYD),
+        packages: [...(before.packages || []), ...result.packages],
+      },
+    };
+    chosen.forEach(({ index }, k) => { saved[`list.${index}.refunds`] = result.packages[k]?.refunds || []; });
+    await Invoices.updateOne({ _id: invoice._id }, { $set: saved });
+    await emitOrdersByNumber(chosen.map(({ pkg }) => pkg.orderId), req.user);
+
+    res.status(200).json({ results: { ...result, whole } });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(error.statusCode || 500, error.message));
