@@ -115,6 +115,9 @@ const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycl
   // USD cents taken off each bill; the rest of the payment is an advance to the vendor
   allocations: [{ _id: false, billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' }, amountUsd: Number }],
   advanceUsd: { type: Number, default: 0 },
+  // The difference between what was paid and what the bills said, put on the bills' cost (USD
+  // cents, + paid more, - paid less): the cost is what the money really cost (owner 2026-10-04)
+  costDifferenceUsd: { type: Number, default: 0 },
   autoFromBillId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
   isHistorical: { type: Boolean, default: false },
   migrationRunId: String,

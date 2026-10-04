@@ -356,9 +356,11 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
 
   const allocations = (input.allocations || []).filter((a) => Number(a.amountUsd) > 0).map((a) => ({ billId: toId(a.billId), amountUsd: Math.round(Number(a.amountUsd)) }));
   const lines = [];
+  const bills = [];
   let allocated = 0;
   for (const allocation of allocations) {
     const bill = await SupplierBill.findById(allocation.billId).session(session);
+    bills.push(bill);
     if (!bill || bill.status !== 'posted' || bill.isCreditNote) throw fail('فاتورة غير صالحة في التخصيص');
     if (String(bill.vendorId) !== String(vendor._id)) throw fail(`الفاتورة ${bill.number} لمورد آخر`);
     const open = await apBalance(billKey(bill._id), session);
@@ -405,8 +407,17 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     // Allowing a little over the day's value: a bill paid in its own currency closes in full
     // even when the rate moved since the bill
     if (allocated > Math.round(atRate * 1.1) + 100) throw fail('المبالغ المخصصة أكبر من قيمة الدفعة');
+    // Paid in another currency than the bills (a Kuwaiti site paid from the lira bank): the bills'
+    // cost becomes what was really paid, the difference going on their own targets (owner's request
+    // 2026-10-04). The box's average rate against the paid rate stays an exchange difference.
+    const difference = input.differenceTo === 'cost' && allocated && !input.autoFromBillId ? atRate - allocated : 0;
+    if (difference) {
+      if (Math.abs(difference) > Math.round(allocated * 0.1) + 100) throw fail('الفرق بين المدفوع والموزَّع أكبر من 10%: راجع المبلغ أو السعر');
+      lines.push(...await costDifferenceLines(bills, allocations, difference, session, actor));
+      doc.costDifferenceUsd = difference;
+    }
     // The payment made with its bill pays exactly that bill: a cent of rounding is not an advance
-    const advance = input.autoFromBillId ? 0 : Math.max(atRate - allocated, 0);
+    const advance = input.autoFromBillId || difference ? 0 : Math.max(atRate - allocated, 0);
     if (advance > 0) lines.push({ accountId: payable._id, debit: advance, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'دفعة مقدمة للمورد' });
     lines.push(moneyLine(from, 'credit', minor, outUsd, { label: `دفعة للمورد ${vendor.name}`, ...(isEmployeeAdvance && { employeeId: toId(input.employeeId) }) }));
     office = from.office || undefined;
@@ -428,8 +439,33 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   await rates.lock();
   doc.entryId = entry._id;
   await doc.save({ session });
+  // The orders and trips whose cost changed take it into their recognised cost
+  if (doc.costDifferenceUsd) for (const bill of bills) await syncBillTargets(bill, { session, user: actor });
   await logAudit({ req, user: actor, action: 'payment.post', model: 'AccountingSupplierPayment', docId: doc._id, after: doc }, session);
   return doc;
+}
+
+// Lines putting `difference` (USD cents, + or -) on the cost of the paid bills, shared by what was
+// paid on each bill and, inside a bill, by the dollar value of its lines
+const DIFFERENCE_TARGETS = ['order', 'customs', 'trip', 'expense'];
+async function costDifferenceLines(bills, allocations, difference, session, user) {
+  const { allocate } = require('../claims/sync');
+  const lines = [];
+  const perBill = allocate(difference, allocations.map((a) => a.amountUsd));
+  for (const [index, bill] of bills.entries()) {
+    if (!perBill[index]) continue;
+    if (bill.lines.some((line) => !DIFFERENCE_TARGETS.includes(line.target))) {
+      throw fail(`الفاتورة ${bill.number} فيها أصل أو مصروف مقدم: سجّل الفرق دفعة مقدمة`);
+    }
+    const shares = allocate(perBill[index], bill.lines.map((line) => line.usd || 1));
+    for (const [i, line] of bill.lines.entries()) {
+      if (!shares[i]) continue;
+      const cost = await costLine(bill, line, Math.abs(shares[i]), session, user);
+      const label = `فرق المدفوع عن الفاتورة ${bill.number}`;
+      lines.push(shares[i] > 0 ? { ...cost, label } : { ...cost, debit: 0, credit: -shares[i], label });
+    }
+  }
+  return lines;
 }
 
 // Money received from a vendor into a cash box, bank or Alipay (spec 19.13): it settles the credit

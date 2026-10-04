@@ -579,3 +579,35 @@ test('17. supplier bills say paid, partly paid or unpaid, and can be filtered by
   expect((await list({ payment: 'unpaid' })).map((b) => String(b._id))).toEqual([String(unpaid._id)]);
   expect((await list({ payment: 'paid' })).map((b) => String(b._id))).toEqual([String(paid._id)]);
 });
+
+test('18. a bill in Kuwaiti dinars paid from the lira bank: the cost becomes what was really paid', async () => {
+  const payables = require('../services/posting/payables');
+  const { cancelDocument } = require('../services/cancel');
+  await CurrencyRate.create([{ currency: 'KWD', day: today(), rate: 0.31 }, { currency: 'TRY', day: today(), rate: 49.9 }]);
+  const lira = await account('110204');
+  // Lira in the bank at 49.88
+  const dollars = await account('110101');
+  await tx((session) => require('../services/posting/treasury').createTransfer({ day: today(), fromAccountId: dollars._id, toAccountId: lira._id, fromAmount: 400, toAmount: 19952 }, { session, req: { user: owner } }));
+  const order = await purchase(586);
+  const vendor = await docs.Vendor.create({ name: 'موقع كويتي', type: 'supplier' });
+  const bill = await tx((session) => payables.createBill({
+    vendorId: vendor._id, day: today(), currency: 'KWD', lines: [{ description: 'موقع كويتي', amount: 93, target: 'order', orderId: order._id }],
+  }, { session, req: { user: owner } }));
+  expect(bill.totalUsd).toBe(30000);
+  const fxBefore = await usd('710100');
+  const payment = await tx((session) => payables.createPayment({
+    vendorId: vendor._id, day: today(), fromAccountId: lira._id, amount: 15021.36, rate: 49.88, differenceTo: 'cost', allocations: [{ billId: bill._id, amountUsd: 30000 }],
+  }, { session, req: { user: owner } }));
+  // 15,021.36 / 49.88 = 301.15$: the bill is closed, nothing left as an advance, the order costs 301.15
+  expect(payment.costDifferenceUsd).toBe(115);
+  expect(payment.advanceUsd).toBe(0);
+  expect(await usd('130200', { orderId: order._id })).toBe(30115);
+  expect(await usd('210200', { apKey: `BILL:${bill._id}` })).toBe(0);
+  // The bank's lira were bought at the same rate: no exchange difference
+  expect(await usd('710100')).toBe(fxBefore);
+  await expectConsistent('paid in lira');
+  // Cancelled: the cost goes back to the bill's 300$
+  await tx((session) => cancelDocument('AccountingSupplierPayment', payment._id, { session, req: { user: owner }, reason: 'اختبار' }));
+  expect(await usd('130200', { orderId: order._id })).toBe(30000);
+  await expectConsistent('payment cancelled');
+});

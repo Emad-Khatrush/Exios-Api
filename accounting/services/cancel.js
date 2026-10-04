@@ -44,7 +44,18 @@ const RULES = {
       await syncBillTargets(bill, { session: context.session, user: context.req?.user });
     },
   },
-  AccountingSupplierPayment: { Model: docs.SupplierPayment },
+  AccountingSupplierPayment: {
+    Model: docs.SupplierPayment,
+    // A payment that changed its bills' cost: their orders and trips take the change back
+    async after(payment, context) {
+      if (!payment.costDifferenceUsd) return;
+      const { syncBillTargets } = require('./posting/payables');
+      for (const allocation of payment.allocations) {
+        const bill = await docs.SupplierBill.findById(allocation.billId).session(context.session);
+        if (bill) await syncBillTargets(bill, { session: context.session, user: context.req?.user });
+      }
+    },
+  },
   AccountingSupplierReceipt: { Model: docs.SupplierReceipt },
   AccountingYuanPurchase: { Model: docs.YuanPurchase },
   AccountingCustomerRefund: {
