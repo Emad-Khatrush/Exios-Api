@@ -2,7 +2,7 @@
 // the order, trip and customer pages). Read from the ledger only.
 const mongoose = require('mongoose');
 const { JournalEntry } = require('../../models');
-const { SupplierBill } = require('../../models/documents');
+const { SupplierBill, SupplierPayment } = require('../../models/documents');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
 const Wallet = require('../../../models/wallet');
@@ -36,14 +36,30 @@ async function ledgerBy(entryMatch, lineMatch, key) {
 const recentEntries = (match) => JournalEntry.find(match).sort({ day: -1, createdAt: -1 }).limit(100)
   .select('number day description eventType totalDebit status reversalOf').lean();
 
-// Supplier bills that put a cost on this order or trip, with the part of each bill that is theirs
+// Supplier bills that put a cost on this order or trip, with the part of each bill that is theirs,
+// and the payments made on them: what was paid, in what currency and at what rate, and the
+// difference a payment put on this cost (paid in lira for a bill in Kuwaiti dinars, decision 127)
 async function billsFor(field, id) {
   const bills = await SupplierBill.find({ [`lines.${field}`]: id, status: { $ne: 'draft' } }).populate('vendorId', 'name').sort({ day: -1 }).lean();
+  const payments = await SupplierPayment.find({ 'allocations.billId': { $in: bills.map((b) => b._id) }, status: 'posted' })
+    .populate('fromAccountId', 'code name').select('number day currency amount rate allocations costDifferenceUsd entryId fromAccountId fromAdvance').lean();
+  const entries = await JournalEntry.find({ _id: { $in: payments.filter((p) => p.costDifferenceUsd).map((p) => p.entryId) } }).select('lines').lean();
+  const entryOf = new Map(entries.map((e) => [String(e._id), e]));
   return bills.map((bill) => {
     const lines = bill.lines.filter((line) => String(line[field]) === String(id));
+    const label = `فرق المدفوع عن الفاتورة ${bill.number}`;
+    const paid = payments.filter((p) => p.allocations.some((a) => String(a.billId) === String(bill._id))).map((p) => ({
+      paymentId: p._id, number: p.number, day: p.day, currency: p.currency, amount: p.amount, rate: p.rate, fromAdvance: p.fromAdvance, account: p.fromAccountId?.name,
+      allocatedUsd: p.allocations.find((a) => String(a.billId) === String(bill._id))?.amountUsd || 0,
+      // The part of the payment's difference that landed on this order or trip
+      difference: (entryOf.get(String(p.entryId))?.lines || []).filter((l) => l.label === label && String(l[field]) === String(id))
+        .reduce((sum, l) => sum + (l.debit || 0) - (l.credit || 0), 0),
+    }));
+    const usd = lines.reduce((sum, line) => sum + (line.usd || 0), 0);
+    const difference = paid.reduce((sum, p) => sum + p.difference, 0);
     return {
       billId: bill._id, number: bill.number, day: bill.day, vendor: bill.vendorId?.name, status: bill.status, currency: bill.currency, isCreditNote: bill.isCreditNote,
-      amount: lines.reduce((sum, line) => sum + line.amount, 0), usd: lines.reduce((sum, line) => sum + (line.usd || 0), 0),
+      amount: lines.reduce((sum, line) => sum + line.amount, 0), usd, payments: paid, difference, cost: usd + difference,
       description: lines.map((line) => line.description).join('، '),
     };
   });
