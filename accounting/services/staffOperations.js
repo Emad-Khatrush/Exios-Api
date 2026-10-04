@@ -207,8 +207,8 @@ async function officeExpenseOptions(user, requestedOffice) {
     offices: profile.anyOffice ? [...offices.values()].filter((o) => o.isActive !== false).map((o) => ({ code: o.code, name: o.name })) : [],
     types: types.map((t) => ({ _id: t._id, name: t.name })),
     currencies: office ? (await officeBoxes(office)).map((b) => b.currency) : [],
-    // The custody this staff member holds, which they may pay expenses from (USD cents)
-    custody: await require('./posting/people').employeeAdvanceBalance(user._id),
+    // The custody this staff member holds, which they may pay expenses from: { USD, LYD }
+    custody: (await require('./custody').balances('custody')).get(String(user._id)) || { USD: 0, LYD: 0 },
   };
 }
 
@@ -242,22 +242,19 @@ async function buildExpense(input, user, files) {
   const vendor = await Vendor.findOne({ seedKey: 'cash_expenses' }).lean();
   if (!vendor) throw fail('إعداد المحاسبة غير مكتمل (مورد المصروفات النقدية)');
   const note = String(input.note || '').trim();
-  // Paid from the custody the staff member holds (owner's request 2026-10-04): custody is kept in
-  // dollars, so an expense in another currency is entered at its rate in dollars
+  // Paid from the custody the staff member holds (owner's request 2026-10-04), in the custody's own
+  // currency: a dinar expense from the dinar custody, valued at what that custody cost
   if (input.payFrom === 'custody') {
-    const { resolveAccount } = require('./roles');
-    const { getRate } = require('./rates');
-    const { employeeAdvanceBalance } = require('./posting/people');
-    const custody = await resolveAccount('employee_advances');
-    const rate = currency === 'USD' ? 1 : (await getRate(currency, day)).rate;
-    const usd = Math.round((amount / rate) * 100) / 100;
-    const held = await employeeAdvanceBalance(user._id);
-    if (Math.round(usd * 100) > held) throw fail(`عهدتك ${held / 100}$ لا تكفي لهذا المصروف (${usd}$)`);
-    const original = currency === 'USD' ? '' : ` (${amount} ${currency} بسعر ${rate})`;
+    const custody = require('./custody');
+    const account = await custody.accountOf('custody', currency);
+    if (!account) throw fail(`لا توجد عهدة بعملة ${currency || ''}`);
+    const decimals = await require('./posting/common').decimalsOf(currency);
+    const held = (await custody.heldMinor(account, user._id)) / 10 ** decimals;
+    if (Math.round(amount * 10 ** decimals) > Math.round(held * 10 ** decimals)) throw fail(`عهدتك بعملة ${currency} (${held}) لا تكفي لهذا المصروف`);
     return {
-      vendorId: vendor._id, day, currency: 'USD', paidImmediatelyFrom: custody._id, employeeId: user._id, isQuickExpense: true, officeExpense: true, office,
-      expenseTypeId: type._id, enteredFrom: 'officeExpense', note: `${note}${original}`.trim(), attachments: files,
-      lines: [{ description: `${note ? `${type.name} - ${note}` : type.name}${original}`, amount: usd, target: 'expense', accountId: type.accountId, office }],
+      vendorId: vendor._id, day, currency, paidImmediatelyFrom: account._id, employeeId: user._id, isQuickExpense: true, officeExpense: true, office,
+      expenseTypeId: type._id, enteredFrom: 'officeExpense', note, attachments: files,
+      lines: [{ description: note ? `${type.name} - ${note}` : type.name, amount, target: 'expense', accountId: type.accountId, office }],
     };
   }
   const box = (await officeBoxes(office)).find((b) => b.currency === currency);

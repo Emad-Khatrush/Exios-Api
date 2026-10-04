@@ -19,18 +19,6 @@ const {
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 const MONTH = /^\d{4}-\d{2}$/;
 
-// What a staff member holds on one of their accounts (custody or loan), in USD cents
-async function employeeAdvanceBalance(employeeId, session, role = 'employee_advances') {
-  const advances = await resolveAccount(role);
-  const [row] = await JournalEntry.aggregate([
-    { $match: { 'lines.accountId': advances._id, 'lines.employeeId': toId(employeeId) } },
-    { $unwind: '$lines' },
-    { $match: { 'lines.accountId': advances._id, 'lines.employeeId': toId(employeeId) } },
-    { $group: { _id: null, usd: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
-  ]).session(session || null);
-  return row?.usd || 0;
-}
-
 // Gross salary is the expense; a deducted advance reduces what the employee still holds;
 // the rest is paid from the cash box (at its average rate if not in USD).
 async function createSalary(input, { session, req }) {
@@ -53,9 +41,16 @@ async function createSalary(input, { session, req }) {
 
   const rates = new RateBook(session);
   const grossUsd = await rates.toUsd(gross, currency, input.day, input.rate);
-  const deductionUsd = deduction ? await rates.toUsd(deduction, currency, input.day, input.rate) : 0;
-  // A loan is taken back from the salary; custody is settled by expenses (owner's request 2026-10-04)
-  if (deductionUsd > await employeeAdvanceBalance(employee._id, session, 'employee_loans')) throw fail('الخصم أكبر من رصيد سلفة الموظف');
+  // A loan is taken back from the salary, from the loan in the salary's currency, at the rate it was
+  // lent at; custody is settled by expenses (owner's requests 2026-10-04)
+  const custody = require('../custody');
+  const loans = deduction ? await custody.accountOf('loan', currency) : null;
+  if (deduction && !loans) throw fail(`لا يوجد حساب سلف بعملة ${currency}: شغّل الإعداد`);
+  if (deduction) {
+    const held = await custody.heldMinor(loans, employee._id, session);
+    if (deduction > held) throw fail(`الخصم أكبر من رصيد سلفة الموظف بعملة ${currency} (${held / 10 ** await decimalsOf(currency)})`);
+  }
+  const deductionUsd = deduction ? await valueOut(loans, deduction, { day: input.day, docRate: input.rate, rates, employeeId: employee._id }) : 0;
   const net = gross - deduction;
 
   const [doc] = await SalaryPayment.create([{
@@ -65,10 +60,10 @@ async function createSalary(input, { session, req }) {
     number: await nextDocNumber('SAL', input.day, session),
   }], { session });
 
-  const [salaries, advances] = await Promise.all([resolveAccount('salaries_expense'), resolveAccount('employee_loans')]);
+  const salaries = await resolveAccount('salaries_expense');
   const name = `${employee.firstName} ${employee.lastName}`;
   const lines = [{ accountId: salaries._id, debit: grossUsd, office: input.office, employeeId: employee._id, label: `راتب ${name} ${input.month}` }];
-  if (deductionUsd) lines.push({ accountId: advances._id, credit: deductionUsd, employeeId: employee._id, label: 'خصم سلفة' });
+  if (deduction) lines.push(moneyLine(loans, 'credit', deduction, deductionUsd, { employeeId: employee._id, label: 'خصم سلفة' }));
   if (net) lines.push(moneyLine(cash, 'credit', net, await valueOut(cash, net, { day: input.day, docRate: input.rate, rates }), { label: `صافي راتب ${name}` }));
   await addFxLine(lines, input.office);
 
@@ -211,4 +206,4 @@ async function createNetting(input, { session, req }) {
   return doc;
 }
 
-module.exports = { createSalary, createEquity, createNetting, moveWallet, employeeAdvanceBalance };
+module.exports = { createSalary, createEquity, createNetting, moveWallet };

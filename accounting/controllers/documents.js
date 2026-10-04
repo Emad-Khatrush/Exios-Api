@@ -372,10 +372,13 @@ module.exports.listEmployees = handle(async (req, res) => {
     .select('firstName lastName customerId roles').sort({ firstName: 1 }).lean();
   // Custody and loans apart (owner's request 2026-10-04); the accounts the screen moves money to
   const custody = require('../services/custody');
-  const [held, lent, custodyAccount, loanAccount] = await Promise.all([custody.balances('custody'), custody.balances('loan'), custody.accountOf('custody'), custody.accountOf('loan')]);
+  // Each kept in its own currency (USD, LYD): { custody: { USD: accountId, LYD: accountId }, loan: ... }
+  const [held, lent, custodyAccounts, loanAccounts] = await Promise.all([custody.balances('custody'), custody.balances('loan'), custody.accountsOf('custody'), custody.accountsOf('loan')]);
+  const ids = (rows) => Object.fromEntries(rows.map((row) => [row.currency, row.account._id]));
+  const none = { USD: 0, LYD: 0 };
   res.json({
-    custodyAccountId: custodyAccount?._id || null, loanAccountId: loanAccount?._id || null,
-    results: employees.map((employee) => ({ ...employee, custody: held.get(String(employee._id)) || 0, loan: lent.get(String(employee._id)) || 0, advance: held.get(String(employee._id)) || 0 })),
+    accounts: { custody: ids(custodyAccounts), loan: ids(loanAccounts) },
+    results: employees.map((employee) => ({ ...employee, custody: held.get(String(employee._id)) || none, loan: lent.get(String(employee._id)) || none })),
   });
 });
 

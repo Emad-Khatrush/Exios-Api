@@ -77,9 +77,12 @@ const ACCOUNTS = [
   g('14', 'السلف والمدفوعات المقدمة', 'Advances and prepayments', 'asset', '1'),
   // Custody: money given to spend for the company, settled by its expenses or returned
   a('140100', 'عهد الموظفين', 'Employee custody', 'asset', '14', { requires: ['employee'] }),
+  // Each in its own currency: given in dinars, settled in dinars (owner's request 2026-10-04)
+  a('140110', 'عهد الموظفين - دينار', 'Employee custody - LYD', 'asset', '14', { currency: 'LYD', requires: ['employee'] }),
   a('140200', 'مصروفات مدفوعة مقدماً', 'Prepaid expenses', 'asset', '14'),
   // Loans to staff, taken back from their salary or returned (owner's request 2026-10-04: apart from custody)
   a('140300', 'سلف الموظفين', 'Employee loans', 'asset', '14', { requires: ['employee'] }),
+  a('140310', 'سلف الموظفين - دينار', 'Employee loans - LYD', 'asset', '14', { currency: 'LYD', requires: ['employee'] }),
   g('15', 'الأصول الثابتة', 'Fixed assets', 'asset', '1', { cashFlowCategory: 'investing' }),
   a('150100', 'سيارات', 'Vehicles', 'asset', '15', { cashFlowCategory: 'investing' }),
   a('150200', 'أثاث ومعدات', 'Furniture and equipment', 'asset', '15', { cashFlowCategory: 'investing' }),
@@ -177,6 +180,8 @@ const ROLE_DEFAULTS = {
   customs_cost_wip: ['130300', ['asset']],
   employee_advances: ['140100', ['asset']],
   employee_loans: ['140300', ['asset']],
+  employee_advances_lyd: ['140110', ['asset']],
+  employee_loans_lyd: ['140310', ['asset']],
   prepaid_expenses: ['140200', ['asset']],
   accumulated_depreciation: ['150900', ['asset']],
   payable_carriers: ['210100', ['liability']],
@@ -226,6 +231,8 @@ const ROLE_LABELS = {
   customs_cost_wip: 'تكاليف تخليص جمركي قيد التنفيذ',
   employee_advances: 'عهد الموظفين',
   employee_loans: 'سلف الموظفين',
+  employee_advances_lyd: 'عهد الموظفين - دينار',
+  employee_loans_lyd: 'سلف الموظفين - دينار',
   prepaid_expenses: 'مصروفات مدفوعة مقدماً',
   accumulated_depreciation: 'مجمع الإهلاك',
   payable_carriers: 'ذمم شركات الشحن',

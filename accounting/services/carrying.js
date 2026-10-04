@@ -7,10 +7,12 @@ const toId = (value) => (value ? new mongoose.Types.ObjectId(String(value)) : nu
 // Balance of an account (optionally for one customer): usd = debit - credit in cents,
 // foreign = sum of amountCurrency in the account's currency. Read inside the caller's
 // transaction so two operations on the same wallet never both use a stale balance.
-// `upToDay` gives the balance at the end of that accounting day instead of now.
-async function getBalance(accountId, { partnerId, session, upToDay } = {}) {
+// `upToDay` gives the balance at the end of that accounting day instead of now; `employeeId` the
+// part one staff member holds (custody, loans).
+async function getBalance(accountId, { partnerId, employeeId, session, upToDay } = {}) {
   const lineMatch = { 'lines.accountId': toId(accountId) };
   if (partnerId) lineMatch['lines.partnerId'] = toId(partnerId);
+  if (employeeId) lineMatch['lines.employeeId'] = toId(employeeId);
 
   const [result] = await JournalEntry.aggregate([
     { $match: { ...lineMatch, ...(upToDay && { day: { $lte: upToDay } }) } },

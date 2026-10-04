@@ -8,7 +8,7 @@ const { postEntry } = require('../ledger');
 const { isDay, monthOf } = require('../dates');
 const { logAudit } = require('../audit');
 const {
-  fail, currencyOf, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
+  fail, currencyOf, isForeign, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
   nextDocNumber, findExisting, officeExists, resolveAccount,
 } = require('./common');
 const { getBalance, valueOutflow } = require('../carrying');
@@ -185,14 +185,19 @@ async function costLine(bill, line, usd, session, user) {
 // other bill or expense is valued at the rate of its own date, or the rate typed on it (owner's
 // decision 2026-10-03); the box still gives its money at its average rate, the difference being
 // an exchange gain or loss
+// An expense paid from a staff member's custody is valued the same way, at what that custody cost
+// when it was given, so spending it leaves no exchange difference (owner's request 2026-10-04).
 async function carriedValue(bill, session) {
-  if (!bill.paidImmediatelyFrom || bill.isHistorical || bill.isCreditNote || Number(bill.rate) > 0 || bill.currency !== 'CNY') return null;
+  if (!bill.paidImmediatelyFrom || bill.isHistorical || bill.isCreditNote) return null;
+  if (!bill.employeeId && (Number(bill.rate) > 0 || bill.currency !== 'CNY')) return null;
   const from = await getAccount(bill.paidImmediatelyFrom, 'حساب الدفع');
-  if (!from.isCash || currencyOf(from) !== bill.currency) return null;
+  const custody = !!bill.employeeId && (await require('../custody').staffAccountKind(from._id))?.kind === 'custody';
+  if (!custody && (!from.isCash || bill.currency !== 'CNY' || Number(bill.rate) > 0)) return null;
+  if (currencyOf(from) !== bill.currency || !isForeign(from)) return null;
   const minors = [];
   for (const line of bill.lines) minors.push(await toCurrencyMinor(line.amount, bill.currency));
   const total = minors.reduce((sum, value) => sum + value, 0);
-  const usd = valueOutflow(await getBalance(from._id, { session }), total);
+  const usd = valueOutflow(await getBalance(from._id, { session, ...(custody && { employeeId: bill.employeeId }) }), total);
   if (usd === null || usd <= 0) return null;
   const { allocate } = require('../claims/sync');
   // The rate shown on the bill and its payment: units of the currency for one dollar
@@ -381,16 +386,22 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     lines.push({ accountId: payable._id, credit: allocated, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'تسوية من الدفعة المقدمة' });
   } else {
     const from = await getAccount(input.fromAccountId, 'حساب الدفع');
-    const advancesAccount = await resolveAccount('employee_advances');
-    const isEmployeeAdvance = String(from._id) === String(advancesAccount._id);
+    const custody = require('../custody');
+    const staff = await custody.staffAccountKind(from._id);
+    if (staff?.kind === 'loan') throw fail('السلفة لا يُدفع منها: ادفع من خزينة أو بنك أو عهدة موظف');
+    const isEmployeeAdvance = !!staff;
     if (!from.isCash && !isEmployeeAdvance && !input.isHistorical) throw fail('ادفع من خزينة أو بنك أو عهدة موظف');
     if (isEmployeeAdvance && !input.employeeId) throw fail('اختر الموظف صاحب العهدة');
     const currency = currencyOf(from);
     if (requireCurrency && requireCurrency !== currency) throw fail(`حساب الدفع بعملة ${currency} والفاتورة بعملة ${requireCurrency}`);
     const minor = await toCurrencyMinor(input.amount, currency);
     if (!minor) throw fail('مبلغ الدفعة مطلوب');
+    if (isEmployeeAdvance && !input.isHistorical) {
+      const held = await custody.heldMinor(from, input.employeeId, session);
+      if (minor > held) throw fail(`عهدة الموظف في ${from.name} (${held / 10 ** await decimalsOf(currency)} ${currency}) لا تكفي`);
+    }
     const atRate = await rates.toUsd(minor, currency, input.day, input.rate);
-    const outUsd = await valueOut(from, minor, { day: input.day, docRate: input.rate, rates });
+    const outUsd = await valueOut(from, minor, { day: input.day, docRate: input.rate, rates, ...(isEmployeeAdvance && { employeeId: input.employeeId }) });
     // Allowing a little over the day's value: a bill paid in its own currency closes in full
     // even when the rate moved since the bill
     if (allocated > Math.round(atRate * 1.1) + 100) throw fail('المبالغ المخصصة أكبر من قيمة الدفعة');

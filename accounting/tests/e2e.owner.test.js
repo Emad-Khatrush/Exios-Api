@@ -491,7 +491,7 @@ test('15. "received" is never ticked by hand: creating or editing an order keeps
   await expectConsistent('delivered');
 });
 
-test('16. custody and loans apart: custody given, spent by the employee on expenses (dollars and dinars), returned; a loan taken from the salary', async () => {
+test('16. custody and loans apart, each in its own currency: given, spent by the employee, returned, a loan taken from the salary, no exchange difference', async () => {
   const { createTransfer } = require('../services/posting/treasury');
   const { createSalary } = require('../services/posting/people');
   const staff = require('../services/staffOperations');
@@ -499,32 +499,58 @@ test('16. custody and loans apart: custody given, spent by the employee on expen
   const clerkId = (await users().insertOne({ username: 'clerk-c', firstName: 'Clerk', lastName: 'C', phone: 910000077, customerId: 'STF7', office: 'tripoli', roles: { isEmployee: true } })).insertedId;
   const clerk = await users().findOne({ _id: clerkId });
   const box = await account('110101');
-  const custodyAccount = await account('140100');
-  const loanAccount = await account('140300');
-  // 300$ custody and a 100$ loan, from the box
-  await tx((session) => createTransfer({ day: today(), employeeId: String(clerkId), fromAccountId: box._id, toAccountId: custodyAccount._id, fromAmount: 300, toAmount: 300 }, { session, req: { user: owner } }));
-  await tx((session) => createTransfer({ day: today(), employeeId: String(clerkId), fromAccountId: box._id, toAccountId: loanAccount._id, fromAmount: 100, toAmount: 100 }, { session, req: { user: owner } }));
-  expect((await staff.officeExpenseOptions(clerk)).custody).toBe(30000);
-  // The employee pays from custody: 50$ and 100 LYD (at the day's rate)
+  const dinarBox = await account('110102');
+  const custodyUsd = await account('140100');
+  const custodyLyd = await account('140110');
+  const loanUsd = await account('140300');
+  const loanLyd = await account('140310');
+  const move = (from, to, amount) => tx((session) => createTransfer({ day: today(), employeeId: String(clerkId), fromAccountId: from._id, toAccountId: to._id, fromAmount: amount, toAmount: amount }, { session, req: { user: owner } }));
+  // Dinars bought at 9.5, whatever the day's rate is
+  await tx((session) => createTransfer({ day: today(), fromAccountId: box._id, toAccountId: dinarBox._id, fromAmount: 200, toAmount: 1900 }, { session, req: { user: owner } }));
+  const fxBefore = await usd('710100');
+
+  // 300$ and 950 LYD custody, a 100$ and a 475 LYD loan
+  await move(box, custodyUsd, 300);
+  await move(dinarBox, custodyLyd, 950);
+  await move(box, loanUsd, 100);
+  await move(dinarBox, loanLyd, 475);
+  // Dinars into the dollar custody, or a fee: refused
+  await expect(move(dinarBox, custodyUsd, 100)).rejects.toThrow('بنفس عملتها');
+  expect((await staff.officeExpenseOptions(clerk)).custody).toEqual({ USD: 300, LYD: 950 });
+
+  // The employee pays from custody: 50$ and 190 LYD, each from its own custody
   const type = await docs.ExpenseType.findOne({ isActive: true }).lean();
   await staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 50, currency: 'USD', payFrom: 'custody', note: 'وقود' }, [], { user: clerk });
-  await staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 100, currency: 'LYD', payFrom: 'custody', note: 'ضيافة' }, [], { user: clerk });
+  const dinarExpense = await staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 190, currency: 'LYD', payFrom: 'custody', note: 'ضيافة' }, [], { user: clerk });
+  // valued at what the dinar custody cost (9.5), not the day's rate
+  expect(dinarExpense.totalUsd).toBe(2000);
   await expectConsistent('custody spent');
   const mine = await custody.mine(clerk);
-  const rate = (await require('../services/rates').getRate('LYD', today())).rate;
-  expect(mine.custody.balance).toBe(30000 - 5000 - Math.round((100 / rate) * 100));
+  expect(mine.custody.balance).toEqual({ USD: 250, LYD: 760 });
   expect(mine.custody.movements.filter((m) => m.kind === 'spent')).toHaveLength(2);
-  expect(mine.custody.movements.some((m) => m.kind === 'given' && m.usd === 30000)).toBe(true);
-  expect(mine.loan.balance).toBe(10000);
-  // More than the custody holds: refused
-  await expect(staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 1000, currency: 'USD', payFrom: 'custody' }, [], { user: clerk })).rejects.toThrow('لا تكفي');
-  // The loan comes back from the salary; custody is not touched by it
+  expect(mine.custody.movements.some((m) => m.kind === 'given' && m.currency === 'LYD' && m.amount === 950)).toBe(true);
+  expect(mine.loan.balance).toEqual({ USD: 100, LYD: 475 });
+  // More than the custody holds, or a currency with no custody: refused
+  await expect(staff.createOfficeExpense({ expenseTypeId: String(type._id), amount: 1000, currency: 'LYD', payFrom: 'custody' }, [], { user: clerk })).rejects.toThrow('لا تكفي');
+  await expect(move(custodyLyd, dinarBox, 800)).rejects.toThrow('أكبر مما على الموظف');
+
+  // The rest of the dinar custody comes back in dinars: zero in dinars and in dollars
+  await move(custodyLyd, dinarBox, 760);
+  // Loans come back from salaries in their own currency; custody is not touched by them
   await tx((session) => createSalary({ employeeId: String(clerkId), month: today().slice(0, 7), day: today(), office: 'tripoli', paidFromAccountId: box._id, grossAmount: 500, advanceDeduction: 100 }, { session, req: { user: owner } }));
-  expect((await custody.mine(clerk)).loan.balance).toBe(0);
-  expect((await custody.mine(clerk)).custody.balance).toBe(mine.custody.balance);
+  await expect(tx((session) => createSalary({ employeeId: String(clerkId), month: today().slice(0, 7), day: today(), office: 'tripoli', paidFromAccountId: dinarBox._id, grossAmount: 3000, advanceDeduction: 500 }, { session, req: { user: owner } }))).rejects.toThrow('الخصم أكبر');
+  await tx((session) => createSalary({ employeeId: String(clerkId), month: today().slice(0, 7), day: today(), office: 'tripoli', paidFromAccountId: dinarBox._id, grossAmount: 475, advanceDeduction: 475, rate: 9.5 }, { session, req: { user: owner } }));
+  const after = await custody.mine(clerk);
+  expect(after.loan.balance).toEqual({ USD: 0, LYD: 0 });
+  expect(after.custody.balance).toEqual({ USD: 250, LYD: 0 });
+  expect(await usd('140110')).toBe(0);
+  expect(await usd('140310')).toBe(0);
+  // Given, spent and settled in dinars: not a cent of exchange difference
+  expect(await usd('710100')).toBe(fxBefore);
+
   // The overview for the accountant and the admin, not for the employee
   const overview = await custody.summary({ _id: owner._id, roles: { isAccountant: true } });
-  expect(overview.results.find((r) => String(r._id) === String(clerkId))).toMatchObject({ custody: mine.custody.balance, loan: 0 });
+  expect(overview.results.find((r) => String(r._id) === String(clerkId))).toMatchObject({ custody: { USD: 250, LYD: 0 }, loan: { USD: 0, LYD: 0 } });
   await expect(custody.summary(clerk)).rejects.toMatchObject({ statusCode: 403 });
   await expectConsistent('custody and loan');
 });

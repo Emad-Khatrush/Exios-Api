@@ -7,7 +7,7 @@ const { isDay } = require('../dates');
 const { roundHalfAway } = require('../money');
 const { logAudit } = require('../audit');
 const {
-  fail, currencyOf, isForeign, getAccount, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine,
+  fail, currencyOf, isForeign, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
   nextDocNumber, findExisting, resolveAccount,
 } = require('./common');
 
@@ -15,10 +15,8 @@ const toId = (value) => new mongoose.Types.ObjectId(String(value));
 
 async function treasuryAccount(id, what, employeeId) {
   const account = await getAccount(id, what);
-  // A staff member's custody or loan: kept in USD, by employee
-  const advances = await resolveAccount('employee_advances');
-  const loans = await resolveAccount('employee_loans').catch(() => null);
-  const isAdvance = String(account._id) === String(advances._id) || (!!loans && String(account._id) === String(loans._id));
+  // A staff member's custody or loan: kept by employee, in the account's own currency
+  const isAdvance = !!(await require('../custody').staffAccountKind(account._id));
   if (!account.isCash && !isAdvance) throw fail(`${what}: اختر خزينة أو بنكاً أو محفظة إلكترونية أو عهدة موظف`);
   if (isAdvance && !employeeId) throw fail('اختر الموظف صاحب العهدة');
   return { account, isAdvance };
@@ -39,16 +37,30 @@ async function createTransfer(input, { session, req }) {
   const fromMinor = await toCurrencyMinor(input.fromAmount, currencyOf(from));
   const feesMinor = input.fees ? await toCurrencyMinor(input.fees, currencyOf(from)) : 0;
   if (!fromMinor) throw fail('المبلغ المرسل مطلوب');
+  // Custody and loans are given and settled in the same currency (owner's request 2026-10-04): the
+  // money comes back at the rate it went out at, and closing it leaves no exchange difference
+  const staffMoney = fromAdvance || toAdvance;
+  if (staffMoney) {
+    if (currencyOf(from) !== currencyOf(to)) throw fail(`العهدة والسلفة تُعطى وتُرجع بنفس عملتها: ${from.name} بعملة ${currencyOf(from)} و${to.name} بعملة ${currencyOf(to)}`);
+    if (feesMinor) throw fail('لا رسوم على إعطاء العهدة أو السلفة أو إرجاعها');
+  }
+  if (fromAdvance) {
+    const held = await require('../custody').heldMinor(from, input.employeeId, session);
+    if (fromMinor > held) throw fail(`المبلغ أكبر مما على الموظف في ${from.name} (${held / 10 ** await decimalsOf(currencyOf(from))} ${currencyOf(from)})`);
+  }
 
   const rates = new RateBook(session);
-  const outUsd = await valueOut(from, fromMinor + feesMinor, { day: input.day, docRate: input.rate, rates });
+  const outUsd = await valueOut(from, fromMinor + feesMinor, { day: input.day, docRate: input.rate, rates, ...(fromAdvance && { employeeId: input.employeeId }) });
   const feesUsd = feesMinor ? roundHalfAway((outUsd * feesMinor) / (fromMinor + feesMinor)) : 0;
   const sentUsd = outUsd - feesUsd;
 
   let toMinor;
   let toUsd;
-  if (!to.currency || toAdvance) {
-    // Employee advances are kept in USD: they receive the dollar value sent
+  if (staffMoney) {
+    // Same currency both sides: the same amount, worth what it was worth where it left
+    toMinor = fromMinor;
+    toUsd = sentUsd;
+  } else if (!to.currency) {
     toMinor = sentUsd;
     toUsd = sentUsd;
   } else {
@@ -59,7 +71,7 @@ async function createTransfer(input, { session, req }) {
 
   const [doc] = await TreasuryTransfer.create([{
     day: input.day, fromAccountId: from._id, fromAmount: Number(input.fromAmount), toAccountId: to._id,
-    toAmount: toAdvance || !to.currency ? toMinor / 100 : Number(input.toAmount), fees: Number(input.fees || 0),
+    toAmount: staffMoney ? Number(input.fromAmount) : !to.currency ? toMinor / 100 : Number(input.toAmount), fees: Number(input.fees || 0),
     employeeId: input.employeeId || undefined, note: input.note, attachments: input.attachments,
     idempotencyKey: input.idempotencyKey, createdBy: req?.user?._id, status: 'posted',
     number: await nextDocNumber('TRF', input.day, session),

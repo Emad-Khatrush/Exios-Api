@@ -67,9 +67,9 @@ class RateBook {
 
 // USD value of money leaving `account`: the account's average rate while it has a balance in
 // that currency, otherwise the operation's rate. For a wallet pass partnerId (average per customer).
-async function valueOut(account, foreignMinor, { day, docRate, rates, partnerId }) {
+async function valueOut(account, foreignMinor, { day, docRate, rates, partnerId, employeeId }) {
   if (!isForeign(account)) return foreignMinor;
-  const balance = await getBalance(account._id, { partnerId, session: rates.session });
+  const balance = await getBalance(account._id, { partnerId, employeeId, session: rates.session });
   const carried = valueOutflow(balance, foreignMinor);
   if (carried !== null) return carried;
   return rates.toUsd(foreignMinor, currencyOf(account), day, docRate);
