@@ -118,11 +118,15 @@ function buildTimeline(sources, config, vendors) {
       });
     });
 
+    // A purchase cost is posted and left unpaid (owner's request 2026-10-04): the accountant records
+    // how it was really paid (a Turkish bank in lira…) from the supplier payments screen. Only a cost
+    // the mapping file ties to a box is paid from it.
     (order.purchaseItems || []).filter((item) => Number(item.unitPrice) > 0).forEach((item) => {
+      const paidFrom = costAccount('order', [order._id, order.orderId]);
       add(item.date || order.createdAt, 'bill', 'purchaseItem', item._id, (ctx) => payables.createBill({
         vendorId: vendors.historical_supplier, day: toDay(item.date || order.createdAt), currency: item.currency || 'USD',
         isHistorical: true, migrationRunId: ctx.migrationRunId, idempotencyKey: `MIG:PURCH:${item._id}`,
-        paidImmediatelyFrom: costAccount('order', [order._id, order.orderId]) || ctx.suspenseId,
+        ...(paidFrom && { paidImmediatelyFrom: paidFrom }),
         lines: [{ description: item.description || 'شراء من مواقع', amount: Number(item.unitPrice), target: 'order', orderId: order._id }],
       }, { session: ctx.session, sync: ctx }));
     });
