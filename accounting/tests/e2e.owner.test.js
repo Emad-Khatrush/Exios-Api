@@ -611,3 +611,46 @@ test('18. a bill in Kuwaiti dinars paid from the lira bank: the cost becomes wha
   expect(await usd('130200', { orderId: order._id })).toBe(30000);
   await expectConsistent('payment cancelled');
 });
+
+test('19. the same on an order already sold and paid: the difference reaches cost of sales, and its cancellation takes it back', async () => {
+  const payables = require('../services/posting/payables');
+  const { cancelDocument } = require('../services/cancel');
+  for (const [currency, rate] of [['KWD', 0.31], ['TRY', 49.9]]) await CurrencyRate.updateOne({ currency, day: today() }, { $set: { rate } }, { upsert: true });
+  const lira = await account('110204');
+  const dollars = await account('110101');
+  await tx((session) => require('../services/posting/treasury').createTransfer({ day: today(), fromAccountId: dollars._id, toAccountId: lira._id, fromAmount: 400, toAmount: 19952 }, { session, req: { user: owner } }));
+  const order = await purchase(586);
+  const vendor = await docs.Vendor.create({ name: 'موقع كويتي 2', type: 'supplier' });
+  const bill = await tx((session) => payables.createBill({
+    vendorId: vendor._id, day: today(), currency: 'KWD', lines: [{ description: 'موقع كويتي', amount: 93, target: 'order', orderId: order._id }],
+  }, { session, req: { user: owner } }));
+  // The customer pays the whole invoice: sale and cost recognised
+  await deposit(586, 'USD');
+  await pay(order, 586);
+  await processQueue();
+  expect(await usd('510400', { orderId: order._id })).toBe(30000);
+  const recognisedBefore = await usd('410300', { orderId: order._id });
+
+  const payment = await tx((session) => payables.createPayment({
+    vendorId: vendor._id, day: today(), fromAccountId: lira._id, amount: 15021.36, rate: 49.88, differenceTo: 'cost', allocations: [{ billId: bill._id, amountUsd: 30000 }],
+  }, { session, req: { user: owner } }));
+  expect(payment.costDifferenceUsd).toBe(115);
+  expect(await usd('510400', { orderId: order._id })).toBe(30115);
+  expect(await usd('130200', { orderId: order._id })).toBe(0);
+  await expectConsistent('paid after the sale');
+
+  await tx((session) => cancelDocument('AccountingSupplierPayment', payment._id, { session, req: { user: owner }, reason: 'اختبار' }));
+  // Back to the bill's 300$, nothing left in progress, the bill open again, the sale untouched
+  expect(await usd('510400', { orderId: order._id })).toBe(30000);
+  expect(await usd('130200', { orderId: order._id })).toBe(0);
+  expect(await usd('210200', { apKey: `BILL:${bill._id}` })).toBe(-30000);
+  expect(await usd('410300', { orderId: order._id })).toBe(recognisedBefore);
+  await expectConsistent('cancelled after the sale');
+
+  // Paid again the same way: 301.15 once more
+  await tx((session) => payables.createPayment({
+    vendorId: vendor._id, day: today(), fromAccountId: lira._id, amount: 15021.36, rate: 49.88, differenceTo: 'cost', allocations: [{ billId: bill._id, amountUsd: 30000 }],
+  }, { session, req: { user: owner } }));
+  expect(await usd('510400', { orderId: order._id })).toBe(30115);
+  await expectConsistent('paid again');
+});
