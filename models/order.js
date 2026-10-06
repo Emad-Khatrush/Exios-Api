@@ -344,4 +344,8 @@ const orderSchema = new Schema({
   }]
 }, { timestamps: true })
 
+// Date ranges read by the sales goals dashboard (sales by invoice date, packages by arrival date)
+orderSchema.index({ createdAt: 1 });
+orderSchema.index({ 'paymentList.deliveredPackages.arrivedAt': 1 });
+
 module.exports = mongoose.model("Order", orderSchema);

@@ -358,7 +358,7 @@ module.exports.getFlights = async (req, res, next) => {
 
 module.exports.createInventory = async (req, res, next) => {
   try {
-    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note, costPrice, odoReferenceCode } = req.body;
+    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, seaType, note, costPrice, odoReferenceCode } = req.body;
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -391,6 +391,7 @@ module.exports.createInventory = async (req, res, next) => {
       voyageCurrency,
       inventoryType,
       shippingType,
+      seaType: shippingType === 'sea' && ['lcl', 'fcl'].includes(seaType) ? seaType : undefined,
       note,
       costPrice,
       odoReferenceCode: odoCode
@@ -1011,6 +1012,14 @@ module.exports.updateInventory = async (req, res, next) => {
     if (!id) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
 
     const update = { ...req.body };
+
+    // LCL / FCL only means something on a sea trip
+    if (update.seaType !== undefined && !['lcl', 'fcl'].includes(update.seaType)) delete update.seaType;
+    const currentTrip = await Inventory.findById(id).select('shippingType seaType').lean();
+    if ((update.shippingType || currentTrip?.shippingType) !== 'sea') {
+      delete update.seaType;
+      if (currentTrip?.seaType) update.$unset = { seaType: 1 };
+    }
 
     // The ready date (inventoryFinishedDate) is the day the inventory is marked finished (اكتملت).
     // Set it here when the status changes to finished and no date was sent with it.

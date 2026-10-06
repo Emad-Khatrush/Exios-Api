@@ -39,6 +39,7 @@ const popupAds = require('./routes/popupAds');
 const analytics = require('./routes/analytics');
 const campaigns = require('./routes/campaigns');
 const companyNotes = require('./routes/companyNotes');
+const goals = require('./routes/goals');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -390,6 +391,7 @@ async function initializeWhatsAppClient() {
 
 db.once("open", () => {
   console.log('MongoDB connected');
+  require('./controllers/goals').prepareGoals();
   initializeWhatsAppClient();
 });
 
@@ -432,6 +434,7 @@ app.use('/api', popupAds);
 app.use('/api', analytics);
 app.use('/api', campaigns);
 app.use('/api', companyNotes);
+app.use('/api', goals);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {
