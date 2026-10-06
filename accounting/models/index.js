@@ -60,6 +60,7 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   key: { type: String, default: 'main', unique: true },
   // Last locked day (YYYY-MM-DD); nothing can be posted on or before it
   lockDate: { type: String, default: null },
+  periodVersion: { type: Number, default: 0 },
   historyStartDate: { type: String, default: null },
   // Day the historical migration was committed; live posting starts after it
   migrationDate: { type: String, default: null },
@@ -131,6 +132,7 @@ const accountingEventSchema = new Schema({
   // 'covered': recorded before the historical migration read the data, so the migration posted it
   status: { type: String, enum: ['pending', 'done', 'failed', 'skipped', 'covered'], default: 'pending' },
   attempts: { type: Number, default: 0 },
+  processingVersion: { type: Number, default: 0 },
   lastError: String,
   result: Schema.Types.Mixed,
   userId: { type: Schema.Types.ObjectId, ref: 'User' },

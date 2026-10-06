@@ -6,7 +6,7 @@ const Balance = require('../models/balance');
 // wallet and statements), so they stay with the customer who actually paid them.
 const REASSIGNABLE_DEBT_STATUSES = ['open', 'overdue'];
 
-const syncOrderDebtsOwner = async (orderId, newOwnerId) => {
+const syncOrderDebtsOwner = async (orderId, newOwnerId, { session } = {}) => {
   if (!orderId || !newOwnerId) return { modifiedCount: 0 };
 
   return Balance.updateMany(
@@ -17,7 +17,7 @@ const syncOrderDebtsOwner = async (orderId, newOwnerId) => {
       status: { $in: REASSIGNABLE_DEBT_STATUSES },
       owner: { $ne: newOwnerId },
     },
-    { $set: { owner: newOwnerId } }
+    { $set: { owner: newOwnerId } }, { session }
   );
 }
 
@@ -27,9 +27,9 @@ const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
 // were opened for the same thing on that order: the invoice, or its received goods. The money
 // has already left the wallet, so nothing else is charged here. Returns what was taken off
 // each debt, to be kept on the payment so it can be undone.
-const payOrderDebts = async ({ orderId, category, amount, currency, rate, createdAt, orderNumber }) => {
+const payOrderDebts = async ({ orderId, category, amount, currency, rate, createdAt, orderNumber }, { session } = {}) => {
   if (!orderId || !category || !(Number(amount) > 0)) return [];
-  const debts = await Balance.find({ order: orderId, balanceType: 'debt', debtType: category, status: { $in: REASSIGNABLE_DEBT_STATUSES }, amount: { $gt: 0 } }).sort({ createdAt: 1 });
+  const debts = await Balance.find({ order: orderId, balanceType: 'debt', debtType: category, status: { $in: REASSIGNABLE_DEBT_STATUSES }, amount: { $gt: 0 } }).sort({ createdAt: 1 }).session(session);
 
   const applied = [];
   // What is left of the payment, in its own currency
@@ -53,7 +53,7 @@ const payOrderDebts = async ({ orderId, category, amount, currency, rate, create
     await Balance.updateOne({ _id: debt._id }, {
       $set: { amount: remaining, ...(remaining === 0 && { status: 'waitingApproval' }) },
       $push: { paymentHistory: { _id: historyId, createdAt: createdAt || new Date(), rate: Number(rate) || 0, amount: truncateToTwo(used), currency, notes: `Paid with the ${category === 'invoice' ? 'invoice' : 'shipping'} payment of order ${orderNumber || ''}`.trim() } },
-    });
+    }, { session });
     applied.push({ balance: debt._id, amount: taken, historyId });
     left -= used;
   }
@@ -61,15 +61,15 @@ const payOrderDebts = async ({ orderId, category, amount, currency, rate, create
 };
 
 // Undoes payOrderDebts when the payment is cancelled: the amounts go back on the debts
-const restoreOrderDebts = async (debtPayments = []) => {
+const restoreOrderDebts = async (debtPayments = [], { session } = {}) => {
   for (const item of debtPayments || []) {
     if (!item?.balance || !(Number(item.amount) > 0)) continue;
-    const debt = await Balance.findById(item.balance);
+    const debt = await Balance.findById(item.balance).session(session || null);
     if (!debt) continue;
     await Balance.updateOne({ _id: debt._id }, {
       $set: { amount: truncateToTwo(debt.amount + Number(item.amount)), ...(['waitingApproval', 'closed'].includes(debt.status) && { status: 'open' }) },
       ...(item.historyId && { $pull: { paymentHistory: { _id: item.historyId } } }),
-    });
+    }, { session });
   }
 };
 

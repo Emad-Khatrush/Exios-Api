@@ -10,6 +10,7 @@ const { isDay } = require('../dates');
 const { logAudit } = require('../audit');
 const { fail, nextDocNumber, findExisting, resolveAccount } = require('./common');
 const { parseKey } = require('../claims/keys');
+const { lockClaimAllocation } = require('../claims/locks');
 
 async function createWriteOff(input, { session, req }) {
   const existing = await findExisting(ClaimWriteOff, input.idempotencyKey, session);
@@ -27,6 +28,7 @@ async function createWriteOff(input, { session, req }) {
   }
 
   const { operations } = { operations: require('./operations') };
+  await lockClaimAllocation(input.arKey, session);
   const open = (await operations.openBalances([input.arKey], session)).get(input.arKey) || 0;
   if (open <= 0) throw fail('لا شيء مستحق على هذه المطالبة');
   const amount = input.amountUsd ? Math.round(Number(input.amountUsd)) : open;

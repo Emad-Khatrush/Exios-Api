@@ -1,3 +1,6 @@
+const { guardOrderUpdate } = require('../utils/orderUpdateGuard');
+const { runInTransaction } = require('../accounting/services/transaction');
+const { assertOpenPeriod } = require('../accounting/services/periodGuard');
 const Orders = require('../models/order');
 const Activities = require('../models/activities');
 const orderid = require('order-id')('key');
@@ -24,7 +27,7 @@ const { returnOrderPayments } = require('../utils/orderCancellation');
 const { normalizePackages, guardMeasures, keepDeliveryState } = require('../utils/packageMeasures');
 const roundFee = (n) => Math.round(n * 100) / 100;
 const { payFeesLYD } = require('../utils/helperApi');
-const { cancelInvoicePackages, deliveryInvoiceOf, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, withCalculatedRate } = require('../utils/helperApi');
+const { cancelInvoicePackages, deliveryInvoiceOf, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, claimPackagesForDelivery, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -55,7 +58,7 @@ module.exports.getInvoices = async (req, res, next) => {
           $match: {
             $and: [
               { unsureOrder: false, isCanceled: false },
-              { 
+              {
                 $or: [
                   { requestedEditDetails: { $ne: null } },
                 ]
@@ -71,7 +74,7 @@ module.exports.getInvoices = async (req, res, next) => {
       ]
     }
 
-    let orders = await Orders.aggregate(query); 
+    let orders = await Orders.aggregate(query);
     orders = await Orders.populate(orders, [{ path: "madeBy", select: "-password" }, { path: "user", select: "-password" }]);
 
     let ordersCountList = (await Orders.aggregate([
@@ -91,10 +94,10 @@ module.exports.getInvoices = async (req, res, next) => {
           requestedEditInvoices: {
             $sum: {
               $cond: [
-                { 
+                {
                   $and: [
                     { $eq: ["$unsureOrder", false] },
-                    { 
+                    {
                       $and: [
                         { $ne: [{ $ifNull: ["$requestedEditDetails", null] }, null] }, // Handles missing or null
                         { $ne: [{ $ifNull: ["$requestedEditDetails", {}] }, {}] }       // Handles missing or empty object
@@ -131,7 +134,7 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
   try {
     const { tabType } = req.query; // Removed skip and limit
     const { id } = req.params;
-    
+
     const tabTypeQuery = getTapTypeQuery(tabType);
     tabTypeQuery.isCanceled = false;
     let orders;
@@ -139,7 +142,10 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
     // --- 1. FETCH ALL ORDERS EFFICIENTLY ---
     if (tabType === 'readyForPickup') {
       orders = await Orders.aggregate([
-        { $match: { ...tabTypeQuery, user: new ObjectId(id) } },
+        // This customer view is per package. The order's manually selected status can be
+        // stale, or describe other packages that have not arrived yet.
+        { $match: { user: new ObjectId(id), isShipment: true, unsureOrder: false, isCanceled: false,
+          paymentList: { $elemMatch: { 'status.arrivedLibya': true, 'status.received': false } } } },
         {
           $addFields: {
             paymentList: {
@@ -209,10 +215,10 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
     // --- 3. BULK FETCH INVENTORY ONCE ---
     if (packageIds.length > 0) {
       // Using .lean() here saves massive amounts of RAM when fetching all inventory
-      const inventories = await Inventory.find({ 
-        'orders.paymentList._id': { $in: packageIds }, 
-        inventoryType: 'inventoryGoods', 
-        shippingType: { $ne: 'domestic' } 
+      const inventories = await Inventory.find({
+        'orders.paymentList._id': { $in: packageIds },
+        inventoryType: 'inventoryGoods',
+        shippingType: { $ne: 'domestic' }
       }).lean();
 
       // --- 4. MAP INVENTORY IN MEMORY (CRASH-PROOF) ---
@@ -220,10 +226,10 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
       for (const inv of inventories) {
         if (Array.isArray(inv.orders)) {
           for (const invOrder of inv.orders) {
-            
+
             // Safely handle paymentList if it's not an array in the DB
-            const pList = Array.isArray(invOrder.paymentList) 
-              ? invOrder.paymentList 
+            const pList = Array.isArray(invOrder.paymentList)
+              ? invOrder.paymentList
               : (invOrder.paymentList ? [invOrder.paymentList] : []);
 
             for (const invPkg of pList) {
@@ -265,7 +271,7 @@ module.exports.getOrders = async (req, res, next) => {
     const tabTypeQuery = getTapTypeQuery(tabType);
     tabTypeQuery.isCanceled = false;
     const orders = await Orders.find(tabTypeQuery).populate('user', TRACKING_USER_FIELDS).sort({ createdAt: -1 }).skip(skip).limit(limit);
-    
+
     let ordersCountList = (await Orders.aggregate([
       { $match: { isCanceled: false } },
       {
@@ -311,8 +317,8 @@ module.exports.getOrders = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ["$isPayment", false] }, 
-                  { $eq: ["$unsureOrder", false] }, 
+                  { $eq: ["$isPayment", false] },
+                  { $eq: ["$unsureOrder", false] },
                   { $eq: ["$isShipment", true] },
                   { $eq: ["$isFinished", false] },
                 ] },
@@ -325,7 +331,7 @@ module.exports.getOrders = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ["$hasRemainingPayment", true] }, 
+                  { $eq: ["$hasRemainingPayment", true] },
                 ] },
                 1,
                 0
@@ -336,7 +342,7 @@ module.exports.getOrders = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ["$hasProblem", true] }, 
+                  { $eq: ["$hasProblem", true] },
                 ] },
                 1,
                 0
@@ -347,8 +353,8 @@ module.exports.getOrders = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ["$orderStatus", 0] }, 
-                  { $eq: ["$unsureOrder", false] }, 
+                  { $eq: ["$orderStatus", 0] },
+                  { $eq: ["$unsureOrder", false] },
                   { $eq: ["$isPayment", true] },
                   { $eq: ["$isFinished", false] },
                 ] },
@@ -378,7 +384,7 @@ module.exports.getOrders = async (req, res, next) => {
         hasRemainingPayment: 0
       }
     }
-    
+
     res.status(200).json({
       orders,
       activeOrdersCount: ordersCountList.activeOrders,
@@ -509,7 +515,7 @@ module.exports.getOrdersTab = async (req, res, next) => {
     tabTypeQuery.isCanceled = false;
     const orders = await Orders.find(tabTypeQuery).populate('user', TRACKING_USER_FIELDS).sort({ createdAt: -1 }).skip(skip).limit(limit);
     const totalOrders = await Orders.countDocuments();
-    
+
     res.status(200).json({
       orders,
       tabType: tabType ? tabType : 'active',
@@ -671,139 +677,144 @@ module.exports.createOrder = async (req, res, next) => {
       }
     }
 
-    const items = JSON.parse(req.body.items);
-    const totalInvoice = calculateTotalInvoice(items);
 
-    // Money received is recorded as a payment on the order (Payments tab) or a wallet deposit, so it
-    // reaches the books; the old "received" amounts on the order itself are no longer accepted
-    const parsedPackages = JSON.parse(req.body.paymentList);
-    const receivedOnOrder = ['receivedUSD', 'receivedLYD', 'receivedShipmentUSD', 'receivedShipmentLYD'].some((field) => Number(req.body[field]) > 0)
-      || parsedPackages.some((data) => Number(data?.deliveredPackages?.receivedShipmentUSD) > 0 || Number(data?.deliveredPackages?.receivedShipmentLYD) > 0);
-    if (receivedOnOrder) {
-      return next(new ErrorHandler(400, 'Amounts received can no longer be typed on the order. Record them as a payment on the order or a wallet deposit.'));
-    }
+    const outcome = await runInTransaction(async (session) => {
+      await assertOpenPeriod(req.user, req.body.createdAt || new Date(), { session });
+      const items = JSON.parse(req.body.items);
+      const totalInvoice = calculateTotalInvoice(items);
 
-    const paymentList = parsedPackages.map(data => ({
-      link: data.paymentLink,
-      status: {
-        arrived: data.arrived,
-        arrivedLibya: data.arrivedLibya,
-        paid: data.paid,
-        // Handed to the customer only by delivering it with its payment (keepDeliveryState)
-        received: false
-      },
-      deliveredPackages: {
-        weight: {
-          total: data.deliveredPackages?.weight,
-          measureUnit: data.deliveredPackages?.measureUnit,
-          ...(data.deliveredPackages?.actualWeight !== undefined && data.deliveredPackages?.actualWeight !== '' && { actual: Number(data.deliveredPackages.actualWeight) }),
-        },
-        ...(data.deliveredPackages?.volumetric && { volumetric: data.deliveredPackages.volumetric }),
-        ...(Number(data.deliveredPackages?.domesticFee?.amount) > 0 && { domesticFee: data.deliveredPackages.domesticFee }),
-        ...(Number(data.deliveredPackages?.customsFee?.amount) > 0 && { customsFee: data.deliveredPackages.customsFee }),
-        trackingNumber: data.deliveredPackages?.trackingNumber,
-        originPrice: data.deliveredPackages.originPrice,
-        exiosPrice: data.deliveredPackages.exiosPrice,
-        receivedShipmentUSD: data.deliveredPackages.receivedShipmentUSD,
-        receivedShipmentLYD: data.deliveredPackages.receivedShipmentLYD,
-        containerInfo: {
-          billOfLading: data.deliveredPackages?.containerInfo?.billOfLading
-        },
-        // An empty method is not one of the allowed values; leave it unset instead
-        shipmentMethod: data.deliveredPackages.shipmentMethod || undefined,
-        receiptNo: data.deliveredPackages.receiptNo,
-        boxesCount: data.deliveredPackages.boxesCount,
-        locationPlace: data.deliveredPackages.locationPlace,
-        ...(data.deliveredPackages.arrivedAt && { arrivedAt: data.deliveredPackages.arrivedAt }),
-      },
-      note: data.note,
-    }))
-    // Charged by volume: the chargeable weight; a transport fee in dinars gets its dollars
-    await normalizePackages(paymentList);
-
-    const order = await Orders.create({
-      ...req.body,
-      user,
-      orderId,
-      totalInvoice,
-      customerInfo: {
-        fullName,
-        email,
-        phone
-      },
-      shipment: {
-        fromWhere,
-        toWhere,
-        method,
-        exiosShipmentPrice,
-        originShipmentPrice,
-        weight,
-        packageCount
-      },
-      netIncome: [{
-        nameOfIncome: 'payment',
-        total: netIncome
-      }],
-      debt: {
-        currency,
-        total: debt
-      },
-      credit: {
-        currency: creditCurrency,
-        total: credit
-      },
-      activity: [{
-        country: req.body.placedAt === 'tripoli' ? 'مكتب طرابلس' : 'مكتب بنغازي',
-        description: 'في مرحلة تجهيز الطلبية'
-      }],
-      images,
-      paymentList,
-      items
-    });
-
-    await Activities.create({
-      user: req.user,
-      details: {
-        path: '/invoices',
-        status: 'added',
-        type: 'order',
-        actionId: order._id
+      // Money received is recorded as a payment on the order (Payments tab) or a wallet deposit, so it
+      // reaches the books; the old "received" amounts on the order itself are no longer accepted
+      const parsedPackages = JSON.parse(req.body.paymentList);
+      const receivedOnOrder = ['receivedUSD', 'receivedLYD', 'receivedShipmentUSD', 'receivedShipmentLYD'].some((field) => Number(req.body[field]) > 0)
+        || parsedPackages.some((data) => Number(data?.deliveredPackages?.receivedShipmentUSD) > 0 || Number(data?.deliveredPackages?.receivedShipmentLYD) > 0);
+      if (receivedOnOrder) {
+        throw new ErrorHandler(400, 'Amounts received can no longer be typed on the order. Record them as a payment on the order or a wallet deposit.');
       }
-    })
-    await emitAccountingEvent('order', order._id, {}, req.user);
 
-    let totalIncreaseOfDollar = (order.receivedShipmentUSD + order.receivedUSD) || 0;
-    let totalIncreaseOfDinnar = (order.receivedShipmentLYD + order.receivedLYD) || 0;
+      const paymentList = parsedPackages.map(data => ({
+        link: data.paymentLink,
+        status: {
+          arrived: data.arrived,
+          arrivedLibya: data.arrivedLibya,
+          paid: data.paid,
+          // Handed to the customer only by delivering it with its payment (keepDeliveryState)
+          received: false
+        },
+        deliveredPackages: {
+          weight: {
+            total: data.deliveredPackages?.weight,
+            measureUnit: data.deliveredPackages?.measureUnit,
+            ...(data.deliveredPackages?.actualWeight !== undefined && data.deliveredPackages?.actualWeight !== '' && { actual: Number(data.deliveredPackages.actualWeight) }),
+          },
+          ...(data.deliveredPackages?.volumetric && { volumetric: data.deliveredPackages.volumetric }),
+          ...(Number(data.deliveredPackages?.domesticFee?.amount) > 0 && { domesticFee: data.deliveredPackages.domesticFee }),
+          ...(Number(data.deliveredPackages?.customsFee?.amount) > 0 && { customsFee: data.deliveredPackages.customsFee }),
+          trackingNumber: data.deliveredPackages?.trackingNumber,
+          originPrice: data.deliveredPackages.originPrice,
+          exiosPrice: data.deliveredPackages.exiosPrice,
+          receivedShipmentUSD: data.deliveredPackages.receivedShipmentUSD,
+          receivedShipmentLYD: data.deliveredPackages.receivedShipmentLYD,
+          containerInfo: {
+            billOfLading: data.deliveredPackages?.containerInfo?.billOfLading
+          },
+          // An empty method is not one of the allowed values; leave it unset instead
+          shipmentMethod: data.deliveredPackages.shipmentMethod || undefined,
+          receiptNo: data.deliveredPackages.receiptNo,
+          boxesCount: data.deliveredPackages.boxesCount,
+          locationPlace: data.deliveredPackages.locationPlace,
+          ...(data.deliveredPackages.arrivedAt && { arrivedAt: data.deliveredPackages.arrivedAt }),
+        },
+        note: data.note,
+      }))
+      // Charged by volume: the chargeable weight; a transport fee in dinars gets its dollars
+      await normalizePackages(paymentList);
 
-    // calculate received shipment for each package
-    for (let i = 0; i < order.paymentList?.length; i++) {
-      console.log(order.paymentList[i]?.deliveredPackages?.receivedShipmentUSD);
-      totalIncreaseOfDollar += (order.paymentList[i]?.deliveredPackages?.receivedShipmentUSD || 0);
-      totalIncreaseOfDinnar += (order.paymentList[i]?.deliveredPackages?.receivedShipmentLYD || 0);
-    }
+      const [order] = await Orders.create([{
+        ...req.body,
+        user,
+        orderId,
+        totalInvoice,
+        customerInfo: {
+          fullName,
+          email,
+          phone
+        },
+        shipment: {
+          fromWhere,
+          toWhere,
+          method,
+          exiosShipmentPrice,
+          originShipmentPrice,
+          weight,
+          packageCount
+        },
+        netIncome: [{
+          nameOfIncome: 'payment',
+          total: netIncome
+        }],
+        debt: {
+          currency,
+          total: debt
+        },
+        credit: {
+          currency: creditCurrency,
+          total: credit
+        },
+        activity: [{
+          country: req.body.placedAt === 'tripoli' ? 'مكتب طرابلس' : 'مكتب بنغازي',
+          description: 'في مرحلة تجهيز الطلبية'
+        }],
+        images,
+        paymentList,
+        items
+      }], { session });
 
-    const updateQuery = {};
+      await Activities.create([{
+        user: req.user,
+        details: {
+          path: '/invoices',
+          status: 'added',
+          type: 'order',
+          actionId: order._id
+        }
+      }], { session })
+      await emitAccountingEvent('order', order._id, {}, req.user, { session });
 
-    if (totalIncreaseOfDollar !== 0) {
-      updateQuery['usaDollar.value'] = totalIncreaseOfDollar;
-    }
+      let totalIncreaseOfDollar = (order.receivedShipmentUSD + order.receivedUSD) || 0;
+      let totalIncreaseOfDinnar = (order.receivedShipmentLYD + order.receivedLYD) || 0;
 
-    if (totalIncreaseOfDinnar !== 0) {
-      updateQuery['libyanDinar.value'] = totalIncreaseOfDinnar;
-    }
+      // calculate received shipment for each package
+      for (let i = 0; i < order.paymentList?.length; i++) {
+        console.log(order.paymentList[i]?.deliveredPackages?.receivedShipmentUSD);
+        totalIncreaseOfDollar += (order.paymentList[i]?.deliveredPackages?.receivedShipmentUSD || 0);
+        totalIncreaseOfDinnar += (order.paymentList[i]?.deliveredPackages?.receivedShipmentLYD || 0);
+      }
 
-    if (totalIncreaseOfDollar || totalIncreaseOfDinnar) {
-      await Offices.findOneAndUpdate({ office: order.placedAt }, {
-        $inc: updateQuery
-      }, {
-        new: true
-      });
-    }
+      const updateQuery = {};
 
-    res.status(200).json(order);
+      if (totalIncreaseOfDollar !== 0) {
+        updateQuery['usaDollar.value'] = totalIncreaseOfDollar;
+      }
+
+      if (totalIncreaseOfDinnar !== 0) {
+        updateQuery['libyanDinar.value'] = totalIncreaseOfDinnar;
+      }
+
+      if (totalIncreaseOfDollar || totalIncreaseOfDinnar) {
+        await Offices.findOneAndUpdate({ office: order.placedAt }, {
+          $inc: updateQuery
+        }, { ...({
+          new: true
+        }), session });
+      }
+
+      return order;
+    });
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(error.statusCode || 404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -853,7 +864,7 @@ module.exports.getPublicOrder = async (req, res, next) => {
     const order = await Orders.findOne(query).populate(['madeBy', 'user']);
 
     if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
-    
+
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
@@ -866,31 +877,36 @@ module.exports.cancelOrder = async (req, res, next) => {
   if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
   try {
-    let query = { orderId : String(id) };
-    if (mongoose.Types.ObjectId.isValid(id)) {
-      query = { _id: id };
-    }
+    const outcome = await runInTransaction(async (session) => {
 
-    const existing = await Orders.findOne(query).lean();
-    if (!existing) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
-    // Everything paid on the order goes back to the customer's wallet (owner's decision). Also
-    // works on an order cancelled before this rule, to give its payments back.
-    const returned = await returnOrderPayments(existing, req.user);
-
-    const updateQuery = existing.isCanceled ? {} : {
-      isCanceled: true,
-      cancelation: {
-        reason: req.body.cancelationReason
+      let query = { orderId : String(id) };
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        query = { _id: id };
       }
-    }
 
-    const order = await Orders.findOneAndUpdate({ _id: existing._id }, updateQuery, { new: true }).populate('madeBy');
-    await emitAccountingEvent('order', order._id, {}, req.user);
+      const existing = await Orders.findOne(query).lean().session(session);
+      if (!existing) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
+      await assertOpenPeriod(req.user, existing.createdAt, { session });
+      // Everything paid on the order goes back to the customer's wallet (owner's decision). Also
+      // works on an order cancelled before this rule, to give its payments back.
+      const returned = await returnOrderPayments(existing, req.user, { session });
 
-    res.status(200).json({ ...order.toObject(), returned });
+      const updateQuery = existing.isCanceled ? {} : {
+        isCanceled: true,
+        cancelation: {
+          reason: req.body.cancelationReason
+        }
+      }
+
+      const order = await Orders.findOneAndUpdate({ _id: existing._id }, updateQuery, { new: true, session }).populate('madeBy');
+      await emitAccountingEvent('order', order._id, {}, req.user, { session });
+
+      return { ...order.toObject(), returned };
+    });
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(error.statusCode || 404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -898,11 +914,14 @@ module.exports.cancelOrder = async (req, res, next) => {
 // order; the accounting side is settled in the same step.
 module.exports.deleteOrder = async (req, res, next) => {
   try {
-    const result = await deleteOrderWithLedger(req.params.id, req.user);
-    await Activities.create({
-      user: req.user,
-      details: { path: '/invoices', status: 'deleted', type: 'order', actionId: req.params.id },
-      changedFields: [{ label: 'orderId', value: result.orderId, changedFrom: result.orderId, changedTo: 'deleted' }],
+    const result = await runInTransaction(async (session) => {
+      const result = await deleteOrderWithLedger(req.params.id, req.user, { session });
+      await Activities.create([{
+        user: req.user,
+        details: { path: '/invoices', status: 'deleted', type: 'order', actionId: req.params.id },
+        changedFields: [{ label: 'orderId', value: result.orderId, changedFrom: result.orderId, changedTo: 'deleted' }],
+      }], { session });
+      return result;
     });
     res.status(200).json({ success: true, ...result });
   } catch (error) {
@@ -916,188 +935,196 @@ module.exports.updateOrder = async (req, res, next) => {
   if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
   try {
-    let user;
-    if (!!req.body.customerId) {
-      user = await Users.findOne({ customerId: req.body.customerId });
-      if (!user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
-    }
+    const outcome = await runInTransaction(async (session) => {
+      const body = JSON.parse(JSON.stringify(req.body || {}));
 
-    const oldOrder = await Orders.findOne({ _id: String(id) });
-    if (!oldOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
-
-    // A saved weight or volume is changed by an admin or the accountant only; the chargeable weight
-    // is worked out here (spec v8)
-    if (Array.isArray(req.body.paymentList)) {
-      try {
-        await guardMeasures(oldOrder, req.body.paymentList, req.user);
-        await normalizePackages(req.body.paymentList);
-        keepDeliveryState(oldOrder, req.body.paymentList);
-      } catch (error) {
-        return next(new ErrorHandler(error.statusCode || 400, error.message));
+      let user;
+      if (!!body.customerId) {
+        user = await Users.findOne({ customerId: body.customerId }).session(session);
+        if (!user) throw new ErrorHandler(400, errorMessages.USER_NOT_FOUND);
       }
-    }
 
-    // The invoice date: admins only, and only until the invoice is confirmed
-    let invoiceDate;
-    if (req.body.createdAt !== undefined) {
-      invoiceDate = new Date(req.body.createdAt);
-      delete req.body.createdAt;
-      if (Number.isNaN(invoiceDate.getTime())) return next(new ErrorHandler(400, 'Invalid invoice date'));
-      if (invoiceDate.getTime() === new Date(oldOrder.createdAt).getTime()) invoiceDate = undefined;
-      // A shipment's invoice is final from the moment it is created; only a purchase has a date to set
-      else if (!(req.body.isPayment ?? oldOrder.isPayment)) invoiceDate = undefined;
-      else if (!req.user.roles?.isAdmin) return next(new ErrorHandler(403, 'Only admins can change the invoice date'));
-      else if (oldOrder.invoiceConfirmed) return next(new ErrorHandler(400, 'The invoice is confirmed; its date can no longer be changed'));
-    }
-
-    if (req.body.credit && req.body.credit.creditCurrency) {
-      req.body.credit.currency = req.body.credit.creditCurrency;
-    }
-    
-    let update = {
-      ...req.body,
-      customerInfo: {
-        ...oldOrder.customerInfo,
-        ...req.body.customerInfo
-      },
-      shipment: {
-        ...oldOrder.shipment,
-        ...req.body.shipment
-      },
-      debt: {
-        ...oldOrder.debt,
-        ...req.body.debt
-      },
-      credit: {
-        ...oldOrder.credit,
-        ...req.body.credit
+      const oldOrder = await Orders.findOne({ _id: String(id) }).session(session);
+      if (!oldOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
+      await assertOpenPeriod(req.user, oldOrder.createdAt, { session });
+      guardOrderUpdate(body, oldOrder);
+      // A saved weight or volume is changed by an admin or the accountant only; the chargeable weight
+      // is worked out here (spec v8)
+      if (Array.isArray(body.paymentList)) {
+        try {
+          await guardMeasures(oldOrder, body.paymentList, req.user);
+          await normalizePackages(body.paymentList);
+          keepDeliveryState(oldOrder, body.paymentList);
+        } catch (error) {
+          throw new ErrorHandler(error.statusCode || 400, error.message);
+        }
       }
-    }
 
-    if (user) update.user = user;
-    const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true }).populate('user');
-    if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+      // The invoice date: admins only, and only until the invoice is confirmed
+      let invoiceDate;
+      if (body.createdAt !== undefined) {
+        invoiceDate = new Date(body.createdAt);
+        delete body.createdAt;
+        if (Number.isNaN(invoiceDate.getTime())) throw new ErrorHandler(400, 'Invalid invoice date');
+        if (invoiceDate.getTime() === new Date(oldOrder.createdAt).getTime()) invoiceDate = undefined;
+        // A shipment's invoice is final from the moment it is created; only a purchase has a date to set
+        else if (!(body.isPayment ?? oldOrder.isPayment)) invoiceDate = undefined;
+        else if (!req.user.roles?.isAdmin) throw new ErrorHandler(403, 'Only admins can change the invoice date');
+        else if (oldOrder.invoiceConfirmed) throw new ErrorHandler(400, 'The invoice is confirmed; its date can no longer be changed');
+      }
 
-    // createdAt is a timestamp Mongoose never rewrites, so it is set straight in the collection
-    if (invoiceDate) await Orders.collection.updateOne({ _id: newOrder._id }, { $set: { createdAt: invoiceDate } });
+      if (invoiceDate) await assertOpenPeriod(req.user, invoiceDate, { session });
 
-    // The order moved to another customer: its unpaid debts move with it
-    if (user && !user._id.equals(oldOrder.user)) {
-      await syncOrderDebtsOwner(newOrder._id, user._id);
-    }
+      if (body.credit && body.credit.creditCurrency) {
+        body.credit.currency = body.credit.creditCurrency;
+      }
 
-    // calculate the revenue of the order
-    const dollarDifference =  newOrder.receivedUSD - oldOrder.receivedUSD;
-    const dinnarDifference =  newOrder.receivedLYD - oldOrder.receivedLYD;
-
-    const dinnarShipmentDifference =  newOrder.receivedShipmentLYD - oldOrder.receivedShipmentLYD;
-    const dollarShipmentDifference =  newOrder.receivedShipmentUSD - oldOrder.receivedShipmentUSD;
-
-    let totalIncreaseOfDollar = dollarDifference + dollarShipmentDifference;
-    let totalIncreaseOfDinnar = dinnarDifference + dinnarShipmentDifference;
-
-    // calculate received shipment for each package
-    // Each package is compared with itself before the update (by id, not by position: a package
-    // removed from the middle of the list shifts every position after it)
-    const oldPackages = new Map((oldOrder.paymentList || []).map((orderPackage) => [String(orderPackage._id), orderPackage]));
-    for (const orderPackage of newOrder.paymentList || []) {
-      const before = oldPackages.get(String(orderPackage._id))?.deliveredPackages;
-      totalIncreaseOfDollar += (orderPackage?.deliveredPackages?.receivedShipmentUSD - (before?.receivedShipmentUSD || 0)) || 0;
-      totalIncreaseOfDinnar += (orderPackage?.deliveredPackages?.receivedShipmentLYD - (before?.receivedShipmentLYD || 0)) || 0;
-    }
-    const updateQuery = {};
-
-    if (totalIncreaseOfDollar !== 0) {
-      updateQuery['usaDollar.value'] = totalIncreaseOfDollar;
-    }
-
-    if (totalIncreaseOfDinnar !== 0) {
-      updateQuery['libyanDinar.value'] = totalIncreaseOfDinnar;
-    }
-
-    if (totalIncreaseOfDollar || totalIncreaseOfDinnar) {
-      await Offices.findOneAndUpdate({ office: newOrder.placedAt }, {
-        $inc: updateQuery
-      }, {
-        new: true
-      });
-    }
-
-    // Remove received goods from the warehouse
-    if (req.body?.paymentList?.length > 0) {
-      // Filter delivered goods and update the deliveredDate
-      const receivedOrders = req.body.paymentList.filter(orderPackage => orderPackage.status.received);      
-      const ordersHasReceviedNow = (oldOrder.paymentList || []).map(oldOrderPackage => {
-        
-        const newUpdatedOrder = receivedOrders.find((newOrderPackage => {
-          const found = new ObjectId(newOrderPackage._id).equals(oldOrderPackage._id);
-          return found;
-        }));
-        
-        if (!!newUpdatedOrder && !oldOrderPackage.status.received && newUpdatedOrder.status.received) {
-          return oldOrderPackage._id;
+      let update = {
+        ...body,
+        customerInfo: {
+          ...oldOrder.customerInfo,
+          ...body.customerInfo
+        },
+        shipment: {
+          ...oldOrder.shipment,
+          ...body.shipment
+        },
+        debt: {
+          ...oldOrder.debt,
+          ...body.debt
+        },
+        credit: {
+          ...oldOrder.credit,
+          ...body.credit
         }
-        return;
-      })
-        .filter(orderPackage => !!orderPackage)
-        
-      update.paymentList = req.body.paymentList.map(orderPackage => {
-        const newPackage = orderPackage.status.received && !!orderPackage?.index;
-        const isOrderReceived = ordersHasReceviedNow.find(id => new ObjectId(id).equals(orderPackage._id));
-        
-        if (isOrderReceived || newPackage) {
-          return ({ ...orderPackage, deliveredPackages: { ...orderPackage.deliveredPackages, deliveredInfo: { deliveredDate: new Date() } } });
-        }
-        return orderPackage;
-      });
+      }
 
-      await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
+      if (user) update.user = user;
+      const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true, session }).populate('user');
+      if (!newOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
 
-      // Mongoose's query builder (Model.updateMany included) silently no-ops
-      // this $pull on real warehouse documents - the raw driver, bypassing
-      // it entirely, is the only reliable way to actually remove the array
-      // element (see the same fix and comment in controllers/inventory.js).
-      await Inventory.collection.updateMany(
-        { inventoryType: 'warehouseInventory' },
-        {
-          $pull: {
-            orders: {
-              $or: [
-                { "paymentList._id": { $in: receivedOrders.map(orderPackage => orderPackage._id) } },
-                { "paymentList._id": { $in: receivedOrders.map(orderPackage => new ObjectId(orderPackage._id)) } }
-              ]
+      // createdAt is a timestamp Mongoose never rewrites, so it is set straight in the collection
+      if (invoiceDate) await Orders.collection.updateOne({ _id: newOrder._id }, { $set: { createdAt: invoiceDate } }, { session });
+
+      // The order moved to another customer: its unpaid debts move with it
+      if (user && !user._id.equals(oldOrder.user)) {
+        await syncOrderDebtsOwner(newOrder._id, user._id, { session });
+      }
+
+      // calculate the revenue of the order
+      const dollarDifference =  newOrder.receivedUSD - oldOrder.receivedUSD;
+      const dinnarDifference =  newOrder.receivedLYD - oldOrder.receivedLYD;
+
+      const dinnarShipmentDifference =  newOrder.receivedShipmentLYD - oldOrder.receivedShipmentLYD;
+      const dollarShipmentDifference =  newOrder.receivedShipmentUSD - oldOrder.receivedShipmentUSD;
+
+      let totalIncreaseOfDollar = dollarDifference + dollarShipmentDifference;
+      let totalIncreaseOfDinnar = dinnarDifference + dinnarShipmentDifference;
+
+      // calculate received shipment for each package
+      // Each package is compared with itself before the update (by id, not by position: a package
+      // removed from the middle of the list shifts every position after it)
+      const oldPackages = new Map((oldOrder.paymentList || []).map((orderPackage) => [String(orderPackage._id), orderPackage]));
+      for (const orderPackage of newOrder.paymentList || []) {
+        const before = oldPackages.get(String(orderPackage._id))?.deliveredPackages;
+        totalIncreaseOfDollar += (orderPackage?.deliveredPackages?.receivedShipmentUSD - (before?.receivedShipmentUSD || 0)) || 0;
+        totalIncreaseOfDinnar += (orderPackage?.deliveredPackages?.receivedShipmentLYD - (before?.receivedShipmentLYD || 0)) || 0;
+      }
+      const updateQuery = {};
+
+      if (totalIncreaseOfDollar !== 0) {
+        updateQuery['usaDollar.value'] = totalIncreaseOfDollar;
+      }
+
+      if (totalIncreaseOfDinnar !== 0) {
+        updateQuery['libyanDinar.value'] = totalIncreaseOfDinnar;
+      }
+
+      if (totalIncreaseOfDollar || totalIncreaseOfDinnar) {
+        await Offices.findOneAndUpdate({ office: newOrder.placedAt }, {
+          $inc: updateQuery
+        }, { ...({
+          new: true
+        }), session });
+      }
+
+      // Remove received goods from the warehouse
+      if (body?.paymentList?.length > 0) {
+        // Filter delivered goods and update the deliveredDate
+        const receivedOrders = body.paymentList.filter(orderPackage => orderPackage.status.received);
+        const ordersHasReceviedNow = (oldOrder.paymentList || []).map(oldOrderPackage => {
+
+          const newUpdatedOrder = receivedOrders.find((newOrderPackage => {
+            const found = new ObjectId(newOrderPackage._id).equals(oldOrderPackage._id);
+            return found;
+          }));
+
+          if (!!newUpdatedOrder && !oldOrderPackage.status.received && newUpdatedOrder.status.received) {
+            return oldOrderPackage._id;
+          }
+          return;
+        })
+          .filter(orderPackage => !!orderPackage)
+
+        update.paymentList = body.paymentList.map(orderPackage => {
+          const newPackage = orderPackage.status.received && !!orderPackage?.index;
+          const isOrderReceived = ordersHasReceviedNow.find(id => new ObjectId(id).equals(orderPackage._id));
+
+          if (isOrderReceived || newPackage) {
+            return ({ ...orderPackage, deliveredPackages: { ...orderPackage.deliveredPackages, deliveredInfo: { deliveredDate: new Date() } } });
+          }
+          return orderPackage;
+        });
+
+        await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true, session });
+
+        // Mongoose's query builder (Model.updateMany included) silently no-ops
+        // this $pull on real warehouse documents - the raw driver, bypassing
+        // it entirely, is the only reliable way to actually remove the array
+        // element (see the same fix and comment in controllers/inventory.js).
+        await Inventory.collection.updateMany(
+          { inventoryType: 'warehouseInventory' },
+          {
+            $pull: {
+              orders: {
+                $or: [
+                  { "paymentList._id": { $in: receivedOrders.map(orderPackage => orderPackage._id) } },
+                  { "paymentList._id": { $in: receivedOrders.map(orderPackage => new ObjectId(orderPackage._id)) } }
+                ]
+              }
             }
           }
-        }
-      )
-    }
+        , { session })
+      }
 
-    // add activity to the order
-    const changedFields = [];
-    if (Object.keys(req.body).length > 3) {
-      for (const fieldName in req.body) {
-        if (!(fieldName === 'isPayment' || fieldName === 'orderStatus' || fieldName === 'isFinished' || fieldName === 'isShipment' || fieldName === 'shipment' || fieldName === 'customerInfo' || fieldName === 'netIncome' || fieldName === 'unsureOrder')) {
-          changedFields.push(addChangedField(fieldName, newOrder[fieldName], oldOrder[fieldName], orderLabels));
+      // add activity to the order
+      const changedFields = [];
+      if (Object.keys(body).length > 3) {
+        for (const fieldName in body) {
+          if (!(fieldName === 'isPayment' || fieldName === 'orderStatus' || fieldName === 'isFinished' || fieldName === 'isShipment' || fieldName === 'shipment' || fieldName === 'customerInfo' || fieldName === 'netIncome' || fieldName === 'unsureOrder')) {
+            changedFields.push(addChangedField(fieldName, newOrder[fieldName], oldOrder[fieldName], orderLabels));
+          }
         }
       }
-    }
-    await Activities.create({
-      user: req.user,
-      details: {
-        path: '/invoices',
-        status: 'updated',
-        type: 'order',
-        actionId: newOrder._id
-      },
-      changedFields
+      await Activities.create([{
+        user: req.user,
+        details: {
+          path: '/invoices',
+          status: 'updated',
+          type: 'order',
+          actionId: newOrder._id
+        },
+        changedFields
+      }], { session });
+      // Saving the order rewrites its packages; their trip links are worked out again
+      await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id), { session });
+      await emitAccountingEvent('order', newOrder._id, {}, req.user, { session });
+      return newOrder;
     });
-    // Saving the order rewrites its packages; their trip links are worked out again
-    await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id));
-    await emitAccountingEvent('order', newOrder._id, {}, req.user);
-    res.status(200).json(newOrder);
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -1106,47 +1133,55 @@ module.exports.updateSinglePackage = async (req, res, next) => {
   if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
   try {
-    let user;
-    if (!!req.body.customerId) {
-      user = await Users.findOne({ customerId: req.body.customerId });
-      if (!user) return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
-    }
+    const outcome = await runInTransaction(async (session) => {
+      const body = JSON.parse(JSON.stringify(req.body || {}));
 
-    let oldOrder = await Orders.findOne({ _id: String(id) });
-    if (req.body.paymentList) {
-      try {
-        await guardMeasures(oldOrder, [req.body.paymentList], req.user);
-        await normalizePackages([req.body.paymentList]);
-        keepDeliveryState(oldOrder, [req.body.paymentList]);
-      } catch (error) {
-        return next(new ErrorHandler(error.statusCode || 400, error.message));
+      let user;
+      if (!!body.customerId) {
+        user = await Users.findOne({ customerId: body.customerId }).session(session);
+        if (!user) throw new ErrorHandler(400, errorMessages.USER_NOT_FOUND);
       }
-    }
-    const index = oldOrder.paymentList.findIndex(orderPackage => new ObjectId(req.body.paymentList._id).equals(new ObjectId(orderPackage._id)));
-    if (index !== -1) {
-      oldOrder.paymentList[index] = req.body.paymentList;
-    }
-    const update = {
-      ...req.body,
-      paymentList: oldOrder.paymentList
-    }
 
-    if (user) update.user = user;
-    const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true });
-    if (!newOrder) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
+      let oldOrder = await Orders.findOne({ _id: String(id) }).session(session);
+      if (!oldOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
+      await assertOpenPeriod(req.user, oldOrder.createdAt, { session });
+      guardOrderUpdate(body, oldOrder);
+      if (body.paymentList) {
+        try {
+          await guardMeasures(oldOrder, [body.paymentList], req.user);
+          await normalizePackages([body.paymentList]);
+          keepDeliveryState(oldOrder, [body.paymentList]);
+        } catch (error) {
+          throw new ErrorHandler(error.statusCode || 400, error.message);
+        }
+      }
+      const index = oldOrder.paymentList.findIndex(orderPackage => new ObjectId(body.paymentList._id).equals(new ObjectId(orderPackage._id)));
+      if (index !== -1) {
+        oldOrder.paymentList[index] = body.paymentList;
+      }
+      const update = {
+        ...body,
+        paymentList: oldOrder.paymentList
+      }
 
-    // The order moved to another customer: its unpaid debts move with it
-    if (user && !user._id.equals(oldOrder.user)) {
-      await syncOrderDebtsOwner(newOrder._id, user._id);
-    }
-    // Saving the order rewrites its packages; their trip links are worked out again
-    await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id));
-    await emitAccountingEvent('order', newOrder._id, {}, req.user);
+      if (user) update.user = user;
+      const newOrder = await Orders.findOneAndUpdate({ _id: String(id) }, update, { new: true, session });
+      if (!newOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
 
-    res.status(200).json(newOrder);
+      // The order moved to another customer: its unpaid debts move with it
+      if (user && !user._id.equals(oldOrder.user)) {
+        await syncOrderDebtsOwner(newOrder._id, user._id, { session });
+      }
+      // Saving the order rewrites its packages; their trip links are worked out again
+      await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id), { session });
+      await emitAccountingEvent('order', newOrder._id, {}, req.user, { session });
+
+      return newOrder;
+    });
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -1161,7 +1196,7 @@ module.exports.getPackagesOfOrders = async (req, res, next) => {
       },
       {
         $match: {
-          isCanceled: false, 
+          isCanceled: false,
           unsureOrder: false,
           'paymentList.deliveredPackages.arrivedAt': { $gte: sixMonthsAgo }
         }
@@ -1213,7 +1248,7 @@ module.exports.createUnsureOrder = async (req, res, next) => {
 }
 module.exports.uploadFilesToLinks= async (req, res, next) => {
   const { id, paymentListId } = req.body;
-  
+
   const images = [];
   const changedFields = [];
 
@@ -1259,7 +1294,7 @@ module.exports.uploadFilesToLinks= async (req, res, next) => {
 
 module.exports.uploadFiles= async (req, res, next) => {
   const { id } = req.body;
-  
+
   const images = [];
   const changedFields = [];
 
@@ -1333,7 +1368,7 @@ module.exports.deleteLinkFiles= async (req, res, next) => {
     //     changedTo: ''
     //   }]
     // })
-    
+
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
@@ -1372,7 +1407,7 @@ module.exports.deleteFiles= async (req, res, next) => {
         changedTo: ''
       }]
     })
-    
+
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
@@ -1434,70 +1469,74 @@ module.exports.deleteOrderActivity = async (req, res, next) => {
 
 module.exports.updateStatusOfOrder = async (req, res, next) => {
   try {
-    const { statusType, data, value, inventoryId } = req.body;
-    if (!statusType) next(new ErrorHandler(404, errorMessages.ORDER_STATUS_NOT_FOUND));
+    const outcome = await runInTransaction(async (session) => {
 
-    const orders = data;
-    const response = await Orders.updateMany(
-      {
-        orderId: { $in: orders.map(order => order?.orderId) },
-        'paymentList.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.trackingNumber) }
-      },
-      {
-        $set: {
-          'paymentList.$[elem].status.arrived': true,
-          [`paymentList.$[elem].status.${statusType}`]: value
-        }
-      },
-      {
-        arrayFilters: [
-          { 'elem.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.trackingNumber) } },
-        ],
-        multi: true,
-        new: true
-      }
-    );
+      const { statusType, data, value, inventoryId } = req.body;
+      if (!['arrived', 'arrivedLibya'].includes(statusType) || typeof value !== 'boolean' || !Array.isArray(data)) throw new ErrorHandler(400, 'Only arrival status can be changed here; use delivery for received packages');
 
-    await Orders.updateMany(
-      {
-        orderId: { $in: orders.map(order => order?.orderId) },
-      },
-      [
+      const orders = data;
+      const response = await Orders.updateMany(
+        {
+          orderId: { $in: orders.map(order => order?.orderId) },
+          'paymentList.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.trackingNumber) }
+        },
         {
           $set: {
-            orderStatus: {
-              $cond: {
-                if: { $eq: ['$isPayment', true] },
-                then: 4,
-                else: 3
+            'paymentList.$[elem].status.arrived': true,
+            [`paymentList.$[elem].status.${statusType}`]: value
+          }
+        },
+        { ...({
+          arrayFilters: [
+            { 'elem.deliveredPackages.trackingNumber': { $in: orders.map(order => order?.trackingNumber) } },
+          ],
+          multi: true,
+          new: true
+        }), session }
+      );
+
+      await Orders.updateMany(
+        {
+          orderId: { $in: orders.map(order => order?.orderId) },
+        },
+        [
+          {
+            $set: {
+              orderStatus: {
+                $cond: {
+                  if: { $eq: ['$isPayment', true] },
+                  then: 4,
+                  else: 3
+                }
               }
             }
           }
-        }
-      ],
-      {
-        multi: true,
-        new: true
-      }
-    );
-    
-    await Inventory.updateMany(
-      {
-        _id: new ObjectId(inventoryId),
-        'orders.paymentList._id': { $in: orders.map(order => order?.paymentListId) }
-      },
-      {
-      $set: {
-        [`orders.$.paymentList.status.arrived`]: true,
-        [`orders.$.paymentList.status.${statusType}`]: value,
-      }
-    }, { new: true });
-    await emitOrdersByNumber(orders.map(order => order?.orderId), req.user);
+        ],
+        { ...({
+          multi: true,
+          new: true
+        }), session }
+      );
 
-    res.status(200).json(response);
+      await Inventory.updateMany(
+        {
+          _id: new ObjectId(inventoryId),
+          'orders.paymentList._id': { $in: orders.map(order => order?.paymentListId) }
+        },
+        {
+        $set: {
+          [`orders.$.paymentList.status.arrived`]: true,
+          [`orders.$.paymentList.status.${statusType}`]: value,
+        }
+      }, { new: true, session });
+      await emitOrdersByNumber(orders.map(order => order?.orderId), req.user, { session });
+
+      return response;
+    });
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -1794,28 +1833,29 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
 
     // Costs and totals come from the database; the client's totalCost and rate are ignored
     const feeMode = req.body.feeMode === 'usd' ? 'usd' : 'separate';
-    const { packages: selectedPackages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode });
-    // Nothing paid is right only for packages that cost nothing (free shipping with a purchase)
-    if (!paymentAmounts.amountUSD && !paymentAmounts.amountLYD && (totalCost > 0 || totalFeeLYD > 0)) {
-      throw new ErrorHandler(400, 'Payment amount cannot be zero');
-    }
+    const { selectedPackages } = await require('../accounting/services/transaction').runInTransaction(async (session) => {
+      const { packages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode, session });
+      // Nothing paid is right only for packages that cost nothing (free shipping with a purchase)
+      if (!paymentAmounts.amountUSD && !paymentAmounts.amountLYD && (totalCost > 0 || totalFeeLYD > 0)) {
+        throw new ErrorHandler(400, 'Payment amount cannot be zero');
+      }
 
-    const payment = withCalculatedRate(paymentAmounts, totalCost);
+      const payment = withCalculatedRate(paymentAmounts, totalCost);
+      const walletMap = await getUserWalletMap(id, session);
+      checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD);
 
-    const walletMap = await getUserWalletMap(id);
+      // The transaction claims packages before any deduction. If any later write fails, both the
+      // claim and every wallet, payment, debt, invoice, warehouse and outbox change roll back.
+      await claimPackagesForDelivery(id, packages, session);
+      await processPackagesPayment(req, res, next, id, packages, payment, { session });
+      await payFeesLYD(req, res, next, id, feesLYD, session);
+      await updateOrderStatuses(packages, session);
+      await createInvoice(req.user, id, packages, { ...payment, amountLYD: roundFee(Number(payment.amountLYD || 0) + totalFeeLYD) }, totalCost, session);
+      await cleanUpInventory(packages, session);
+      await emitOrdersByNumber(packages.map(pkg => pkg.orderId), req.user, { session });
+      return { selectedPackages: packages };
+    });
 
-    checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD);
-
-    await processPackagesPayment(req, res, next, id, selectedPackages, payment);
-    // Transport fees in dinars, paid on their own from the dinar wallet
-    await payFeesLYD(req, res, next, id, feesLYD);
-
-    await updateOrderStatuses(selectedPackages);
-
-    await createInvoice(req.user, id, selectedPackages, { ...payment, amountLYD: roundFee(Number(payment.amountLYD || 0) + totalFeeLYD) }, totalCost);
-
-    await cleanUpInventory(selectedPackages);
-    await emitOrdersByNumber(selectedPackages.map(pkg => pkg.orderId), req.user);
 
     return res.status(200).json({ done: new Date() });
 
@@ -1846,47 +1886,46 @@ module.exports.getInvoicesByCustomer = async (req, res, next) => {
 module.exports.cancelInvoice = async (req, res, next) => {
   try {
     const { id } = req.params;
-    // Some of its packages only (owner's request 2026-10-04: one shipment of several handed over
-    // together), or, with none named, every package not cancelled yet
     const wanted = Array.isArray(req.body?.packageIds) ? req.body.packageIds.map(String) : [];
+    const outcome = await require('../accounting/services/transaction').runInTransaction(async (session) => {
+      const current = await Invoices.findById(id).session(session).lean();
+      if (!current) throw new ErrorHandler(404, 'Invoice not found');
+      if (current.isCanceled) throw new ErrorHandler(400, 'Invoice is already cancelled');
+      const chosen = (current.list || []).map((pkg, index) => ({ pkg, index }))
+        .filter(({ pkg }) => !pkg.canceledAt && (!wanted.length || wanted.includes(String(pkg.packageId))));
+      if (!chosen.length) throw new ErrorHandler(400, 'Choose a package of this invoice that is not cancelled yet');
+      const whole = chosen.length === (current.list || []).filter((pkg) => !pkg.canceledAt).length;
 
-    const current = await Invoices.findById(id).lean();
-    if (!current) return next(new ErrorHandler(404, 'Invoice not found'));
-    if (current.isCanceled) return next(new ErrorHandler(400, 'Invoice is already cancelled'));
-    const chosen = (current.list || []).map((pkg, index) => ({ pkg, index }))
-      .filter(({ pkg }) => !pkg.canceledAt && (!wanted.length || wanted.includes(String(pkg.packageId))));
-    if (!chosen.length) return next(new ErrorHandler(400, 'Choose a package of this invoice that is not cancelled yet'));
-    const whole = chosen.length === (current.list || []).filter((pkg) => !pkg.canceledAt).length;
+      // Claim the cancellation and reverse its payments, customer balance and accounting outbox
+      // in one transaction. A failed refund leaves the invoice and delivered packages untouched.
+      const now = new Date();
+      const guard = { _id: id, isCanceled: { $ne: true } };
+      const marks = {};
+      chosen.forEach(({ index }) => {
+        guard[`list.${index}.canceledAt`] = { $exists: false };
+        marks[`list.${index}.canceledAt`] = now;
+        marks[`list.${index}.canceledBy`] = req.user._id;
+      });
+      if (whole) Object.assign(marks, { isCanceled: true, canceledAt: now, canceledBy: req.user._id });
+      const invoice = await Invoices.findOneAndUpdate(guard, { $set: marks }, { new: true, session });
+      if (!invoice) throw new ErrorHandler(409, 'This invoice was just changed by someone else. Refresh and try again.');
 
-    // Marked first and atomically, so the same package can never be refunded twice
-    const now = new Date();
-    const guard = { _id: id, isCanceled: { $ne: true } };
-    const marks = {};
-    chosen.forEach(({ index }) => {
-      guard[`list.${index}.canceledAt`] = { $exists: false };
-      marks[`list.${index}.canceledAt`] = now;
-      marks[`list.${index}.canceledBy`] = req.user._id;
+      const result = await cancelInvoicePackages(req.user, { ...invoice.toObject(), list: chosen.map(({ pkg }) => pkg) }, session);
+      const round = (value) => Math.round(value * 100) / 100;
+      const before = current.cancellation || {};
+      const saved = {
+        cancellation: {
+          refundedUSD: round((before.refundedUSD || 0) + result.refundedUSD),
+          refundedLYD: round((before.refundedLYD || 0) + result.refundedLYD),
+          packages: [...(before.packages || []), ...result.packages],
+        },
+      };
+      chosen.forEach(({ index }, k) => { saved[`list.${index}.refunds`] = result.packages[k]?.refunds || []; });
+      await Invoices.updateOne({ _id: invoice._id }, { $set: saved }, { session });
+      await emitOrdersByNumber(chosen.map(({ pkg }) => pkg.orderId), req.user, { session });
+      return { result: { ...result, whole }, orderNumbers: chosen.map(({ pkg }) => pkg.orderId) };
     });
-    if (whole) Object.assign(marks, { isCanceled: true, canceledAt: now, canceledBy: req.user._id });
-    const invoice = await Invoices.findOneAndUpdate(guard, { $set: marks }, { new: true });
-    if (!invoice) return next(new ErrorHandler(409, 'This invoice was just changed by someone else. Refresh and try again.'));
-
-    const result = await cancelInvoicePackages(req.user, { ...invoice.toObject(), list: chosen.map(({ pkg }) => pkg) });
-    // What came back for each package stays on its line; the invoice's totals add up every cancellation
-    const round = (value) => Math.round(value * 100) / 100;
-    const before = current.cancellation || {};
-    const saved = {
-      cancellation: {
-        refundedUSD: round((before.refundedUSD || 0) + result.refundedUSD),
-        refundedLYD: round((before.refundedLYD || 0) + result.refundedLYD),
-        packages: [...(before.packages || []), ...result.packages],
-      },
-    };
-    chosen.forEach(({ index }, k) => { saved[`list.${index}.refunds`] = result.packages[k]?.refunds || []; });
-    await Invoices.updateOne({ _id: invoice._id }, { $set: saved });
-    await emitOrdersByNumber(chosen.map(({ pkg }) => pkg.orderId), req.user);
-
-    res.status(200).json({ results: { ...result, whole } });
+    res.status(200).json({ results: outcome.result });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(error.statusCode || 500, error.message));
@@ -1940,7 +1979,7 @@ module.exports.getClientOrder = async (req, res, next) => {
     if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
     order.images = order.images.filter(img => img.category === 'receipts');
     order.paymentList = order.paymentList.filter(package => package.settings.visableForClient);
-    
+
     res.status(200).json(order);
   } catch (error) {
     console.log(error);
@@ -1951,7 +1990,7 @@ module.exports.getClientOrder = async (req, res, next) => {
 module.exports.getRatings = async (req, res, next) => {
   try {
     const ordersRating = await OrderRating.find({}).populate(['user', 'order']).sort({ createdAt: -1 });
-    
+
     res.status(200).json(ordersRating);
   } catch (error) {
     console.log(error);
@@ -1973,7 +2012,7 @@ module.exports.createRatingForOrder = async (req, res, next) => {
       order: orderId,
       questions
     });
-    
+
     res.status(200).json(createdRating);
   } catch (error) {
     console.log(error);
@@ -2040,7 +2079,7 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
       query.category = req.query.category;
     }
     const payments = await OrderPaymentHistory.find(query).sort({ createdAt: -1 }).populate(['order', 'createdBy', 'customer']);
-    
+
     const updatedPaymentList = await Promise.all(payments.map(async (data) => {
       for (const d of data.list) {
         const inventory = await Inventory.findOne({ 'orders.paymentList._id': new ObjectId(d._id), inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select(['-orders']).lean();
@@ -2069,9 +2108,13 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
   try {
     const id = req.params.id;
     const { receivedAmount, currency, createdAt, paymentType, customerId, category, list, rate } = req.body;
-    const newList = JSON.parse(list);
+    const newList = typeof list === 'string' ? JSON.parse(list) : (list || []);
+    if (paymentType !== 'cash') throw new ErrorHandler(400, 'Use the wallet payment action for wallet deductions');
+    if (!['USD', 'LYD', 'EURO'].includes(currency) || !Number.isFinite(Number(receivedAmount)) || Math.round(Number(receivedAmount) * 100) <= 0 || typeof receivedAmount === 'boolean') throw new ErrorHandler(400, 'Enter a positive payment amount and valid currency');
+    if (!createdAt || Number.isNaN(new Date(createdAt).getTime())) throw new ErrorHandler(400, 'Invalid payment date');
+    await assertOpenPeriod(req.user, createdAt);
     // Money in another currency counts at its own rate; without one it cannot be valued (owner's rule)
-    if (currency && currency !== 'USD' && !(Number(rate) > 0)) {
+    if (currency && currency !== 'USD' && !(Number.isFinite(Number(rate)) && Number(rate) > 0)) {
       return next(new ErrorHandler(400, `Type the exchange rate for a payment in ${currency}.`));
     }
 
@@ -2089,41 +2132,50 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       }
     }
 
-    const data = {
-      createdBy: req.user,
-      customer: customerId,
-      order: id,
-      attachments: files,
-      paymentType,
-      receivedAmount,
-      rate: Number(rate) || 0,
-      currency,
-      createdAt,
-    };
 
-    if (category) {
-      data.category = category;
-      
-      if (category === 'receivedGoods') {
-        data.list = newList || [];
-        
-        // To Check received status for the selected packages
-        // const ids = newList.map(data => new ObjectId(data._id));
-        // for (const id of ids) {
-        //   await Orders.updateOne(
-        //     { "paymentList._id": id },
-        //     { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
-        //   );
-        // }
+    const outcome = await runInTransaction(async (session) => {
+      await assertOpenPeriod(req.user, createdAt, { session });
+      const order = await Orders.findById(id).session(session);
+      if (!order || order.isCanceled || order.isDeleted) throw new ErrorHandler(400, 'Order is missing or canceled');
+      if (customerId && String(customerId) !== String(order.user)) throw new ErrorHandler(400, 'Payment customer does not own this order');
+      await Orders.updateOne({ _id: order._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      const data = {
+        createdBy: req.user,
+        customer: order.user,
+        order: id,
+        attachments: files,
+        paymentType,
+        receivedAmount: Math.round(Number(receivedAmount) * 100) / 100,
+        rate: Number(rate) || 0,
+        currency,
+        createdAt,
+      };
+
+      if (category) {
+        data.category = category;
+
+        if (category === 'receivedGoods') {
+          data.list = newList || [];
+
+          // To Check received status for the selected packages
+          // const ids = newList.map(data => new ObjectId(data._id));
+          // for (const id of ids) {
+          //   await Orders.updateOne(
+          //     { "paymentList._id": id },
+          //     { $set: { "paymentList.$.status.received": true, "paymentList.$.deliveredPackages.deliveredInfo.deliveredDate": new Date() } }
+          //   );
+          // }
+        }
       }
-    }
-    const payment = await OrderPaymentHistory.create(data);
-    if (payment.paymentType === 'cash') await emitAccountingEvent('cashPayment', payment._id, { office: req.body.office }, req.user);
+      const [payment] = await OrderPaymentHistory.create([data], { session });
+      if (payment.paymentType === 'cash') await emitAccountingEvent('cashPayment', payment._id, { office: req.body.office }, req.user, { session });
 
-    res.status(200).json(payment);
+      return payment;
+    });
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -2144,7 +2196,7 @@ module.exports.updateOrderItems = async (req, res, next) => {
     const { id } = req.params;
     const { items } = req.body;
     const totalInvoice = calculateTotalInvoice(items);
-    
+
     await Orders.findOneAndUpdate({ _id: id }, {
       $set: {
         invoiceConfirmed: true,
@@ -2164,38 +2216,47 @@ module.exports.updateOrderItems = async (req, res, next) => {
 
 module.exports.confirmItemsChanges = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { requestedEditDetails, status } = req.body;
-    const order = await Orders.findOne({ _id: id });
-    const newTotalInvoice = calculateTotalInvoice(requestedEditDetails.items);
-    const oldTotalInvoice = calculateTotalInvoice(order.items);
-    const update = {
-      $set: {
-        invoiceConfirmed: true,
-        requestedEditDetails: null,
-      },
-      $push: {
-        editedAmounts: {
-          oldAmount: oldTotalInvoice,
-          newAmount: newTotalInvoice,
-          items: order.items,
-          status,
-          createdAt: new Date()
+    const outcome = await runInTransaction(async (session) => {
+
+      const { id } = req.params;
+      const { status } = req.body;
+      if (!['accepted', 'rejected'].includes(status)) throw new ErrorHandler(400, 'Invalid approval status');
+      const order = await Orders.findOne({ _id: id }).session(session);
+      if (!order) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
+      await assertOpenPeriod(req.user, order.createdAt, { session });
+      const requestedEditDetails = order.requestedEditDetails;
+      if (!requestedEditDetails?.items?.length) throw new ErrorHandler(400, 'No pending invoice change to approve');
+      const newTotalInvoice = calculateTotalInvoice(requestedEditDetails.items);
+      const oldTotalInvoice = calculateTotalInvoice(order.items);
+      const update = {
+        $set: {
+          invoiceConfirmed: true,
+          requestedEditDetails: null,
+        },
+        $push: {
+          editedAmounts: {
+            oldAmount: oldTotalInvoice,
+            newAmount: newTotalInvoice,
+            items: order.items,
+            status,
+            createdAt: new Date()
+          }
         }
       }
-    }
-    
-    if (status === 'accepted') {
-      update.$set.items = requestedEditDetails.items;
-      update.$set.totalInvoice = newTotalInvoice;
-    }
 
-    await Orders.findOneAndUpdate({ _id: id }, update);
-    if (status === 'accepted') await emitAccountingEvent('order', id, {}, req.user);
-    res.status(200).json({ success: true });
+      if (status === 'accepted') {
+        update.$set.items = requestedEditDetails.items;
+        update.$set.totalInvoice = newTotalInvoice;
+      }
+
+      await Orders.findOneAndUpdate({ _id: id }, update, { session });
+      if (status === 'accepted') await emitAccountingEvent('order', id, {}, req.user, { session });
+      return { success: true };
+    });
+    res.status(200).json(outcome);
   } catch (error) {
     console.log(error);
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -2338,7 +2399,7 @@ module.exports.getMonthReport = async (req, res, next) => {
 module.exports.odoReport = async (req, res) => {
   try {
     const { type, startDate, endDate } = req.query;
-    
+
     // Date range filtering logic
     let dateFilter = {};
     if (startDate && endDate) {

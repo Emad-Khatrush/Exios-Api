@@ -64,7 +64,9 @@ const CHECKS = {
       const booked = new Map(ledger.map((row) => [String(row._id), -row.foreign]));
       const decimals = currencies.get(currency)?.decimals ?? 2;
       const wallets = await Wallet.find({ currency }).select('user balance').lean();
-      const system = new Map(wallets.map((w) => [String(w.user), Math.round(Math.max(0, Number(w.balance) || 0) * 10 ** decimals)]));
+      // Preserve negative balances: clamping them to zero hid invalid wallet operations (such as
+      // a negative deposit) from this reconciliation check.
+      const system = new Map(wallets.map((w) => [String(w.user), Math.round((Number(w.balance) || 0) * 10 ** decimals)]));
       new Set([...booked.keys(), ...system.keys()]).forEach((partner) => {
         const difference = (system.get(partner) || 0) - (booked.get(partner) || 0);
         if (partner !== 'null' && partner !== 'undefined' && difference) items.push({ partnerId: partner, currency, decimals, system: system.get(partner) || 0, booked: booked.get(partner) || 0, difference, url: `/user/${partner}` });
@@ -96,7 +98,9 @@ const CHECKS = {
       if (!t) return;
       const foreign = account.currency && account.currency !== 'USD';
       const base = { label: `${account.code} ${account.name}`, usd: t.closingUsd, foreign: foreign ? t.foreign : undefined, currency: account.currency, url: `/accounting/accounts/${account._id}` };
-      if (t.foreign < 0 || (!foreign && t.closingUsd < 0)) items.push({ ...base, note: 'الرصيد سالب' });
+      // Credit cards and creditor current accounts normally have a credit balance.
+      // Totals use debit minus credit, so a negative balance on these liabilities is expected.
+      if (account.type !== 'liability' && (t.foreign < 0 || (!foreign && t.closingUsd < 0))) items.push({ ...base, note: 'الرصيد سالب' });
       else if (foreign && t.foreign === 0 && t.closingUsd !== 0) items.push({ ...base, note: 'لا عملة فيها لكن لها قيمة بالدولار' });
     });
     return result('cashBoxes', 'error', 'خزينة برصيد سالب أو غير متسق', 'الخزينة لا تكون سالبة: حركة ناقصة (إيداع، تحويل) أو مسجلة على خزينة أخرى.', items);

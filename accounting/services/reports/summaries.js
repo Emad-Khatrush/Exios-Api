@@ -2,7 +2,7 @@
 // the order, trip and customer pages). Read from the ledger only.
 const mongoose = require('mongoose');
 const { JournalEntry } = require('../../models');
-const { SupplierBill, SupplierPayment } = require('../../models/documents');
+const { SupplierBill, SupplierPayment, CustomerRefund } = require('../../models/documents');
 const Order = require('../../../models/order');
 const Inventory = require('../../../models/inventory');
 const Wallet = require('../../../models/wallet');
@@ -122,8 +122,57 @@ async function orderSummary(orderId) {
       cost: total('cost'), profit: total('recognized') - total('cost'), costInProgress: purchaseCostInProgress,
     },
     bills: await billsFor('orderId', order._id),
+    costExplanation: await orderCostExplanation(order._id, roles),
     entries: await recentEntries({ $or: [{ 'lines.orderId': order._id }, { 'source.model': 'Order', 'source.id': order._id }] }),
   };
+}
+
+// Each actual cost posting appears once. Moving cost from WIP to cost of sales
+// has zero net impact, while refunds, payment differences and reversals remain visible.
+async function orderCostExplanation(orderId, roles) {
+  const { currencies } = await getConfig();
+  const recognizedIds = new Set([...SHIP_COST, 'cost_purchase_invoices', 'cost_remittance', 'cost_customs'].map(role => roles[role]).filter(Boolean));
+  const progressIds = new Set(['purchase_cost_wip', 'customs_cost_wip'].map(role => roles[role]).filter(Boolean));
+  const entries = await JournalEntry.find({ 'lines.orderId': orderId }).sort({ day: 1, createdAt: 1, _id: 1 })
+    .select('number day description eventType eventKey source status reversalOf lines notes')
+    .populate('lines.accountId', 'code name currency').lean();
+  const refunds = await CustomerRefund.find({ orderId }).populate('accountId', 'code name currency').lean();
+  const bills = await SupplierBill.find({ 'lines.orderId': orderId }).populate('vendorId', 'name').lean();
+  const payments = await SupplierPayment.find({ 'allocations.billId': { $in: bills.map(b => b._id) } }).populate('fromAccountId', 'code name currency').lean();
+  const docs = new Map([...bills, ...payments, ...refunds].map(doc => [String(doc._id), doc]));
+  let runningCost = 0; let recognizedCost = 0; let inProgress = 0;
+  const rows = entries.flatMap(entry => {
+    const own = entry.lines.filter(line => String(line.orderId) === String(orderId));
+    const costLines = own.filter(line => recognizedIds.has(String(line.accountId?._id)) || progressIds.has(String(line.accountId?._id)));
+    const refundEntry = entry.source?.model === 'AccountingCustomerRefund';
+    if (!costLines.length && !refundEntry) return [];
+    const recognized = costLines.filter(line => recognizedIds.has(String(line.accountId?._id))).reduce((sum, line) => sum + line.debit - line.credit, 0);
+    const progress = costLines.filter(line => progressIds.has(String(line.accountId?._id))).reduce((sum, line) => sum + line.debit - line.credit, 0);
+    const impact = recognized + progress;
+    recognizedCost += recognized; inProgress += progress; runningCost += impact;
+    const doc = docs.get(String(entry.source?.id));
+    const valuation = String(entry.eventKey || '').startsWith('REFUND_BANK_VALUE:');
+    return [{ entryId: entry._id, number: entry.number, day: entry.day, description: entry.description, status: entry.status,
+      reversalOf: entry.reversalOf, eventType: entry.eventType, impact, recognized, inProgress: progress, runningCost,
+      kind: entry.reversalOf ? 'reversal' : valuation ? 'refund_valuation' : refundEntry ? costLines.length ? 'refund' : 'wallet_refund'
+        : impact === 0 ? 'recognition' : entry.source?.model === 'AccountingSupplierBill' ? doc?.isCreditNote ? 'credit_note' : 'bill' : entry.source?.model === 'AccountingSupplierPayment' ? 'payment_difference' : 'other',
+      document: doc ? { _id: doc._id, number: doc.number, model: entry.source.model, status: doc.status,
+        vendor: doc.vendorId?.name, currency: doc.currency, amount: doc.amount ?? doc.total, rate: doc.rate,
+        account: doc.accountId || doc.fromAccountId, valuationUsd: doc.usd, walletUsd: doc.walletUsd, beforeBankUsd: doc.bankValuationBeforeUsd } : null,
+      notes: entry.notes,
+      // Show the whole journal so its debit/credit remain understandable; only
+      // this order's cost lines contribute to impact and running total.
+      lines: entry.lines.map((line, index) => ({
+        _id: `${entry._id}:${index}`, account: line.accountId, debit: line.debit, credit: line.credit, currency: line.currency, amountCurrency: line.amountCurrency,
+        currencyDecimals: currencies.get(line.currency || 'USD')?.decimals ?? 2,
+        otherOrder: !!line.orderId && String(line.orderId) !== String(orderId),
+        rate: line.rate, label: line.label, affectsCost: costLines.includes(line),
+      })),
+    }];
+  });
+  return { rows, total: runningCost, recognizedCost, inProgress,
+    increases: rows.reduce((sum, row) => sum + Math.max(row.impact, 0), 0),
+    decreases: rows.reduce((sum, row) => sum + Math.max(-row.impact, 0), 0) };
 }
 
 async function tripSummary(tripId) {

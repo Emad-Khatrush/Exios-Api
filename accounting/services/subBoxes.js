@@ -5,7 +5,7 @@ const { getBalance } = require('./carrying');
 const { today } = require('./dates');
 const ErrorHandler = require('../../utils/errorHandler');
 
-async function subBoxes() {
+async function subBoxes({ session } = {}) {
   const { settings, accountsById, currencies } = await getConfig();
   const rows = [];
   for (const [office, map] of Object.entries(settings?.subOfficeAccounts || {})) {
@@ -13,7 +13,7 @@ async function subBoxes() {
       const sub = accountsById.get(String(id));
       if (!sub || !sub.isActive) continue;
       const main = accountsById.get(String(settings?.officeAccounts?.[office]?.[currency] || ''));
-      const balance = await getBalance(sub._id);
+      const balance = await getBalance(sub._id, { session });
       const decimals = currencies.get(currency)?.decimals ?? 2;
       rows.push({
         office, currency, decimals, subId: sub._id, subCode: sub.code, subName: sub.name,
@@ -27,7 +27,7 @@ async function subBoxes() {
 
 // Moves everything in a sub box to its main box, today
 async function handOver(subId, { session, req, amount }) {
-  const row = (await subBoxes()).find((r) => String(r.subId) === String(subId));
+  const row = (await subBoxes({ session })).find((r) => String(r.subId) === String(subId));
   if (!row) throw new ErrorHandler(400, 'الخزينة الفرعية غير موجودة');
   if (!row.mainId) throw new ErrorHandler(400, 'لا توجد خزينة رئيسية لهذا المكتب بهذه العملة');
   const value = amount !== undefined ? Number(amount) : row.foreign / 10 ** row.decimals;

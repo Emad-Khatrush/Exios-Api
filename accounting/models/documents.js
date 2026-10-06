@@ -32,8 +32,13 @@ const withLifecycle = (definition, options = {}) => {
   return schema;
 };
 
-const Vendor = mongoose.model('AccountingVendor', new Schema({
+const vendorSchema = new Schema({
   name: { type: String, required: true, trim: true },
+  // Only automatically discovered merchants use this key; manual/historical vendors stay valid.
+  bankNameKey: String,
+  bankAliases: [String],
+  bankMappings: [{ _id: false, accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+    merchant: String, counterAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' } }],
   // 'funder': a third party whose card buys for us (a friend); we settle with them later (spec 19.13)
   type: { type: String, enum: ['carrier', 'supplier', 'service', 'funder', 'other'], default: 'supplier' },
   phone: String,
@@ -45,7 +50,9 @@ const Vendor = mongoose.model('AccountingVendor', new Schema({
   // Created by setup (historical vendors, cash expenses); cannot be deleted
   seedKey: { type: String },
   isActive: { type: Boolean, default: true },
-}, { timestamps: true }));
+}, { timestamps: true });
+vendorSchema.index({ bankNameKey: 1 }, { unique: true, partialFilterExpression: { bankNameKey: { $type: 'string' } } });
+const Vendor = mongoose.model('AccountingVendor', vendorSchema);
 
 const billLineSchema = new Schema({
   description: { type: String, required: true },
@@ -79,6 +86,8 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
   lines: { type: [billLineSchema], required: true },
   total: Number,
   totalUsd: Number,
+  // Incremented transactionally when a payment or refund is allocated to this bill.
+  allocationVersion: { type: Number, default: 0 },
   isCreditNote: { type: Boolean, default: false },
   originalBillId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
   // Cash/bank account, or the employee advances account with employeeId, paid on the spot
@@ -170,6 +179,14 @@ const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
 
 // Money a supplier gave back on a purchase, part of it added to the customer's wallet (spec 19.6)
 const CustomerRefund = mongoose.model('AccountingCustomerRefund', withLifecycle({
+  fundedFromPendingBankLineId: { type: Schema.Types.ObjectId, ref: 'AccountingBankStatementLine' },
+  bankValuationBeforeUsd: Number,
+  bankValuationEntryIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' }],
+  bankLineId: { type: Schema.Types.ObjectId, ref: 'AccountingBankStatementLine' },
+  billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
+  billLineId: Schema.Types.ObjectId,
+  originalAmount: Number,
+  originalCurrency: String,
   day: { type: String, required: true },
   orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true },
   partnerId: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -279,22 +296,52 @@ const bankLineSchema = new Schema({
   lineStatus: { type: String, enum: ['unmatched', 'matched', 'created_entry', 'ignored'], default: 'unmatched' },
   entryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
   importBatchId: String,
+  // Preserve previous postings when a user reverses and corrects this line.
+  historyEntryIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' }],
+  postingAttempt: { type: Number, default: 0 },
+  pendingRefund: { type: Boolean, default: false },
+  pendingClaimVersion: { type: Number, default: 0 },
+  pendingRefundAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   // A purchase or expense line becomes a supplier bill and its payment
   billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
   paymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' },
   // What the other account received when it is in another currency (dollars sold for lira)
   counterAmount: Number,
   counterCurrency: String,
+  originalAmount: Number,
+  originalCurrency: String,
+  matchedOriginalAmount: Number,
+  matchedOriginalCurrency: String,
+  matchDifferenceConfirmed: Boolean,
+  purchaseReviewPending: Boolean,
+  movementKind: { type: String, enum: ['purchase', 'purchase_refund', 'card_payment'] },
+  receiptId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierReceipt' },
+  customerRefundId: { type: Schema.Types.ObjectId, ref: 'AccountingCustomerRefund' },
+  creditNoteId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
+  refundCreditCreated: Boolean,
+  settlementUsd: Number,
+  exchangeRate: Number,
+  valuationSource: String,
+  crossRate: Number,
+  rateBaseCurrency: String,
+  rateQuoteCurrency: String,
+  valuationUsd: Number,
+  // Cancellation must leave a supplier invoice entered before the statement intact.
+  billCreatedFromStatement: Boolean,
   // A website purchase linked to the order it was bought for (one purchase cost of that order)
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   purchaseItemId: Schema.Types.ObjectId,
   // Same account, day, amount and normalised text (+ its repeat number that day): a line already
   // imported from an earlier file is recognised and not imported twice
   fingerprint: String,
+  fingerprintAliases: [String],
+  fingerprintRepeat: Number,
+  importedValues: Schema.Types.Mixed,
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 bankLineSchema.index({ accountId: 1, lineStatus: 1, day: 1 });
 bankLineSchema.index({ accountId: 1, fingerprint: 1 });
+bankLineSchema.index({ accountId: 1, fingerprintAliases: 1 });
 const BankStatementLine = mongoose.model('AccountingBankStatementLine', bankLineSchema);
 
 const ExpenseType = mongoose.model('AccountingExpenseType', new Schema({

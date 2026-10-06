@@ -6,7 +6,7 @@ const docs = require('../models/documents');
 const Wallet = require('../../models/wallet');
 const { reverseEntry } = require('./ledger');
 const { logAudit } = require('./audit');
-const { moveWallet } = require('./posting/people');
+const { moveWallet, lockCompanyLoanBalance } = require('./posting/people');
 const { assertOwnerIfLocked } = require('./periodGuard');
 
 const fail = (message) => new ErrorHandler(400, message);
@@ -56,7 +56,23 @@ const RULES = {
       }
     },
   },
-  AccountingSupplierReceipt: { Model: docs.SupplierReceipt },
+  AccountingSupplierReceipt: {
+    Model: docs.SupplierReceipt,
+    async after(receipt, { session, fromBankLineId }) {
+      const linked = await docs.BankStatementLine.find({ receiptId: receipt._id, lineStatus: { $in: ['created_entry', 'matched'] } }).session(session);
+      for (const line of linked) {
+        if (String(line._id) === String(fromBankLineId || '')) continue;
+        const ids = [line.entryId, ...(line.matchedEntryIds || [])].filter(Boolean);
+        await JournalEntry.updateMany({ _id: { $in: ids } }, { $pull: { bankMatchedAccounts: line.accountId } }, { session });
+        line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...ids.map(String)])];
+        line.postingAttempt = (line.postingAttempt || 0) + 1;
+        line.lineStatus = 'unmatched'; line.entryId = undefined; line.matchedEntryIds = []; line.receiptId = undefined;
+        // Its credit note still exists and may be received again; don't create another cost reduction.
+        line.refundCreditCreated = false;
+        await line.save({ session });
+      }
+    },
+  },
   AccountingYuanPurchase: { Model: docs.YuanPurchase },
   AccountingCustomerRefund: {
     Model: docs.CustomerRefund,
@@ -77,12 +93,28 @@ const RULES = {
       await require('../../models/userStatement').updateOne({ _id: statement._id }, { $set: { actionType: 'refund' } }, { session });
     },
     async after(refund, context) {
+      const linked = await docs.BankStatementLine.find({ customerRefundId: refund._id, lineStatus: { $in: ['created_entry', 'matched'] } }).session(context.session);
+      for (const line of linked) {
+        if (String(line._id) === String(context.fromBankLineId || '')) continue;
+        if (String(refund.fundedFromPendingBankLineId || '') === String(line._id)) {
+          line.pendingRefund = true; line.customerRefundId = undefined; line.orderId = undefined; line.billId = undefined;
+          await line.save({ session: context.session });
+          continue;
+        }
+        const ids = [line.entryId, ...(line.matchedEntryIds || [])].filter(Boolean);
+        await JournalEntry.updateMany({ _id: { $in: ids } }, { $pull: { bankMatchedAccounts: line.accountId } }, { session: context.session });
+        line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...ids.map(String)])];
+        line.postingAttempt = (line.postingAttempt || 0) + 1;
+        line.lineStatus = 'unmatched'; line.entryId = undefined; line.matchedEntryIds = []; line.customerRefundId = undefined; line.orderId = undefined; line.billId = undefined;
+        await line.save({ session: context.session });
+      }
       await require('./claims/sync').syncOrder(refund.orderId, { session: context.session, user: context.req?.user });
     },
   },
   AccountingClaimWriteOff: {
     Model: docs.ClaimWriteOff,
     async check(writeOff, { session }) {
+      await require('./claims/locks').lockClaimAllocation(writeOff.arKey, session);
       if (await JournalEntry.exists({ eventType: 'WRITEOFF_RECOVERY', 'lines.arKey': writeOff.arKey }).session(session)) {
         throw fail('دُفع على المطالبة بعد شطبها؛ أُعيد جزء من الشطب تلقائياً. لا يُلغى الشطب الآن.');
       }
@@ -113,7 +145,19 @@ const RULES = {
   },
   AccountingCashCount: { Model: docs.CashCount },
   AccountingSalaryPayment: { Model: docs.SalaryPayment },
-  AccountingEquityTransaction: { Model: docs.EquityTransaction },
+  AccountingEquityTransaction: {
+    Model: docs.EquityTransaction,
+    async check(transaction, { session }) {
+      if (!['loan_in', 'loan_repayment'].includes(transaction.type)) return;
+      await lockCompanyLoanBalance(session);
+      if (transaction.type === 'loan_in') {
+        const repayments = await docs.EquityTransaction.find({
+          type: 'loan_repayment', partyName: transaction.partyName, status: ACTIVE,
+        }).session(session);
+        if (repayments.length) throw fail('Cancel repayments from this lender before canceling the original loan');
+      }
+    },
+  },
   // Cancelling an asset reverses its depreciation and disposal entries (they are posted under it);
   // the bill that bought it can then be cancelled. Same for a prepaid schedule and its instalments.
   AccountingFixedAsset: { Model: docs.FixedAsset },
@@ -166,7 +210,7 @@ async function cancelDocument(modelName, id, context) {
   if (doc.status === 'draft') throw fail('المسودة تُحذف ولا تُلغى');
   if (doc.status === 'canceled') throw fail('المستند مُلغى مسبقاً');
   // A document of a closed period is cancelled by the owner only (spec 19.12)
-  if (!context.cascaded) await assertOwnerIfLocked(req?.user, doc.day);
+  if (!context.cascaded) await assertOwnerIfLocked(req?.user, doc.day, { session });
   if (rule.check) await rule.check(doc, context);
 
   // Claims the document first: a second cancel at the same moment conflicts here and fails

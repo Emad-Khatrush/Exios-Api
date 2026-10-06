@@ -3,6 +3,7 @@ const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const inventorySchema = new Schema({
+  accountingMutationVersion: { type: Number, default: 0 },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User'},
   orders: [],
   attachments: [{

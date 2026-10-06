@@ -95,6 +95,9 @@ router.route('/acc/orders/:orderId/refunds')
     const { createCustomerRefund } = require('./services/posting/customerRefund');
     res.json(await runInTransaction((session) => createCustomerRefund({ ...(req.body || {}), orderId: req.params.orderId }, { session, req })));
   }));
+router.get('/acc/orders/:orderId/pending-refunds', STAFF, handle(async (req, res) => {
+  res.json({ results: await require('./services/posting/pendingRefund').candidates(req.query, null, { allDates: true }) });
+}));
 router.post('/acc/bills/:billId/cancel', STAFF, handle(async (req, res) => res.json(await staff.cancelOwnBill(req.params.billId, req, req.body?.reason))));
 
 router.get('/office-expenses/options', STAFF, handle(async (req, res) => res.json(await staff.officeExpenseOptions(req.user, req.query.office))));

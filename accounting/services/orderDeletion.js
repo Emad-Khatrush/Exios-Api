@@ -16,6 +16,7 @@ const Balance = require('../../models/balance');
 const ErrorHandler = require('../../utils/errorHandler');
 const { getConfig } = require('./config');
 const { runInTransaction } = require('./transaction');
+const { assertOpenPeriod } = require('./periodGuard');
 const { syncOrder } = require('./claims/sync');
 
 const refuse = (message) => new ErrorHandler(400, message);
@@ -29,9 +30,9 @@ async function isLive() {
 }
 
 // What stops this order from being deleted, as sentences for the admin (empty = nothing)
-async function deletionBlockers(order) {
+async function deletionBlockers(order, { session } = {}) {
   const packageIds = (order.paymentList || []).map((pkg) => pkg._id);
-  const [payments, invoices, debts, bills, holders] = await Promise.all([
+  const queries = [
     OrderPaymentHistory.countDocuments({ order: order._id }),
     Invoice.countDocuments({
       isCanceled: { $ne: true },
@@ -45,7 +46,10 @@ async function deletionBlockers(order) {
     packageIds.length
       ? Inventory.find({ 'orders.paymentList._id': { $in: [...packageIds, ...packageIds.map(String)] } }).select('voyage inventoryType').lean()
       : [],
-  ]);
+  ];
+  const values = [];
+  for (const query of queries) values.push(Array.isArray(query) ? query : await query.session(session || null));
+  const [payments, invoices, debts, bills, holders] = values;
   const blockers = [];
   if (payments) blockers.push(`عليه ${payments} دفعة مسجلة؛ احذف الدفعات أولاً من تبويب Payments (تعود قيمتها إلى محفظة العميل).`);
   if (invoices) blockers.push(`له ${invoices} فاتورة تسليم؛ ألغِها أولاً.`);
@@ -68,30 +72,32 @@ async function openLedgerAccounts(orderId, session) {
   ]).session(session || null);
 }
 
-async function deleteOrder(orderId, user) {
+async function deleteOrder(orderId, user, { session } = {}) {
+  if (!session) return runInTransaction((session) => deleteOrder(orderId, user, { session }));
   if (!mongoose.isValidObjectId(orderId)) throw refuse('الطلب غير موجود');
-  const order = await Order.findById(orderId).select('orderId isCanceled paymentList._id paymentList.status').lean();
+  const order = await Order.findById(orderId).select('orderId isCanceled createdAt paymentList._id paymentList.status').session(session).lean();
   if (!order) throw new ErrorHandler(404, 'الطلب غير موجود');
 
-  const blockers = await deletionBlockers(order);
+  await assertOpenPeriod(user, order.createdAt, { session });
+  const blockers = await deletionBlockers(order, { session });
   if (blockers.length) throw refuse(`لا يمكن حذف الطلب ${order.orderId}: ${blockers.join(' ')} يمكنك إلغاء الطلب بدل حذفه.`);
 
   const stillOpen = 'ما زالت عليه أرصدة في الدفاتر المحاسبية (قيود يدوية أو مدفوعات). سوِّها أولاً أو ألغِ الطلب بدل حذفه.';
   const id = new mongoose.Types.ObjectId(String(order._id));
-  const inBooks = await JournalEntry.exists({ 'lines.orderId': id });
+  const inBooks = await JournalEntry.exists({ 'lines.orderId': id }).session(session);
   if (!inBooks) {
     // Never reached the books: nothing to keep
-    await Order.deleteOne({ _id: order._id });
+    await Order.deleteOne({ _id: order._id }, { session });
     return { orderId: order.orderId, removed: true, posted: 0 };
   }
   if (!(await isLive())) {
     // Entries from a migration: nothing is posted while live posting is off, so they must already be zero
-    if ((await openLedgerAccounts(order._id)).length) throw refuse(`لا يمكن حذف الطلب ${order.orderId}: ${stillOpen}`);
-    await Order.updateOne({ _id: order._id }, { $set: { isCanceled: true, isDeleted: true, deletedAt: new Date(), deletedBy: user?._id } });
+    if ((await openLedgerAccounts(order._id, session)).length) throw refuse(`لا يمكن حذف الطلب ${order.orderId}: ${stillOpen}`);
+    await Order.updateOne({ _id: order._id }, { $set: { isCanceled: true, isDeleted: true, deletedAt: new Date(), deletedBy: user?._id } }, { session });
     return { orderId: order.orderId, removed: false, posted: 0 };
   }
 
-  return runInTransaction(async (session) => {
+  {
     // A deleted order is billed nothing: the same reconciliation as a cancellation takes its
     // claims, revenue and costs back, and hides the claim entries once they net to zero
     await Order.updateOne({ _id: order._id }, { $set: { isCanceled: true } }).session(session);
@@ -99,7 +105,7 @@ async function deleteOrder(orderId, user) {
     if ((await openLedgerAccounts(order._id, session)).length) throw refuse(`لا يمكن حذف الطلب ${order.orderId}: ${stillOpen}`);
     await Order.updateOne({ _id: order._id }, { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: user?._id } }).session(session);
     return { orderId: order.orderId, removed: false, posted: result?.posted || 0 };
-  });
+  }
 }
 
 module.exports = { deleteOrder, deletionBlockers };

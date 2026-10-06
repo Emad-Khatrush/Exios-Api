@@ -18,6 +18,7 @@ const orders = require('../../controllers/orders');
 const balance = require('../../controllers/balance');
 const inventory = require('../../controllers/inventory');
 const staff = require('../services/staffOperations');
+const payables = require('../services/posting/payables');
 
 jest.setTimeout(180000);
 
@@ -151,6 +152,29 @@ test('6. an Alipay transfer order: paid by the customer, the yuan sent from Alip
   await expectConsistent('remittance');
   expect(-(await usd('410700'))).toBe(100000);
   expect(await usd('510700')).toBe(98485);
+});
+
+test('6a. Alipay sent-yuan totals use only the bill lines for the selected order', async () => {
+  const alipay = require('../services/posting/alipay');
+  const box = await account('110301');
+  const first = await purchase(100, { isRemittance: 'true' });
+  const second = await purchase(100, { isRemittance: 'true' });
+  await Order.updateMany({ _id: { $in: [first._id, second._id] } }, { $set: { isRemittance: true } });
+  const vendor = await docs.Vendor.create({ name: 'Shared Alipay supplier', type: 'service' });
+  const expense = await account('530800');
+  await runInTransaction((session) => payables.createBill({
+    vendorId: vendor._id, day: today(), currency: 'CNY', paidImmediatelyFrom: box._id,
+    lines: [
+      { description: 'First order', amount: 20, target: 'order', orderId: first._id },
+      { description: 'Second order', amount: 30, target: 'order', orderId: second._id },
+      { description: 'Shared fee', amount: 50, target: 'expense', accountId: expense._id, office: 'tripoli' },
+    ],
+  }, { session, req: { user: owner } }));
+  const firstStatus = await alipay.remittanceStatus(first._id);
+  const secondStatus = await alipay.remittanceStatus(second._id);
+  expect(firstStatus.sentCny).toBe(20);
+  expect(secondStatus.sentCny).toBe(30);
+  await expectConsistent('shared Alipay vendor bill');
 });
 
 test('7. a tax the partner (Asswaq) paid for a customer: a debt on the customer from that account, paid from the wallet', async () => {

@@ -39,6 +39,10 @@ beforeAll(async () => {
   const id = (await users().insertOne({ username: 'c1', firstName: 'Customer', lastName: 'Z', phone: 910000004, customerId: 'C100', roles: { isClient: true } })).insertedId;
   owner = await users().findOne({ _id: new mongoose.Types.ObjectId(OWNER_ID) });
   customer = await users().findOne({ _id: id });
+  // These end-to-end workflows spend company cash; start the test books with explicit opening
+  // capital so balance guards exercise realistic funded boxes instead of relying on overdrafts.
+  const { createEquity } = require('../services/posting/people');
+  await tx(async (session) => createEquity({ type: 'capital_in', partyName: 'Opening test capital', day: '2026-01-02', accountId: (await account('110101'))._id, amount: 10000 }, { session, req: { user: owner } }));
 });
 afterAll(stopDb);
 
@@ -377,6 +381,23 @@ test('12. a refund cannot give the wallet more than was paid; transfer orders sh
   expect((await orderSummary(String(other._id))).totals).toMatchObject({ billed: 4000, recognized: 4000, open: 0 });
   const row = (await customerInvoices({ search: other.orderId })).results.find((r) => r.orderNumber === other.orderId);
   expect(row).toMatchObject({ billed: 4000, recognized: 4000, status: 'paid' });
+});
+
+test('12a. concurrent supplier refunds cannot give the customer more than the paid invoice amount', async () => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  await deposit(100, 'USD');
+  const order = await purchase(70);
+  await pay(order, 70);
+  await expectConsistent('refund concurrency setup');
+  const before = Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'USD' }))?.balance || 0);
+  const refund = () => tx(async (session) => createCustomerRefund({
+    orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 60, walletUsd: 60, day: today(),
+  }, { session, req: { user: owner } }));
+  const outcomes = await Promise.allSettled([refund(), refund()]);
+  expect(outcomes.filter((item) => item.status === 'fulfilled')).toHaveLength(1);
+  expect(outcomes.filter((item) => item.status === 'rejected')).toHaveLength(1);
+  expect(Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'USD' })).balance)).toBeCloseTo(before + 60, 2);
+  await expectConsistent('concurrent supplier refunds');
 });
 
 test('13. an old dinar payment saved without a rate: the accountant writes the rate, the line is posted again, the migration overpayment undone', async () => {

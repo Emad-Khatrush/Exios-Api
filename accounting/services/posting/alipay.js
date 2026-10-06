@@ -7,7 +7,7 @@
 // wait on "yuan in transit" against the broker until the arrival is confirmed with the actual
 // amount (a different amount only changes the rate, never the dollars).
 const mongoose = require('mongoose');
-const { JournalEntry } = require('../../models');
+const { Account, JournalEntry } = require('../../models');
 const { YuanPurchase, Vendor } = require('../../models/documents');
 const Order = require('../../../models/order');
 const { postEntry } = require('../ledger');
@@ -16,7 +16,8 @@ const { logAudit } = require('../audit');
 const { getBalance } = require('../carrying');
 const { getConfig } = require('../config');
 const {
-  fail, currencyOf, getAccount, toCurrencyMinor, RateBook, valueOut, moneyLine, nextDocNumber, findExisting, resolveAccount,
+  fail, currencyOf, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, nextDocNumber, findExisting, resolveAccount,
+  lockPostingAccounts, isBeforeCashCount,
 } = require('./common');
 
 const PENDING_DAYS = 7;
@@ -45,6 +46,9 @@ async function createYuanPurchase(input, { session, req }) {
   const to = await alipayAccount(input.toAccountId);
   const paidMinor = await toCurrencyMinor(input.amount, currencyOf(from));
   if (!paidMinor) throw fail('المبلغ المدفوع مطلوب');
+  if (!(await isBeforeCashCount(input.day))) {
+    await lockPostingAccounts([from], session);
+  }
   const arrived = input.arrived !== false;
   const cny = Number(input.cnyReceived || input.cnyExpected);
   if (!(cny > 0)) throw fail('كمية اليوان مطلوبة');
@@ -202,39 +206,58 @@ async function remittanceVendor(session) {
   return (await Vendor.findOne({ name }).session(session)) || (await Vendor.create([{ name, type: 'service', defaultCurrency: 'CNY' }], { session }))[0];
 }
 
-async function remittanceStatus(orderId) {
+async function remittanceStatus(orderId, { session } = {}) {
   if (!mongoose.isValidObjectId(orderId)) throw fail('الطلب غير موجود');
-  const order = await Order.findById(orderId).select('orderId isRemittance isCanceled totalInvoice purchaseItems').lean();
+  const order = await Order.findById(orderId).select('orderId isRemittance isCanceled totalInvoice purchaseItems').session(session || null).lean();
   if (!order) throw fail('الطلب غير موجود');
   const { accountsById, currencies } = await getConfig();
   const decimals = currencies.get('CNY')?.decimals ?? 2;
   const alipays = [...accountsById.values()].filter((a) => a.isCash && !a.isGroup && a.isActive && a.currency === 'CNY');
   const accounts = [];
   for (const account of alipays) {
-    const balance = await getBalance(account._id);
+    const balance = await getBalance(account._id, { session });
     accounts.push({ _id: account._id, name: account.name, cny: balance.foreign / 10 ** decimals, usd: balance.usd, rate: balance.usd > 0 ? Math.round(((balance.foreign / 10 ** decimals) / (balance.usd / 100)) * 10000) / 10000 : null });
   }
   const { SupplierBill } = require('../../models/documents');
   const bills = await SupplierBill.find({ 'lines.orderId': order._id, status: 'posted', currency: 'CNY', paidImmediatelyFrom: { $in: alipays.map((a) => a._id) } })
-    .select('number day total totalUsd paidImmediatelyFrom').sort({ day: 1 }).lean();
-  const sentCny = bills.reduce((sum, b) => sum + Number(b.total || 0), 0);
+    .select('number day lines total totalUsd paidImmediatelyFrom').sort({ day: 1 }).session(session || null).lean();
+  const sent = bills.map((bill) => {
+    const orderCny = (bill.lines || []).filter((line) => line.target === 'order' && String(line.orderId) === String(order._id))
+      .reduce((sum, line) => sum + Number(line.amount || 0), 0);
+    return { ...bill, orderCny, account: accountsById.get(String(bill.paidImmediatelyFrom))?.name };
+  });
+  const sentCny = sent.reduce((sum, bill) => sum + bill.orderCny, 0);
   const typedCny = (order.purchaseItems || []).filter((i) => i.currency === 'CNY').reduce((sum, i) => sum + Number(i.unitPrice || 0), 0);
   return {
     order: { _id: order._id, orderId: order.orderId, isRemittance: !!order.isRemittance, isCanceled: !!order.isCanceled, totalInvoice: order.totalInvoice },
-    accounts, sent: bills.map((b) => ({ ...b, account: accountsById.get(String(b.paidImmediatelyFrom))?.name })),
+    accounts, sent,
     sentCny, typedCny, suggestedCny: Math.max(Math.round((typedCny - sentCny) * 100) / 100, 0),
   };
 }
 
 async function sendRemittance(orderId, input, { session, req }) {
-  const status = await remittanceStatus(orderId);
+  const status = await remittanceStatus(orderId, { session });
   if (!status.order.isRemittance) throw fail('الطلب غير معلَّم «حوالة Alipay»؛ علّمه من فاتورة الشراء أولاً');
   if (status.order.isCanceled) throw fail('الطلب ملغى');
   const account = status.accounts.find((a) => String(a._id) === String(input.accountId));
   if (!account) throw fail('اختر حساب Alipay');
   const cny = Number(input.cny);
-  if (!(cny > 0)) throw fail('اكتب اليوان المرسل');
-  if (cny > account.cny + 0.001) throw fail(`رصيد ${account.name} ${account.cny} يوان فقط`);
+  const cnyMinor = await toCurrencyMinor(cny, 'CNY');
+  if (!cnyMinor) throw fail('اكتب اليوان المرسل');
+  // Serialize sends from the same Alipay account, then re-read the balance in this transaction.
+  // Without this write, two concurrent requests can both pass the stale balance check.
+  const locked = await Account.updateOne(
+    { _id: account._id, isCash: true, isActive: true, currency: 'CNY' },
+    { $inc: { postingVersion: 1 } },
+    { session },
+  );
+  if (locked.modifiedCount !== 1) throw fail('حساب Alipay غير متاح للإرسال');
+  const currentBalance = await getBalance(account._id, { session });
+  if (cnyMinor > currentBalance.foreign) {
+    const balanceCny = currentBalance.foreign / (10 ** await decimalsOf('CNY'));
+    throw fail(`رصيد ${account.name} ${balanceCny} يوان فقط`);
+  }
+  const normalizedCny = cnyMinor / (10 ** await decimalsOf('CNY'));
   const day = input.day || today();
   if (!isDay(day)) throw fail('التاريخ غير صالح');
   notFuture(day);
@@ -243,7 +266,7 @@ async function sendRemittance(orderId, input, { session, req }) {
   return createBill({
     vendorId: vendor._id, day, currency: 'CNY', paidImmediatelyFrom: account._id, enteredFrom: 'order', idempotencyKey: input.idempotencyKey || undefined,
     note: input.note || undefined,
-    lines: [{ description: `حوالة Alipay - طلب ${status.order.orderId}`, amount: cny, target: 'order', orderId: status.order._id }],
+    lines: [{ description: `حوالة Alipay - طلب ${status.order.orderId}`, amount: normalizedCny, target: 'order', orderId: status.order._id }],
   }, { session, req });
 }
 

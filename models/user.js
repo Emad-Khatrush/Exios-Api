@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const userSchema = new Schema({
+  walletPostingVersion: { type: Number, default: 0 },
   username: {
     type: String,
     required: true,

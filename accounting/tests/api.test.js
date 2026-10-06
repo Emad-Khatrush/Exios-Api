@@ -13,6 +13,7 @@ app.use(express.json());
 app.use('/api/accounting', routes);
 app.use(errorHandler);
 
+let server;
 let adminToken;
 let employeeToken;
 let customer;
@@ -21,10 +22,17 @@ const makeUser = (n, roles) => User.create({
   username: `u${n}`, firstName: `F${n}`, lastName: 'L', phone: 900000 + n, password: 'x', customerId: `C${n}`, roles,
 });
 const tokenFor = (user) => jwt.sign({ id: user._id }, process.env.JWT_SECRET);
-const api = (method, url, token = adminToken) => request(app)[method](`/api/accounting${url}`).set('Authorization', `Bearer ${token}`);
+const api = (method, url, token = adminToken) => request(server)[method](`/api/accounting${url}`).set('Authorization', `Bearer ${token}`);
 
-beforeAll(startDb);
-afterAll(stopDb);
+beforeAll(async () => {
+  await startDb();
+  server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
+});
+afterAll(async () => {
+  if (server) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await stopDb();
+});
 beforeEach(async () => {
   await resetDb();
   adminToken = tokenFor(await makeUser(1, { isAdmin: true }));
@@ -273,6 +281,29 @@ describe('accounting access', () => {
   afterEach(() => {
     if (OWNERS === undefined) delete process.env.ACCOUNTING_OWNER_IDS; else process.env.ACCOUNTING_OWNER_IDS = OWNERS;
     process.env.ACCOUNTING_DEV_ALL_ADMINS = 'true';
+  });
+
+  test('the auditor preset can read entries but cannot post entries, write off claims or add attachments', async () => {
+    const owner = await makeUser(20, { isAdmin: true });
+    const auditor = await makeUser(21, { isAccountant: true });
+    process.env.ACCOUNTING_OWNER_IDS = String(owner._id);
+    const ownerToken = tokenFor(owner);
+    const auditorToken = tokenFor(auditor);
+    const preset = require('../services/access').PRESETS.find((p) => p.key === 'auditor');
+    expect((await api('put', `/access/members/${auditor._id}`, ownerToken).send({ permissions: preset.permissions })).status).toBe(200);
+    expect((await api('get', '/entries', auditorToken)).status).toBe(200);
+    expect((await api('get', '/reports/trial-balance', auditorToken)).status).toBe(200);
+    expect((await api('post', '/entries', auditorToken).send({})).status).toBe(403);
+    expect((await api('post', '/write-offs', auditorToken).send({})).status).toBe(403);
+    expect((await api('post', `/entries/${customer._id}/attachments`, auditorToken)).status).toBe(403);
+    expect((await api('post', `/entries/${customer._id}/cancel`, auditorToken).send({ reason: 'test' })).status).toBe(403);
+    for (const route of ['bills', 'payments', 'receipts', 'yuan-purchases', 'customer-refunds', 'transfers', 'cash-counts', 'salaries', 'equity', 'nettings', 'close/month', 'close/year', 'live/process', 'live/events/' + customer._id + '/retry', 'suspense/settle', 'assets/depreciate', 'prepaid/amortize', 'bank/import']) {
+      expect((await api('post', '/' + route, auditorToken).send({})).status).toBe(403);
+    }
+    for (const model of ['AccountingSupplierBill', 'AccountingSupplierPayment', 'AccountingSupplierReceipt', 'AccountingYuanPurchase', 'AccountingCustomerRefund', 'AccountingTreasuryTransfer', 'AccountingCashCount', 'AccountingSalaryPayment', 'AccountingFixedAsset', 'AccountingPrepaidExpense', 'AccountingEquityTransaction', 'AccountingNetting']) {
+      expect((await api('post', `/documents/${model}/${customer._id}/cancel`, auditorToken).send({ reason: 'test' })).status).toBe(403);
+      expect((await api('post', `/documents/${model}/${customer._id}/attachments`, auditorToken)).status).toBe(403);
+    }
   });
 
   test('a database without any owner account is closed to every admin unless ACCOUNTING_DEV_ALL_ADMINS is set', async () => {

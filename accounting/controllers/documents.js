@@ -395,7 +395,10 @@ module.exports.listBankLines = handle(async (req, res) => {
   if (!isObjectId(req.query.accountId)) throw badRequest('اختر الحساب');
   const query = { accountId: req.query.accountId };
   if (req.query.lineStatus) query.lineStatus = req.query.lineStatus;
-  const lines = await docs.BankStatementLine.find(query).sort({ day: -1 }).limit(500).populate('matchedEntryIds', 'number day').populate('entryId', 'number').lean();
+  const lines = await docs.BankStatementLine.find(query).sort({ day: -1 }).limit(500)
+    .populate({ path: 'matchedEntryIds', select: 'number day status lines.accountId', populate: { path: 'lines.accountId', select: 'code name' } })
+    .populate({ path: 'entryId', select: 'number status lines.accountId', populate: { path: 'lines.accountId', select: 'code name' } })
+    .populate('billId', 'number').populate('orderId', 'orderId').populate('customerRefundId', 'number walletUsd status').lean();
   const movements = await bank.unmatchedMovements(req.query.accountId);
   const balance = await getBalance(req.query.accountId);
   const lastWithBalance = await docs.BankStatementLine.findOne({ accountId: req.query.accountId, balanceAfter: { $ne: null } }).sort({ day: -1, createdAt: -1 }).lean();
@@ -403,7 +406,14 @@ module.exports.listBankLines = handle(async (req, res) => {
 });
 
 module.exports.importBankLines = handle(async (req, res) => {
-  res.json(await inTx((session) => bank.importLines(req.body.accountId, req.body.rows, { session, req })));
+  res.json(await bank.importStatement(req.body.accountId, req.body.rows, { req }));
+});
+module.exports.bankLineDetails = handle(async (req, res) => {
+  res.json(await require('../services/posting/bankLineDetails').details(req.params.id));
+});
+module.exports.editBankLine = handle(async (req, res) => {
+  if (!isObjectId(req.params.id)) throw badRequest('سطر الكشف غير صالح');
+  res.json(await inTx(session => bank.editLine(req.params.id, req.body || {}, { session, req })));
 });
 module.exports.autoMatchBank = handle(async (req, res) => {
   res.json(await inTx((session) => bank.autoMatch(req.body.accountId, { session, req })));

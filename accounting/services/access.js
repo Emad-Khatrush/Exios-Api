@@ -18,7 +18,8 @@ const PERMISSIONS = [
   { key: 'treasury', label: 'الخزينة والبنوك', hint: 'التحويلات، الجرد، مطابقة البنك' },
   { key: 'payroll', label: 'الموظفون والرواتب', hint: 'الرواتب والعهد والسلف' },
   { key: 'assets', label: 'الأصول ورأس المال', hint: 'الأصول والإهلاك، المصروفات المقدمة، رأس المال والقروض، المقاصة' },
-  { key: 'entries', label: 'القيود', hint: 'عرض القيود، القيود اليدوية وإلغاؤها' },
+  { key: 'entries_view', label: 'عرض القيود', hint: 'قراءة القيود والسندات دون إنشاء أو تعديل' },
+  { key: 'entries', label: 'إدخال القيود', hint: 'عرض القيود وإنشاء القيود اليدوية والشطب؛ الإلغاء يحتاج صلاحية الإلغاء أيضاً' },
   { key: 'rates', label: 'الأسعار اليومية', hint: 'إدخال أسعار العملات' },
   { key: 'suspense', label: 'تسوية المعلّق', hint: 'تسوية ما لم يُعرف حسابه' },
   { key: 'closing', label: 'الإقفال', hint: 'إقفال الشهر والسنة' },
@@ -34,7 +35,7 @@ const PRESETS = [
   { key: 'full', label: 'صلاحيات كاملة', permissions: KEYS },
   { key: 'purchases', label: 'إدخال الموردين والرحلات', permissions: ['purchases', 'payments'] },
   { key: 'cashier', label: 'أمين خزينة', permissions: ['treasury', 'rates', 'purchases'] },
-  { key: 'auditor', label: 'مراجع (عرض فقط)', permissions: ['dashboard', 'reports', 'entries', 'audit'] },
+  { key: 'auditor', label: 'مراجع (عرض فقط)', permissions: ['dashboard', 'reports', 'entries_view', 'audit'] },
 ];
 
 // The owner accounts. The first is emadkhatrush on the production database (MONGO_URL_2); the

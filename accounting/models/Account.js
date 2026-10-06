@@ -27,6 +27,8 @@ const accountSchema = new Schema({
   allowManualEntry: { type: Boolean, default: true },
   cashFlowCategory: { type: String, enum: ['operating', 'investing', 'financing', null], default: null },
   isActive: { type: Boolean, default: true },
+  // Transactional mutex for operations that spend from this account and must recheck its balance.
+  postingVersion: { type: Number, default: 0 },
   sortOrder: { type: Number, default: 0 },
   // Set on accounts created by the setup script, so re-running it recognises them even
   // after their code or name was changed by hand

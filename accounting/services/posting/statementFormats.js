@@ -56,8 +56,12 @@ const albarakaCard = {
     let open = null;
     const close = (sign, amount) => {
       // A payment is printed with "+": on a card statement it is the negative side (money to the card)
-      const value = sign ? -trNumber(amount) : trNumber(amount);
-      rows.push({ day: open.day, description: open.description + (open.foreign ? ` (${open.foreign})` : ''), reference: '', amount: value, balanceAfter: null });
+      const value = sign === '+' ? -trNumber(amount) : trNumber(amount);
+      const movementKind = sign === '+' ? (/ÖDEME|TEŞEKKÜR/i.test(open.description) ? 'card_payment' : 'purchase_refund') : 'purchase';
+      rows.push({ day: open.day, description: open.description + (open.foreign ? ` (${open.foreign})` : ''), reference: '', amount: value, balanceAfter: null, movementKind });
+      if (open.originalCurrency) Object.assign(rows[rows.length - 1], { originalAmount: open.originalAmount, originalCurrency: open.originalCurrency,
+        ...(open.settlementUsd > 0 && { settlementUsd: open.settlementUsd }) });
+      if (open.settlementUsd > 0) rows[rows.length - 1].settlementUsd = open.settlementUsd;
       open = null;
     };
     for (const raw of text.split(/\r?\n/)) {
@@ -73,12 +77,23 @@ const albarakaCard = {
         continue;
       }
       if (!open) continue;
-      const foreign = line.match(/OrijinalİşlemTutarı:\s*([\d.,]+)\s*([A-Z]{3})(?:,\s*USD\s*Karşılığı:\s*([\d.,]+)\s*USD)?/i);
+      const foreign = line.match(/Orijinal\s*İşlem\s*Tutarı:\s*([\d.,]+)\s*([A-Z]{3})(?:,\s*USD\s*Karşılığı:\s*([\d.,]+)\s*USD)?/i);
       if (foreign) {
+        open.originalAmount = trNumber(foreign[1]);
+        open.originalCurrency = foreign[2].toUpperCase();
+        open.settlementUsd = foreign[3] ? trNumber(foreign[3]) : open.originalCurrency === 'USD' ? open.originalAmount : undefined;
         const original = `${trNumber(foreign[1]).toFixed(2)} ${foreign[2].toUpperCase()}`;
         // "17,30KWD,USD Karşılığı:564,38USD": the dollars are kept last, where the bill reads them
         if (foreign[3]) open.description += ` ${original}`;
         open.foreign = foreign[3] ? `${trNumber(foreign[3]).toFixed(2)} USD` : original;
+        continue;
+      }
+      // Advertising statements may print only "USD Karşılığı" without
+      // "Orijinal İşlem Tutarı". It is still the bank's actual USD valuation.
+      const dollarEquivalent = line.match(/^USD\s*Karşılığı:\s*([\d.,]+)\s*USD/i);
+      if (dollarEquivalent) {
+        open.settlementUsd = trNumber(dollarEquivalent[1]);
+        // The original currency is unknown: keep it unknown rather than invent USD.
         continue;
       }
       const amount = line.match(amountOnly);
@@ -120,6 +135,7 @@ const albarakaAccount = {
         description = `${received.toFixed(2)} TRY Karşılığı ${sale[2]} ${sale[3]} Satış, Kur: ${sale[4]}`;
         row.counterAmount = received;
         row.counterCurrency = 'TRY';
+        row.exchangeRate = Number(sale[4]);
       } else {
         // The receipt number comes first, glued to the text: it is dropped
         const bankRef = body.match(/\d{9}OS\d{5}/);
@@ -155,13 +171,76 @@ const almutaheda = {
   },
 };
 
-// Kuveyt Türk card is read by the general reader (its amounts are followed by "TL")
-const FORMATS = [kuveytAccount, albarakaCard, albarakaAccount, almutaheda];
+const aswaq = {
+  name: 'أسواق - كشف حساب العميل',
+  detect: text => /ASWAQ/i.test(text) && /T336/.test(text),
+  parse(text) {
+    const rows = []; let description = [];
+    const pattern = /^(.*?)(\d{2}\/\d{2}\/\d{4})([\d,]+\.\d{2})\$\s*([\d,]+\.\d{2})\$\s*([\d,]+\.\d{2})\$\s*(-?)(.*)$/;
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim(); const m = line.match(pattern);
+      if (!m) {
+        if (line && !/20262026|المدينالمدين|الإجماليالإجمالي|T336|Tripoli|ASWAQ/.test(line)) description.push(line);
+        continue;
+      }
+      const [, prefix, date, debit, credit, balance, negative, reference] = m;
+      const label = [...description, prefix].filter(Boolean).join(' ').trim(); description = [];
+      // An opening balance is a snapshot, not a new expense to import.
+      if (/^FIRST\//.test(reference)) continue;
+      const amount = round2(usNumber(credit) - usNumber(debit));
+      if (!amount) continue;
+      const [day, month, year] = date.split('/');
+      rows.push({ day: `${year}-${month}-${day}`, description: label || reference, reference, amount,
+        balanceAfter: usNumber(balance) * (negative ? 1 : -1) });
+    }
+    return rows;
+  },
+};
 
-function readKnownFormat(text) {
+// Wasl's amounts are glued in plain text. Read their actual PDF columns instead of guessing.
+const wasl = {
+  name: 'وصل - كشف الحساب بالدولار',
+  detect: text => /وصل للحوالات المالية/.test(text) && /كشف حساب#/.test(text),
+  parse(text, pages = []) {
+    const rows = [];
+    for (const items of pages) {
+      const dates = items.filter(i => i.x > 480 && /^\d{2}-\d{2}-\d{4}$/.test(i.text)).sort((a, b) => b.y - a.y);
+      for (let index = 0; index < dates.length; index++) {
+        const date = dates[index];
+        const values = items.filter(i => i.x < 280 && Math.abs(i.y - date.y) < 2 && /^-?[\d,]+(?:\.\d+)?$/.test(i.text));
+        const balance = values.find(i => i.x < 120), credit = values.find(i => i.x >= 120 && i.x < 200), debit = values.find(i => i.x >= 200);
+        if (!balance || !credit || !debit) continue; // Printed footer date has no movement columns.
+        const top = index ? (dates[index - 1].y + date.y) / 2 : date.y + 35;
+        const bottom = dates[index + 1] ? (dates[index + 1].y + date.y) / 2 : date.y - 35;
+        const label = items.filter(i => i.x >= 280 && i.x < 490 && i.y < top && i.y > bottom && !/التفاص|إجمالي العمليات|الرصي|بواسطة/.test(i.text))
+          .sort((a, b) => b.y - a.y || b.x - a.x).map(i => i.text).join(' ').trim();
+        const amount = round2(usNumber(credit.text) - usNumber(debit.text));
+        const [day, month, year] = date.text.split('-');
+        if (amount) {
+          const row = { day: `${year}-${month}-${day}`, description: label, reference: '', amount, balanceAfter: -usNumber(balance.text) };
+          if (/Alipay/i.test(label)) {
+            const sum = label.match(/[\d,]+\s*\+\s*[\d,]+(?:\s*\+\s*[\d,]+)*/);
+            const single = label.match(/بقيمة\s*([\d,]+)/);
+            const yuan = sum ? sum[0].split('+').reduce((s, n) => s + usNumber(n.trim()), 0) : single ? usNumber(single[1]) : 0;
+            if (yuan > 0) Object.assign(row, { originalAmount: yuan, originalCurrency: 'CNY', counterAmount: yuan, counterCurrency: 'CNY' });
+            const quote = label.match(/صرف\s+([\d.]+)/);
+            if (quote) row.exchangeRate = Number(quote[1]);
+          }
+          rows.push(row);
+        }
+      }
+    }
+    return rows;
+  },
+};
+
+// Kuveyt Türk card is read by the general reader (its amounts are followed by "TL").
+const FORMATS = [kuveytAccount, albarakaCard, albarakaAccount, almutaheda, aswaq, wasl];
+
+function readKnownFormat(text, { pages } = {}) {
   const format = FORMATS.find((item) => item.detect(text));
   if (!format) return null;
-  return { format: format.name, creditCard: !!format.creditCard, rows: format.parse(text) };
+  return { format: format.name, creditCard: !!format.creditCard, rows: format.parse(text, pages) };
 }
 
 module.exports = { readKnownFormat, FORMATS };

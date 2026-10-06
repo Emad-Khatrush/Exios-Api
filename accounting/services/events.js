@@ -7,6 +7,7 @@
 // An accounting problem (a missing rate, say) never blocks the operation: the event waits in the
 // queue with its error until it is fixed and retried.
 const { AccountingEvent } = require('../models');
+const { lockPeriod } = require('./periodLock');
 const { getConfig } = require('./config');
 const { runInTransaction } = require('./transaction');
 const operations = require('./posting/operations');
@@ -40,41 +41,62 @@ async function isLive() {
 }
 
 // Never throws: the operation that emitted it has already happened and must not fail because of it
-async function emitAccountingEvent(type, refId, payload = {}, user) {
+async function emitAccountingEvent(type, refId, payload = {}, user, { session } = {}) {
   try {
     if (!HANDLERS[type] || !refId) return null;
-    return await AccountingEvent.create({ type, refId, payload, userId: user?._id });
+    const event = { type, refId, payload, userId: user?._id };
+    if (session) {
+      await lockPeriod(session);
+      return (await AccountingEvent.create([event], { session }))[0];
+    }
+    return await AccountingEvent.create(event);
   } catch (error) {
     console.error(`[accounting] could not record ${type} ${refId}:`, error.message);
+    if (session) throw error;
     return null;
   }
 }
 
 // For screens that only know the visible order number (orderId), not the document _id
-async function emitOrdersByNumber(orderNumbers, user) {
+async function emitOrdersByNumber(orderNumbers, user, { session } = {}) {
   try {
     const Order = require('../../models/order');
-    const orders = await Order.find({ orderId: { $in: [...new Set(orderNumbers.filter(Boolean).map(String))] } }).select('_id').lean();
-    for (const order of orders) await emitAccountingEvent('order', order._id, {}, user);
+    const orders = await Order.find({ orderId: { $in: [...new Set(orderNumbers.filter(Boolean).map(String))] } }).select('_id').session(session || null).lean();
+    for (const order of orders) await emitAccountingEvent('order', order._id, {}, user, { session });
   } catch (error) {
     console.error('[accounting] could not record order changes:', error.message);
+    if (session) throw error;
   }
 }
 
-async function processEvent(event) {
+async function processEvent(event, { resetAttempts = false } = {}) {
   try {
-    const result = await runInTransaction((session) => HANDLERS[event.type](event.refId, event.payload || {}, { session, user: event.userId ? { _id: event.userId } : undefined }));
-    event.status = result?.skipped ? 'skipped' : 'done';
-    event.result = result;
-    event.lastError = undefined;
+    return await runInTransaction(async (session) => {
+      const current = await AccountingEvent.findById(event._id).session(session);
+      if (!current || !['pending', 'failed'].includes(current.status)) return current;
+      // Serialize workers on this event and commit its completion with its journal entry.
+      // A competing worker retries, then sees the terminal status without invoking the handler.
+      await AccountingEvent.updateOne({ _id: current._id }, { $inc: { processingVersion: 1 } }, { session });
+      const handler = HANDLERS[current.type];
+      if (!handler) throw new Error(`Unknown accounting event type: ${current.type}`);
+      const result = await handler(current.refId, current.payload || {}, { session, user: current.userId ? { _id: current.userId } : undefined });
+      current.status = result?.skipped ? 'skipped' : 'done';
+      current.result = result;
+      current.lastError = undefined;
+      current.processedAt = new Date();
+      if (resetAttempts) current.attempts = 0;
+      await current.save({ session });
+      return current;
+    });
   } catch (error) {
-    event.attempts += 1;
-    event.status = 'failed';
-    event.lastError = error.message;
+    // Do not let a late failure overwrite an event another worker has already completed.
+    const patch = { $set: { status: 'failed', lastError: error.message, processedAt: new Date() } };
+    if (resetAttempts) patch.$set.attempts = 1;
+    else patch.$inc = { attempts: 1 };
+    return await AccountingEvent.findOneAndUpdate(
+      { _id: event._id, status: { $in: ['pending', 'failed'] } }, patch, { new: true }
+    ) || await AccountingEvent.findById(event._id);
   }
-  event.processedAt = new Date();
-  await event.save();
-  return event;
 }
 
 // Oldest first, so a deposit is always posted before the payment that spends it

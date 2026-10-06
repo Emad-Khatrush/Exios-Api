@@ -161,6 +161,41 @@ test('3-4. domestic transport: its cost shared over its own packages; the fee is
   expect(road).toMatchObject({ totalCost: 7000, packages: 1, weight: 10, feesBilled: 1000, feesRecognized: 1000, extraCostPerUnit: 700 });
 });
 
+test('trip profitability allocates leftover cents exactly like the ledger', async () => {
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [1, 2, 3].map(() => ({ weight: 1, price: 1 })) });
+  const flight = await newTrip(order.packageIds, 'air');
+  const truck = await newTrip(order.packageIds, 'domestic', 'benghazi');
+  await costBill(truck, 0.02, 'transport'); // two USD cents split over three equal packages
+  await tx((session) => syncOrder(order._id, { session }));
+
+  for (const packageId of order.packageIds) {
+    await pay(customer, order._id, [packageId], 1);
+    await deliver(order._id, packageId);
+  }
+
+  const { results } = await require('../services/reports/operations').tripProfitability({});
+  const report = results.find((row) => String(row.tripId) === String(flight));
+  expect(report.offices.reduce((total, office) => total + office.domesticCost, 0)).toBe(2);
+  expect(await balanceOf('510300', { tripId: truck })).toBe(2);
+});
+
+test('trip profitability allocates office cost cents without creating or losing value', async () => {
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, packages: [1, 2, 3].map(() => ({ weight: 1, price: 1 })) });
+  const flight = await newTrip(order.packageIds, 'air');
+  for (const [index, office] of ['benghazi', 'misrata', 'sabha'].entries()) {
+    await newTrip([order.packageIds[index]], 'domestic', office);
+  }
+  await costBill(flight, 0.02, 'shipping');
+
+  const { results } = await require('../services/reports/operations').tripProfitability({});
+  const report = results.find((row) => String(row.tripId) === String(flight));
+  expect(report.offices).toHaveLength(3);
+  expect(report.offices.reduce((total, office) => total + office.ownCost, 0)).toBe(report.totalCost);
+  expect(report.totalCost).toBe(2);
+});
+
 test('4. live: a wallet deduction noted "نقل داخلي" with no order is domestic shipping revenue (rule 76)', async () => {
   const customer = await newCustomer();
   const dep = await UserStatement.create({ user: customer, createdBy: oid(), description: 'إيداع', amount: 50, currency: 'USD', total: 0, paymentType: 'wallet', calculationType: '+', actionType: 'cash', office: 'tripoli', createdAt: new Date('2026-03-01') });
@@ -351,6 +386,30 @@ test('G. an Alipay transfer order: the yuan are sent in one step at the Alipay a
   expect(await balanceOf('130200')).toBe(98485); // 6500 / 6.6
   expect((await alipay.remittanceStatus(orderId)).suggestedCny).toBe(0);
   await expect(tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 500, day: '2026-02-03' }, { session, req }))).rejects.toThrow('يوان فقط');
+});
+
+test('concurrent Alipay remittances cannot spend the same yuan balance twice', async () => {
+  const alipay = require('../services/posting/alipay');
+  const { SupplierBill } = require('../models/documents');
+  const [broker] = await Vendor.create([{ name: 'Concurrent Alipay broker', type: 'service' }]);
+  const box = await account('110301');
+  const cashBox = await account('110101');
+  await tx((session) => alipay.createYuanPurchase({ vendorId: broker._id, day: '2026-02-01', fromAccountId: cashBox._id, amount: 100, toAccountId: box._id, cnyReceived: 1000 }, { session, req }));
+  const customer = await newCustomer();
+  const { insertedId: orderId } = await Order.collection.insertOne({
+    orderId: 'G-RACE', user: customer, placedAt: 'tripoli', isPayment: true, isRemittance: true, totalInvoice: 1000,
+    purchaseItems: [{ _id: oid(), description: 'Customer purchase', unitPrice: 1600, currency: 'CNY' }],
+    unsureOrder: false, isCanceled: false, paymentList: [], createdAt: new Date('2026-02-02'),
+  });
+  const send = (idempotencyKey) => tx((session) => alipay.sendRemittance(orderId, {
+    accountId: box._id, cny: 800, day: '2026-02-03', idempotencyKey,
+  }, { session, req }));
+
+  const outcomes = await Promise.allSettled([send('alipay-race-1'), send('alipay-race-2')]);
+  expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+  expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+  expect((await getBalance(box._id)).foreign).toBe(20000);
+  expect(await SupplierBill.countDocuments({ 'lines.orderId': orderId, status: 'posted', currency: 'CNY' })).toBe(1);
 });
 
 test('H. a purchase typed once (50$) that the bank charged in two lira payments is linked to both', async () => {

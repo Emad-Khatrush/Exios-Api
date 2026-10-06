@@ -120,6 +120,46 @@ test('2. a supplier bill owed, paid half in dollars and the rest in lira; a cred
   expect(await usd('530800')).toBe(20000);
 });
 
+test('2a. supplier payment allocations reject duplicates, negative values and fractional cents atomically', async () => {
+  const testVendor = await docs.Vendor.create({ name: 'Allocation checks', type: 'supplier' });
+  const bill = (await call(documents.createBill, { body: {
+    vendorId: String(testVendor._id), day, currency: 'USD',
+    lines: [{ description: 'Test bill', amount: 100, target: 'expense', accountId: String((await account('530800'))._id), office: 'tripoli' }],
+  } })).body;
+  const before = await usd('210200', { vendorId: testVendor._id });
+  const attempts = [
+    [{ billId: String(bill._id), amountUsd: 6000 }, { billId: String(bill._id), amountUsd: 6000 }],
+    [{ billId: String(bill._id), amountUsd: -1 }],
+    [{ billId: String(bill._id), amountUsd: 1.5 }],
+  ];
+  for (const allocations of attempts) {
+    await expect(create('payments', { vendorId: String(testVendor._id), day, fromAccountId: String(usdBank._id), amount: 120, allocations })).rejects.toThrow();
+    expect(await usd('210200', { vendorId: testVendor._id })).toBe(before);
+  }
+  await cancel('AccountingSupplierBill', bill._id);
+  await expectConsistent('rejected supplier allocations');
+});
+
+test('2b. concurrent supplier credit notes cannot exceed the original bill', async () => {
+  const testVendor = await docs.Vendor.create({ name: 'Concurrent credit notes', type: 'supplier' });
+  const expense = await account('531700');
+  const bill = (await call(documents.createBill, { body: {
+    vendorId: String(testVendor._id), day, currency: 'USD',
+    lines: [{ description: 'Original bill', amount: 100, target: 'expense', accountId: String(expense._id), office: 'tripoli' }],
+  } })).body;
+  const makeCreditNote = () => call(documents.createBill, { body: {
+    vendorId: String(testVendor._id), day, currency: 'USD', isCreditNote: true, originalBillId: String(bill._id),
+    lines: [{ description: 'Concurrent return', amount: 60, target: 'expense', accountId: String(expense._id), office: 'tripoli' }],
+  } });
+
+  const outcomes = await Promise.allSettled([makeCreditNote(), makeCreditNote()]);
+  expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+  expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+  expect(await docs.SupplierBill.countDocuments({ originalBillId: bill._id, status: 'posted' })).toBe(1);
+  expect(await require('../services/posting/payables').apBalance(require('../services/posting/payables').billKey(bill._id))).toBe(4000);
+  await expectConsistent('concurrent supplier credit notes');
+});
+
 test('3. yuan bought from a broker: arrived at once, and pending then completed', async () => {
   const broker = await docs.Vendor.create({ name: 'وصل', type: 'service' });
   await create('yuan-purchases', { vendorId: String(broker._id), day, fromAccountId: String(usdBank._id), amount: 1000, toAccountId: String(alipay._id), cnyReceived: 6600 });

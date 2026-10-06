@@ -46,6 +46,13 @@ const journalEntrySchema = new Schema({
   // Claim entries of a cancelled or deleted order that net to zero: hidden with the cancelled ones
   hiddenWithCancel: { type: Boolean, default: false },
   lines: { type: [lineSchema], required: true },
+  // Bank statement reconciliation can match one journal entry once per cash account. Written
+  // transactionally to prevent concurrent statement lines from claiming the same movement.
+  bankMatchedAccounts: [{ type: Schema.Types.ObjectId, ref: 'AccountingAccount' }],
+  // Contention point for concurrent nettings against the same customer receivable claim.
+  claimAllocationVersion: { type: Number, default: 0 },
+  // Contention point for concurrent repayments against the company loan balance.
+  loanAllocationVersion: { type: Number, default: 0 },
   totalDebit: Number,
   attachments: [{
     filename: String,

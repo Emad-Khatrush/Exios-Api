@@ -3,17 +3,13 @@
 // the lock date, unless the user is an owner. Owners' changes are reversed on the first open day
 // as usual.
 const ErrorHandler = require('../../utils/errorHandler');
-const { getConfig } = require('./config');
+const { AccountingSettings } = require('../models');
+const { lockPeriod } = require('./periodLock');
 const { isOwner } = require('./access');
 const { toDay } = require('./dates');
 
-async function assertOpenPeriod(user, date) {
-  let lockDate;
-  try {
-    lockDate = (await getConfig()).settings?.lockDate;
-  } catch {
-    return;
-  }
+async function assertOpenPeriod(user, date, { session } = {}) {
+  const lockDate = (session ? await lockPeriod(session) : await AccountingSettings.findOne({ key: 'main' }).lean())?.lockDate;
   if (!lockDate || !date) return;
   let day;
   try {
@@ -27,8 +23,8 @@ async function assertOpenPeriod(user, date) {
 }
 
 // Cancelling a posted accounting document dated in a closed period: the owner only
-async function assertOwnerIfLocked(user, day) {
-  const { settings } = await getConfig();
+async function assertOwnerIfLocked(user, day, { session } = {}) {
+  const settings = session ? await lockPeriod(session) : await AccountingSettings.findOne({ key: 'main' }).lean();
   if (!settings?.lockDate || !day || day > settings.lockDate) return;
   if (await isOwner(user)) return;
   throw new ErrorHandler(403, `المستند بتاريخ ${day} في فترة مقفلة (حتى ${settings.lockDate}). إلغاؤه للمالك فقط.`);

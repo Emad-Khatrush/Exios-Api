@@ -9,7 +9,7 @@ const { isDay, monthOf } = require('../dates');
 const { logAudit } = require('../audit');
 const {
   fail, currencyOf, isForeign, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
-  nextDocNumber, findExisting, officeExists, resolveAccount,
+  nextDocNumber, findExisting, officeExists, resolveAccount, lockPostingAccounts,
 } = require('./common');
 const { getBalance, valueOutflow } = require('../carrying');
 
@@ -43,6 +43,33 @@ async function apBalance(apKey, session) {
 const billKey = (billId) => `BILL:${billId}`;
 const advanceKey = (vendorId) => `ADV:${vendorId}`;
 
+function normalizeAllocations(input) {
+  if (input == null) return [];
+  if (!Array.isArray(input)) throw fail('Invalid invoice allocations');
+  const seen = new Set();
+  return input.map((allocation) => {
+    const raw = Number(allocation?.amountUsd);
+    if (!mongoose.isValidObjectId(allocation?.billId) || !Number.isSafeInteger(raw) || raw <= 0) {
+      throw fail('Each allocation needs a bill and a positive whole-cent amount');
+    }
+    const id = String(allocation.billId);
+    if (seen.has(id)) throw fail('Do not repeat a bill in allocations; combine it into one line');
+    seen.add(id);
+    return { billId: toId(id), amountUsd: raw };
+  });
+}
+
+// Concurrent allocations must contend on the same bill document, so a transaction retry
+// rechecks the balance after the first payment has committed.
+async function lockBillAllocation(bill, session) {
+  const result = await SupplierBill.updateOne(
+    { _id: bill._id, status: 'posted' },
+    { $inc: { allocationVersion: 1 } },
+    { session },
+  );
+  if (result.modifiedCount !== 1) throw fail('Bill is no longer available for allocation');
+}
+
 async function payableAccountFor(vendor) {
   return resolveAccount(vendor.type === 'carrier' ? 'payable_carriers' : 'payable_suppliers');
 }
@@ -73,15 +100,21 @@ async function validateBillInput(input, session) {
     if (line.target === 'order') {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('placedAt').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
+      const available = await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      if (available.modifiedCount !== 1) throw fail('Order was deleted');
     }
     if (line.target === 'customs') {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('paymentList._id').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
+      const available = await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      if (available.modifiedCount !== 1) throw fail('Order was deleted');
       if (!line.packageId || !order.paymentList.id(line.packageId)) throw fail(`${where}: اختر الطرد الذي خُلِّص`);
     }
     if (line.target === 'trip') {
       const trip = line.tripId && mongoose.isValidObjectId(line.tripId) && await Inventory.findById(line.tripId).select('inventoryType').session(session);
       if (!trip) throw fail(`${where}: الرحلة غير موجودة`);
+      const available = await Inventory.updateOne({ _id: trip._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      if (available.modifiedCount !== 1) throw fail('Trip was deleted');
       // Warehouses only track packages; they never carry costs (spec 4.3)
       if (trip.inventoryType !== 'inventoryGoods') throw fail(`${where}: هذا مخزن وليس رحلة؛ لا تُحمَّل عليه تكاليف`);
     }
@@ -233,8 +266,11 @@ async function postBill(bill, { session, user, sync }) {
   if (bill.isCreditNote) {
     // A return: less owed to the vendor, less cost on the same targets
     lines.forEach((line) => { line.credit = line.debit; line.debit = 0; });
-    const originalOpen = await apBalance(apKey, session);
     const original = await SupplierBill.findById(bill.originalBillId).session(session);
+    // Concurrent credit notes must serialize on their original bill, just like concurrent
+    // payment allocations. Otherwise two transactions can both observe the same remaining cap.
+    await lockBillAllocation(original, session);
+    const originalOpen = await apBalance(apKey, session);
     const alreadyCredited = (await SupplierBill.find({ originalBillId: original._id, status: 'posted', _id: { $ne: bill._id } }).session(session))
       .reduce((sum, note) => sum + (note.totalUsd || 0), 0);
     if (totalUsd > original.totalUsd - alreadyCredited) throw fail('مبلغ الإشعار الدائن أكبر من المتبقي من الفاتورة الأصلية');
@@ -354,7 +390,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   if (!vendor) throw fail('اختر المورد');
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
 
-  const allocations = (input.allocations || []).filter((a) => Number(a.amountUsd) > 0).map((a) => ({ billId: toId(a.billId), amountUsd: Math.round(Number(a.amountUsd)) }));
+  const allocations = normalizeAllocations(input.allocations);
   const lines = [];
   const bills = [];
   let allocated = 0;
@@ -363,6 +399,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     bills.push(bill);
     if (!bill || bill.status !== 'posted' || bill.isCreditNote) throw fail('فاتورة غير صالحة في التخصيص');
     if (String(bill.vendorId) !== String(vendor._id)) throw fail(`الفاتورة ${bill.number} لمورد آخر`);
+    await lockBillAllocation(bill, session);
     const open = await apBalance(billKey(bill._id), session);
     if (allocation.amountUsd > open) throw fail(`المبلغ المخصص للفاتورة ${bill.number} أكبر من المتبقي عليها (${open / 100}$)`);
     allocated += allocation.amountUsd;
@@ -395,6 +432,9 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     if (!from.isCash && !isEmployeeAdvance && !input.isHistorical) throw fail('ادفع من خزينة أو بنك أو عهدة موظف');
     if (isEmployeeAdvance && !input.employeeId) throw fail('اختر الموظف صاحب العهدة');
     const currency = currencyOf(from);
+    const { count } = await require('../config').getConfig();
+    const beforeCount = !!count && (input.day < count.day || (input.day === count.day && count.endOfDay));
+    if (!input.isHistorical && !beforeCount) await lockPostingAccounts([from], session);
     if (requireCurrency && requireCurrency !== currency) throw fail(`حساب الدفع بعملة ${currency} والفاتورة بعملة ${requireCurrency}`);
     const minor = await toCurrencyMinor(input.amount, currency);
     if (!minor) throw fail('مبلغ الدفعة مطلوب');
@@ -486,9 +526,10 @@ async function createReceipt(input, { session, req, user }) {
   const rates = new RateBook(session);
   const usd = await rates.toUsd(minor, currency, input.day, input.rate);
 
-  const allocations = (input.allocations || []).filter((a) => Number(a.amountUsd) > 0).map((a) => ({ billId: toId(a.billId), amountUsd: Math.round(Number(a.amountUsd)) }));
+  const allocations = normalizeAllocations(input.allocations);
   const lines = [moneyLine(to, 'debit', minor, usd, { label: `استلام من المورد ${vendor.name}` })];
   let allocated = 0;
+  const allocatedBillIds = new Set();
   for (const allocation of allocations) {
     // A credit note is posted on its original bill: a bill paid and then credited leaves the
     // vendor owing us on that bill (a debit balance on its key)
@@ -496,16 +537,21 @@ async function createReceipt(input, { session, req, user }) {
     const bill = picked?.isCreditNote ? await SupplierBill.findById(picked.originalBillId).session(session) : picked;
     if (!bill || bill.status !== 'posted') throw fail('اختر فاتورة أو إشعاراً دائناً مُرحَّلاً');
     if (String(bill.vendorId) !== String(vendor._id)) throw fail(`الفاتورة ${bill.number} لمورد آخر`);
+    if (allocatedBillIds.has(String(bill._id))) throw fail('لا تخصص الاسترداد مرتين على الفاتورة الأصلية');
+    allocatedBillIds.add(String(bill._id));
+    await lockBillAllocation(bill, session);
     const owed = -(await apBalance(billKey(bill._id), session));
     if (allocation.amountUsd > owed) throw fail(`المورد مدين لنا على ${bill.number} بـ${Math.max(owed, 0) / 100}$ فقط`);
     allocated += allocation.amountUsd;
     allocation.billId = bill._id;
     lines.push({ accountId: bill.payableAccountId, credit: allocation.amountUsd, vendorId: vendor._id, apKey: billKey(bill._id), label: `استرداد على ${bill.number}` });
   }
-  if (allocated > usd) throw fail('المبالغ المخصصة أكبر من المبلغ المستلم');
+  const exchangeDifference = input.differenceTo === 'exchange' && allocated > 0;
+  if (allocated > usd && !exchangeDifference) throw fail('المبالغ المخصصة أكبر من المبلغ المستلم');
   const payable = await payableAccountFor(vendor);
-  const advance = usd - allocated;
+  const advance = exchangeDifference ? 0 : usd - allocated;
   if (advance > 0) lines.push({ accountId: payable._id, credit: advance, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'من رصيد المورد' });
+  if (exchangeDifference) await addFxLine(lines, to.office, 'فرق صرف استرداد المورد');
 
   const [doc] = await SupplierReceipt.create([{
     vendorId: vendor._id, day: input.day, toAccountId: to._id, currency, amount: Number(input.amount), rate: input.rate,
@@ -526,5 +572,5 @@ async function createReceipt(input, { session, req, user }) {
 
 module.exports = {
   createReceipt,
-  syncBillTargets, apBalance, billKey, advanceKey, createBill, updateDraftBill, postDraftBill, deleteDraftBill, createPayment, validateBillInput,
+  syncBillTargets, apBalance, billKey, advanceKey, lockBillAllocation, createBill, updateDraftBill, postDraftBill, deleteDraftBill, createPayment, validateBillInput,
 };

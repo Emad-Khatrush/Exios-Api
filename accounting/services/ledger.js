@@ -1,5 +1,6 @@
 const ErrorHandler = require('../../utils/errorHandler');
-const { JournalEntry, Journal } = require('../models');
+const { Account, JournalEntry, Journal } = require('../models');
+const { lockPeriod } = require('./periodLock');
 const { getConfig } = require('./config');
 const { resolveAccount } = require('./roles');
 const { assertInTransaction } = require('./transaction');
@@ -145,7 +146,9 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
   const existing = await JournalEntry.findOne({ eventKey: input.eventKey }).session(session);
   if (existing) return existing;
 
-  const config = await getConfig();
+  const settings = await lockPeriod(session);
+  const cached = await getConfig();
+  const config = { ...cached, settings };
   if (!config.settings) throw new ErrorHandler(400, 'النظام المحاسبي غير مُعدّ بعد. شغّل الإعداد أولاً.');
 
   if (!Array.isArray(input.lines) || input.lines.length < 2) {
@@ -157,6 +160,18 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
   }
   const notes = [...(input.notes || [])];
   lines = await beforeCountLines(input, lines, config, notes);
+
+  // Every journal movement on a cash account contends on the same transactional mutex. This
+  // serializes cash inflows and outflows across screens, including those with no balance check.
+  const cashAccountIds = [...new Set(lines
+    .filter((line) => config.accountsById.get(String(line.accountId))?.isCash)
+    .map((line) => String(line.accountId)))].sort();
+  for (const accountId of cashAccountIds) {
+    const locked = await Account.updateOne(
+      { _id: accountId, isActive: true }, { $inc: { postingVersion: 1 } }, { session },
+    );
+    if (locked.modifiedCount !== 1) throw new ErrorHandler(400, 'Cash account is no longer available');
+  }
 
   const totalDebit = lines.reduce((sum, line) => sum + line.debit, 0);
   const totalCredit = lines.reduce((sum, line) => sum + line.credit, 0);

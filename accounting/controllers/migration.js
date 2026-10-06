@@ -1,14 +1,15 @@
 const { MigrationRun } = require('../models');
 const { handle, badRequest, notFound, isObjectId } = require('./util');
 const { getConfig } = require('../services/config');
-const { isDay, today } = require('../services/dates');
+const { isDay, today, addDays } = require('../services/dates');
 const { runInTransaction } = require('../services/transaction');
 const { logAudit } = require('../services/audit');
 const migration = require('../services/migration');
 
 module.exports.overview = handle(async (req, res) => {
-  const { settings } = await getConfig();
-  res.json({ ...(await migration.inventory()), migrationDate: settings?.migrationDate || null, liveEnabled: !!settings?.liveEnabled });
+  const { settings, count } = await getConfig();
+  res.json({ ...(await migration.inventory()), migrationDate: settings?.migrationDate || null, liveEnabled: !!settings?.liveEnabled,
+    openingCountDay: count?.day || null, operationalStartDate: count?.endOfDay ? addDays(count.day, 1) : count?.day || null });
 });
 
 module.exports.costTemplate = handle(async (req, res) => {

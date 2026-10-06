@@ -116,8 +116,9 @@ async function runSetup({ user } = {}) {
   }
 
   for (const vendor of defaults.VENDORS) {
-    if (await Vendor.exists({ seedKey: vendor.seedKey })) report.existing++;
-    else { await Vendor.create(vendor); created(`vendor ${vendor.name}`); }
+    const result = await require('./merchantSetup').ensureVendor(vendor);
+    if (result.created) created(`vendor ${vendor.name}`);
+    else report.existing++;
   }
 
   for (const [index, type] of defaults.EXPENSE_TYPES.entries()) {

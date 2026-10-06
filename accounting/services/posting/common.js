@@ -1,6 +1,7 @@
 // Building blocks shared by every posting function: currency conversion, valuing money that
 // leaves an account at its average carrying rate (spec 2.4), the FX line, document numbers.
 const ErrorHandler = require('../../../utils/errorHandler');
+const { Account } = require('../../models');
 const { getConfig } = require('../config');
 const { resolveAccount } = require('../roles');
 const { getRate, markRateUsed } = require('../rates');
@@ -10,6 +11,23 @@ const { nextSeq } = require('../counter');
 const { yearOf, toDay } = require('../dates');
 
 const fail = (message) => new ErrorHandler(400, message);
+
+// Serialize balance-sensitive postings that use the same cash or staff-advance account.
+async function lockPostingAccounts(accounts, session) {
+  const unique = [...new Map(accounts.filter(Boolean).map((account) => [String(account._id), account])).values()]
+    .sort((a, b) => String(a._id).localeCompare(String(b._id)));
+  for (const account of unique) {
+    const result = await Account.updateOne(
+      { _id: account._id, isActive: true }, { $inc: { postingVersion: 1 } }, { session },
+    );
+    if (result.modifiedCount !== 1) throw fail(`Account ${account.name} is no longer available`);
+  }
+}
+
+async function isBeforeCashCount(day) {
+  const { count } = await getConfig();
+  return !!count && (day < count.day || (day === count.day && count.endOfDay));
+}
 
 // Accounts with no currency are kept in USD only
 const currencyOf = (account) => account.currency || USD;
@@ -136,6 +154,8 @@ module.exports = {
   valueOut,
   moneyLine,
   addFxLine,
+  lockPostingAccounts,
+  isBeforeCashCount,
   nextDocNumber,
   findExisting,
   officeExists,

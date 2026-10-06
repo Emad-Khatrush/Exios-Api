@@ -1,3 +1,4 @@
+const { lockWalletOwner } = require('./walletLock');
 // === Helper Functions ===
 const Orders = require('../models/order');
 const ErrorHandler = require('../utils/errorHandler');
@@ -79,7 +80,7 @@ function withCalculatedRate(payment, totalCost) {
 // feeMode 'separate' (the default) a fee in dinars is paid from the dinar wallet on its own, beside
 // the shipping; with 'usd' it is converted at today's rate and paid with the shipping. Either way
 // its dollar value is refreshed at today's rate first, so the books and the wallet agree.
-async function loadDeliverablePackages(customerId, selectedPackages, { feeMode = 'separate' } = {}) {
+async function loadDeliverablePackages(customerId, selectedPackages, { feeMode = 'separate', session } = {}) {
   const seen = new Set();
   const packages = [];
   const feesLYD = [];
@@ -90,7 +91,7 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
     if (!packageId || seen.has(packageId)) continue;
     seen.add(packageId);
 
-    const order = await Orders.findOne({ orderId: selected.orderId, user: customerId, isCanceled: { $ne: true } });
+    const order = await Orders.findOne({ orderId: selected.orderId, user: customerId, isCanceled: { $ne: true } }).session(session);
     const item = order?.paymentList?.id(packageId);
     if (!item) {
       throw new ErrorHandler(400, `Package ${selected?.trackingNumber || packageId} was not found for this customer`);
@@ -111,12 +112,12 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
       if (fee.currency === 'LYD') {
         if (todayRate === null) {
           const ExchangeRate = require('../models/exchangeRate');
-          todayRate = Number((await ExchangeRate.findOne({ fromCurrency: 'usd' }).lean())?.rate) || 0;
+          todayRate = Number((await ExchangeRate.findOne({ fromCurrency: 'usd' }).session(session).lean())?.rate) || 0;
           if (!todayRate) throw new ErrorHandler(400, 'No dinar rate in the settings to price the package fees');
         }
         const usd = roundToTwo(Number(fee.amount) / todayRate);
         if (usd !== Number(fee.usd)) {
-          await Orders.updateOne({ _id: order._id, 'paymentList._id': item._id }, { $set: { [`paymentList.$.deliveredPackages.${field}.usd`]: usd } });
+          await Orders.updateOne({ _id: order._id, 'paymentList._id': item._id }, { $set: { [`paymentList.$.deliveredPackages.${field}.usd`]: usd } }, { session });
         }
         if (feeMode === 'usd') feeUSD += usd;
         else feesLYD.push({ packageId, orderId: order.orderId, orderMongoId: order._id, trackingNumber: item.deliveredPackages?.trackingNumber || '', amount: Number(fee.amount), rate: todayRate, field });
@@ -159,8 +160,25 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
   return { packages, totalCost, feesLYD, totalFeeLYD };
 }
 
-async function getUserWalletMap(userId) {
-  const wallets = await Wallet.find({ user: userId });
+// Claim packages before any wallet movement. A competing transaction conflicts and retries,
+// then sees the package already received instead of charging it again.
+async function claimPackagesForDelivery(customerId, selectedPackages, session) {
+  for (const selected of selectedPackages) {
+    const claimed = await Orders.updateOne({
+      orderId: selected.orderId,
+      user: customerId,
+      isCanceled: { $ne: true },
+      unsureOrder: { $ne: true },
+      paymentList: { $elemMatch: { _id: new ObjectId(selected.id), 'status.received': { $ne: true } } },
+    }, { $set: { 'paymentList.$.status.received': true } }, { session });
+    if (claimed.modifiedCount !== 1) {
+      throw new ErrorHandler(409, `Package ${selected.trackingNumber || selected.id} was already delivered. Refresh and try again.`);
+    }
+  }
+}
+
+async function getUserWalletMap(userId, session) {
+  const wallets = await Wallet.find({ user: userId }).session(session);
   const map = {};
   wallets.forEach(w => map[w.currency] = w.balance);
   return map;
@@ -195,7 +213,7 @@ function checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD = 0) {
   }
 }
 
-async function processPackagesPayment(req, res, next, id, selectedPackages, payment) {
+async function processPackagesPayment(req, res, next, id, selectedPackages, payment, { session } = {}) {
   let remainingLYD = +(payment.amountLYD || 0);
   let remainingUSD = +(payment.amountUSD || 0);
   const rate = +(payment.rate || 0);
@@ -232,20 +250,20 @@ async function processPackagesPayment(req, res, next, id, selectedPackages, paym
     }
 
     if (usdToDeduct > 0) {
-      await useWalletBalance(req, res, next, id, pkg, +usdToDeduct.toFixed(2), 'USD', rate, isLast);
+      await useWalletBalance(req, res, next, id, pkg, +usdToDeduct.toFixed(2), 'USD', rate, isLast, session);
       remainingUSD = +(remainingUSD - usdToDeduct).toFixed(2);
     }
     
     if (lydToDeduct > 0) {
       // Safeguard: Ensure rate is not 0 before calling LYD deduction
       const currentRate = rate > 0 ? rate : 1; 
-      await useWalletBalance(req, res, next, id, pkg, +lydToDeduct.toFixed(2), 'LYD', currentRate, isLast);
+      await useWalletBalance(req, res, next, id, pkg, +lydToDeduct.toFixed(2), 'LYD', currentRate, isLast, session);
       remainingLYD = +(remainingLYD - lydToDeduct).toFixed(2);
     }
   }
 }
 
-async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, isLast) {
+async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate, isLast, session) {
   try {
     // Rounded, not truncated: Math.trunc(1.13 * 100) / 100 gives 1.12
     const amountToDeduct = roundToTwo(amount);
@@ -255,19 +273,19 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
     const wallet = await Wallet.findOneAndUpdate(
       { user: id, currency, balance: { $gte: amountToDeduct - BALANCE_EPSILON } },
       { $inc: { balance: -amountToDeduct } },
-      { new: true }
+      { new: true, session }
     );
     if (!wallet) throw new ErrorHandler(400, `Balance not enough for ${currency} payment`);
-    await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: Math.max(0, roundToTwo(wallet.balance)) });
+    await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: Math.max(0, roundToTwo(wallet.balance)) }, { session });
 
     // FIX: Handle cases where there is no previous statement for this currency
-    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
+    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1).session(session);
     
     // SAFE ACCESS: If no statement exists, previousTotal is 0
     const previousTotal = lastUserStatement.length > 0 ? Number(lastUserStatement[0].total || 0) : 0;
     const statementTotal = roundToTwo(previousTotal - amountToDeduct);
 
-    const userStatement = await UserStatement.create({
+    const statementData = {
       user: id,
       createdBy: req.user,
       calculationType: '-',
@@ -280,11 +298,14 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       note: `${pkg?.orderId || ''}`,
       actionType: 'wallet',
       ...(currency === 'LYD' && Number(rate) > 0 && { rate: Number(rate) }),
-    });
+    };
+    const userStatement = session
+      ? (await UserStatement.create([statementData], { session }))[0]
+      : await UserStatement.create(statementData);
 
-    const order = await Orders.findOne({ orderId: pkg.orderId }).populate('user');
+    const order = await Orders.findOne({ orderId: pkg.orderId }).session(session).populate('user');
     if (order) {
-      await OrderPaymentHistory.create({
+      const paymentData = {
         createdBy: req.user,
         customer: order.user ? order.user._id : id,
         order: order._id,
@@ -297,30 +318,33 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
         list: [pkg],
         note: `(Prev Balance: ${previousTotal} ${currency})`,
         statementId: userStatement._id,
-      });
+      };
+      if (session) await OrderPaymentHistory.create([paymentData], { session });
+      else await OrderPaymentHistory.create(paymentData);
     }
     const target = pkg?.feeOnly
       ? { arKeys: [`SHP:${order?._id}:${pkg.id}:${(FEE_KEYS.find((f) => f.field === pkg.feeField) || FEE_KEYS[0]).suffix}`] }
       : pkg?.payKeys ? { arKeys: pkg.payKeys } : { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) };
-    await emitAccountingEvent('statement', userStatement._id, { target }, req.user);
+    await emitAccountingEvent('statement', userStatement._id, { target }, req.user, { session });
 
     return userStatement;
   } catch (error) {
     console.error(`🔥 Currency Switch Error (${currency}):`, error.message);
-    throw error.statusCode ? error : new ErrorHandler(500, error.message);
+    // Keep MongoDB error labels so withTransaction can retry write conflicts.
+    throw error;
   }
 }
 
 // The transport fees in dinars, each paid from the dinar wallet on its own (spec v8)
-async function payFeesLYD(req, res, next, id, feesLYD) {
+async function payFeesLYD(req, res, next, id, feesLYD, session) {
   for (const fee of feesLYD || []) {
-    await useWalletBalance(req, res, next, id, { id: fee.packageId, orderId: fee.orderId, trackingNumber: fee.trackingNumber, feeOnly: true, feeField: fee.field }, fee.amount, 'LYD', fee.rate, false);
+    await useWalletBalance(req, res, next, id, { id: fee.packageId, orderId: fee.orderId, trackingNumber: fee.trackingNumber, feeOnly: true, feeField: fee.field }, fee.amount, 'LYD', fee.rate, false, session);
   }
 }
 
-async function updateOrderStatuses(selectedPackages) {
+async function updateOrderStatuses(selectedPackages, session) {
   for (const selected of selectedPackages) {
-    const order = await Orders.findOne({ orderId: selected.orderId });
+    const order = await Orders.findOne({ orderId: selected.orderId }).session(session);
     const item = order.paymentList.id(selected.id);
 
     if (item) {
@@ -348,14 +372,15 @@ async function updateOrderStatuses(selectedPackages) {
     // Otherwise some packages have not even reached the warehouse yet: the order is not
     // finished (it used to be marked finished here) and its status stays as it is.
 
-    await order.save();
+    await order.save({ session });
   }
 }
 
-async function createInvoice(user, customerId, selectedPackages, payment, totalCost) {
+async function createInvoice(user, customerId, selectedPackages, payment, totalCost, session) {
   const latestInvoice = await Invoices.findOne({})
     .sort({ referenceId: -1 })
     .select('referenceId')
+    .session(session)
     .lean();
 
   const nextReferenceId = latestInvoice?.referenceId ? latestInvoice.referenceId + 1 : 1;
@@ -387,10 +412,11 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
     }))
   };
 
-  await Invoices.create(invoice);
+  if (session) await Invoices.create([invoice], { session });
+  else await Invoices.create(invoice);
 }
 
-async function cleanUpInventory(selectedPackages) {
+async function cleanUpInventory(selectedPackages, session) {
   // Mongoose's query builder (Model.updateMany included) silently no-ops
   // this $pull on real warehouse documents - the raw driver, bypassing it
   // entirely, is the only reliable way to actually remove the array element
@@ -406,21 +432,21 @@ async function cleanUpInventory(selectedPackages) {
           ]
         }
       }
-    }
+    }, { session }
   );
 }
 
 // The wallet line a wallet payment took its money with. Payments saved before the link existed
 // are matched as the historical migration matches them: same customer, currency and amount, a
 // deduction within 10 minutes. Cancelling then reverses that line's entry exactly.
-async function statementOfPayment(payment) {
+async function statementOfPayment(payment, session) {
   if (payment?.statementId) return payment.statementId;
   if (!payment || payment.paymentType !== 'wallet') return undefined;
   const time = new Date(payment.createdAt).getTime();
   const candidates = await UserStatement.find({
     user: payment.customer?._id || payment.customer, currency: payment.currency, calculationType: '-',
     createdAt: { $gte: new Date(time - 10 * 60 * 1000), $lte: new Date(time + 10 * 60 * 1000) },
-  }).select('amount createdAt').lean();
+  }).select('amount createdAt').session(session).lean();
   const match = candidates
     .filter((s) => Math.abs(Number(s.amount) - Number(payment.receivedAmount)) < 0.011)
     .sort((a, b) => Math.abs(new Date(a.createdAt).getTime() - time) - Math.abs(new Date(b.createdAt).getTime() - time))[0];
@@ -429,8 +455,9 @@ async function statementOfPayment(payment) {
 
 // Same steps as cancelling a wallet payment on an order: money back to the wallet,
 // a "+" cancellation statement, then the payment record is removed
-async function refundWalletPayment(user, payment, description, note) {
-  const reverses = await statementOfPayment(payment);
+async function refundWalletPayment(user, payment, description, note, session) {
+  await lockWalletOwner(payment.customer, session);
+  const reverses = await statementOfPayment(payment, session);
   const amount = roundToTwo(Number(payment.receivedAmount || 0));
   const customerId = payment.customer;
   const { currency } = payment;
@@ -438,18 +465,18 @@ async function refundWalletPayment(user, payment, description, note) {
   const wallet = await Wallet.findOneAndUpdate(
     { user: customerId, currency },
     { $inc: { balance: amount } },
-    { new: true }
+    { new: true, session }
   );
   if (wallet) {
-    await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: roundToTwo(wallet.balance) });
+    await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: roundToTwo(wallet.balance) }, { session });
   } else {
-    await Wallet.create({ user: customerId, currency, balance: amount });
+    await Wallet.create([{ user: customerId, currency, balance: amount }], { session });
   }
 
-  const lastUserStatement = await UserStatement.find({ user: customerId, currency }).sort({ _id: -1 }).limit(1);
+  const lastUserStatement = await UserStatement.find({ user: customerId, currency }).sort({ _id: -1 }).limit(1).session(session);
   const previousTotal = lastUserStatement.length > 0 ? Number(lastUserStatement[0].total || 0) : 0;
 
-  const refundStatement = await UserStatement.create({
+  const refundData = {
     user: customerId,
     createdBy: user,
     calculationType: '+',
@@ -463,13 +490,16 @@ async function refundWalletPayment(user, payment, description, note) {
     // The payment's own rate: the amount given back is worth what the payment counted for
     ...(Number(payment.rate) > 0 && currency !== 'USD' && { rate: Number(payment.rate) }),
     actionType: 'cancellation',
-  });
+  };
+  const refundStatement = session
+    ? (await UserStatement.create([refundData], { session }))[0]
+    : await UserStatement.create(refundData);
 
   await emitAccountingEvent('statement', refundStatement._id, {
     reverses,
     target: { orderId: payment.order, category: payment.category, packageIds: (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
-  }, user);
-  await OrderPaymentHistory.deleteOne({ _id: payment._id });
+  }, user, { session });
+  await OrderPaymentHistory.deleteOne({ _id: payment._id }, { session });
   return amount;
 }
 
@@ -479,28 +509,28 @@ const INVOICE_PAYMENT_WINDOW_MS = 15 * 60 * 1000;
 // The delivery invoice a shipping payment belongs to (the same match cancelInvoicePackages makes),
 // or null. Such a payment is given back only by cancelling its invoice: deleting it alone would
 // leave the invoice saying the package was paid and handed over.
-async function deliveryInvoiceOf(payment, orderNumber) {
+async function deliveryInvoiceOf(payment, orderNumber, session) {
   if (!payment || payment.category !== 'receivedGoods' || payment.paymentType !== 'wallet' || !orderNumber) return null;
   const time = new Date(payment.createdAt).getTime();
   const invoices = await Invoices.find({
     isCanceled: { $ne: true },
     'list.orderId': orderNumber,
     createdAt: { $gte: new Date(time - 60 * 1000), $lte: new Date(time + INVOICE_PAYMENT_WINDOW_MS) },
-  }).select('referenceId list createdAt').lean();
+  }).select('referenceId list createdAt').session(session || null).lean();
   const ids = new Set((payment.list || []).map((p) => String(p?.id || p?._id || '')).filter(Boolean));
   const tracking = new Set((payment.list || []).map((p) => p?.trackingNumber).filter(Boolean));
   return invoices.find((invoice) => (invoice.list || []).some((pkg) => pkg.orderId === orderNumber
     && (ids.has(String(pkg.packageId || '')) || (pkg.trackingNumber && tracking.has(pkg.trackingNumber))))) || null;
 }
 
-async function cancelInvoicePackages(user, invoice) {
+async function cancelInvoicePackages(user, invoice, session) {
   const refunded = { USD: 0, LYD: 0 };
   const packages = [];
   const invoiceTime = new Date(invoice.createdAt).getTime();
 
   for (const pkg of invoice.list || []) {
     const summary = { trackingNumber: pkg.trackingNumber, orderId: pkg.orderId, refunds: [], statusUpdated: false };
-    const order = await Orders.findOne({ orderId: pkg.orderId });
+    const order = await Orders.findOne({ orderId: pkg.orderId }).session(session);
 
     if (order) {
       const packageId = String(pkg.packageId || '');
@@ -514,14 +544,15 @@ async function cancelInvoicePackages(user, invoice) {
           ...(ObjectId.isValid(packageId) ? [{ 'list.id': new ObjectId(packageId) }] : []),
           ...(pkg.trackingNumber ? [{ 'list.trackingNumber': pkg.trackingNumber }] : []),
         ],
-      });
+      }).session(session);
 
       for (const payment of payments) {
         const amount = await refundWalletPayment(
           user,
           payment,
           `إلغاء الفاتورة رقم #0${invoice.referenceId} واسترجاع قيمة شحن ${pkg.trackingNumber || ''} إلى المحفظة`,
-          `Invoice #0${invoice.referenceId} cancellation ${pkg.orderId || ''}`
+          `Invoice #0${invoice.referenceId} cancellation ${pkg.orderId || ''}`,
+          session
         );
         refunded[payment.currency] = roundToTwo((refunded[payment.currency] || 0) + amount);
         summary.refunds.push({ currency: payment.currency, amount });
@@ -546,7 +577,7 @@ async function cancelInvoicePackages(user, invoice) {
       // "وصلت البضائع" step
       order.orderStatus = order.isPayment ? 4 : 3;
       order.isFinished = false;
-      await order.save();
+      await order.save({ session });
     }
 
     packages.push(summary);
@@ -673,4 +704,4 @@ try {
 }
 
 module.exports = {
-  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, calculateRate, withCalculatedRate };
+  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, claimPackagesForDelivery, calculateRate, withCalculatedRate };

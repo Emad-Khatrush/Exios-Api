@@ -139,7 +139,9 @@ async function addCost(target, targetId, input, req) {
   const currency = payFrom ? (payFrom.currency || 'USD') : String(input.currency || 'USD');
   const rate = Number(input.rate) > 0 ? Number(input.rate) : undefined;
   const label = target === 'trip' ? 'مصروف رحلة' : 'مشتريات الطلب';
-  return runInTransaction((session) => createBill({
+  return runInTransaction(async (session) => {
+    await assertOpenPeriod(req.user, day, { session });
+    return createBill({
     vendorId, day, currency, rate, idempotencyKey: input.idempotencyKey || undefined,
     paidImmediatelyFrom: payFrom?._id, note: input.note, enteredFrom: target,
     lines: [{
@@ -147,7 +149,8 @@ async function addCost(target, targetId, input, req) {
       // A trip's cost by kind (spec v8): customs is a cost of the trip itself, shared by weight
       ...(target === 'trip' && ['shipping', 'customs', 'clearance', 'transport', 'other'].includes(input.costCategory) && { costCategory: input.costCategory }),
     }],
-  }, { session, req }));
+  }, { session, req });
+  });
 }
 
 const addTripCost = (tripId, input, req) => addCost('trip', tripId, input, req);
@@ -268,7 +271,10 @@ async function buildExpense(input, user, files) {
 
 async function createOfficeExpense(input, files, req) {
   const data = await buildExpense(input, req.user, files || []);
-  return runInTransaction((session) => createBill({ ...data, idempotencyKey: input.idempotencyKey || undefined }, { session, req }));
+  return runInTransaction(async (session) => {
+    await assertOpenPeriod(req.user, data.day, { session });
+    return createBill({ ...data, idempotencyKey: input.idempotencyKey || undefined }, { session, req });
+  });
 }
 
 async function loadExpense(id) {
@@ -290,6 +296,7 @@ async function updateOfficeExpense(id, input, files, req) {
     ...Object.fromEntries(Object.entries(input).filter(([field, value]) => value !== undefined && (value !== '' || field === 'note'))),
   }, req.user, files?.length ? files : old.attachments || []);
   return runInTransaction(async (session) => {
+    await assertOpenPeriod(req.user, data.day, { session });
     await cancelDocument('AccountingSupplierBill', old._id, { session, req, reason: 'تعديل من شاشة المصروفات' });
     const created = await createBill({ ...data, replaces: old._id }, { session, req });
     await SupplierBill.updateOne({ _id: old._id }, { $set: { replacedBy: created._id } }, { session });

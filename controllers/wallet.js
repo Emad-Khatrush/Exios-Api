@@ -14,7 +14,9 @@ const { lydRateLimits } = require('../accounting/services/walletRate');
 const { assertOpenPeriod } = require('../accounting/services/periodGuard');
 const { moneyAccount, assertDepositPlace } = require('../accounting/services/moneyAccounts');
 const { payOrderDebts, restoreOrderDebts } = require('../utils/debts');
-const { deliveryInvoiceOf, statementOfPayment } = require('../utils/helperApi');
+const { deliveryInvoiceOf, refundWalletPayment } = require('../utils/helperApi');
+const { runInTransaction } = require('../accounting/services/transaction');
+const User = require('../models/user');
 
 module.exports.getUserWallet = async (req, res, next) => {
   try {
@@ -235,13 +237,13 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, actionType, office } = req.body;
+    const amountValue = positiveWalletAmount(amount);
     await assertOpenPeriod(req.user, createdAt || new Date());
     // The account the money went into, when chosen (a bank, or a partner's current account such as Wasl)
     let accountId;
     if (req.body.accountId) accountId = (await moneyAccount(req.body.accountId, { currency, what: 'الحساب' }))._id;
     else await assertDepositPlace(office, currency, actionType);
 
-    const existWallet = await Wallet.findOne({ user: id, currency });
 
     const files = [];
     if (req.files) {
@@ -257,6 +259,13 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       }
     }
 
+    const userStatement = await runInTransaction(async (session) => {
+      await assertOpenPeriod(req.user, req.body.createdAt || new Date(), { session });
+    // A customer row exists even before the first wallet. Lock it so two first deposits
+    // cannot both decide to create a wallet for the same currency.
+    const customerLock = await User.updateOne({ _id: id }, { $inc: { walletPostingVersion: 1 } }, { session });
+    if (customerLock.matchedCount !== 1) throw new ErrorHandler(404, 'Customer not found');
+    const existWallet = await Wallet.findOne({ user: id, currency }).session(session);
     if (existWallet) {
       await Wallet.findOneAndUpdate(
         {
@@ -264,31 +273,31 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
           currency,
         },
         {
-          $inc: { balance: amount }
+          $inc: { balance: amountValue }
         },
         {
-          new: true, // Return the updated document
+          new: true, session,
         }
       );
     } else {
-      await Wallet.create({
+      await Wallet.create([{
         user: id,
-        balance: amount,
+        balance: amountValue,
         currency,
         createdAt
-      });
+      }], { session });
     }
     
-    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
-    const total = (lastUserStatement[0]?.total || 0) + Number(amount);
-    const userStatement = await UserStatement.create({
+    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1).session(session);
+    const total = (lastUserStatement[0]?.total || 0) + amountValue;
+    const [userStatement] = await UserStatement.create([{
       user: id,
       createdBy: req.user,
       calculationType: '+',
       paymentType: 'wallet',
       createdAt,
       description,
-      amount,
+      amount: amountValue,
       currency,
       total,
       note,
@@ -296,8 +305,10 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       office,
       accountId,
       actionType
+    }], { session });
+    await emitAccountingEvent('statement', userStatement._id, {}, req.user, { session });
+    return userStatement;
     });
-    await emitAccountingEvent('statement', userStatement._id, {}, req.user);
 
     res.status(200).json({
       createdAt: userStatement.createdAt
@@ -309,65 +320,32 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
 
 module.exports.cancelPayment = async (req, res, next) => {
   const { id } = req.params;
-  const { payment } = req.body;
+  const paymentId = req.body.payment?._id;
 
   try {
-    const savedPayment = await OrderPaymentHistory.findById(payment._id).lean();
-    if (!savedPayment) return next(new ErrorHandler(404, 'Payment not found'));
-    await assertOpenPeriod(req.user, savedPayment?.createdAt);
+    const outcome = await runInTransaction(async (session) => {
+    const savedPayment = await OrderPaymentHistory.findById(paymentId).session(session).lean();
+    if (!savedPayment || String(savedPayment.customer) !== String(id)) throw new ErrorHandler(404, 'Payment not found');
+    await assertOpenPeriod(req.user, savedPayment?.createdAt, { session });
     // A delivery payment is given back by cancelling its invoice, once, with the package status
-    const orderOfPayment = await Order.findById(savedPayment.order).select('orderId').lean();
-    const invoice = await deliveryInvoiceOf(savedPayment, orderOfPayment?.orderId);
+    const orderOfPayment = await Order.findById(savedPayment.order).select('orderId').session(session).lean();
+    const invoice = await deliveryInvoiceOf(savedPayment, orderOfPayment?.orderId, session);
     if (invoice) {
-      return next(new ErrorHandler(400, `هذه دفعة فاتورة التسليم رقم #0${invoice.referenceId}. ألغِ الفاتورة نفسها من صفحة الفواتير، فترجع القيمة للمحفظة مرة واحدة ويعود الطرد غير مستلم.`));
+      throw new ErrorHandler(400, `هذه دفعة فاتورة التسليم رقم #0${invoice.referenceId}. ألغِ الفاتورة نفسها من صفحة الفواتير، فترجع القيمة للمحفظة مرة واحدة ويعود الطرد غير مستلم.`);
     }
-    if (payment.paymentType !== 'wallet') {
-      await emitAccountingEvent('cashPaymentDeleted', payment._id, {}, req.user);
-      await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
-      return res.status(200).json({
-        createdAt: new Date()
-      });
+    // Serialize cancellations on this payment and trust only its persisted monetary fields.
+    await OrderPaymentHistory.deleteOne({ _id: savedPayment._id }, { session });
+    if (savedPayment.paymentType !== 'wallet') {
+      await emitAccountingEvent('cashPaymentDeleted', savedPayment._id, {}, req.user, { session });
+    } else {
+      await refundWalletPayment(req.user, savedPayment,
+        `الغاء عملية الدفع كود ${orderOfPayment?.orderId || ''} واسترجاع القيمة الى المحفظة`,
+        `${savedPayment.category || ''} Cancellation Refund`, session);
     }
-    await Wallet.findOneAndUpdate(
-      {
-        user: id,
-        currency: payment.currency,
-      },
-      {
-        $inc: { balance: payment.receivedAmount }
-      },
-      {
-        new: true, // Return the updated document
-      }
-    );
-    const lastUserStatement = await UserStatement.find({ user: id, currency: payment.currency }).sort({ _id: -1 }).limit(1);
-    const total = (lastUserStatement[0]?.total || 0) + Number(payment.receivedAmount);
-    const userStatement = await UserStatement.create({
-      user: id,
-      createdBy: req.user,
-      calculationType: '+',
-      paymentType: 'wallet',
-      createdAt: new Date(),
-      description: `${payment.createdBy.firstName} ${payment.createdBy.lastName} الغاء عملية الدفع كود ${payment.order.orderId} واسترجاع القيمة الى المحفظة من طرف `,
-      amount: payment.receivedAmount,
-      currency: payment.currency,
-      total,
-      note: `${payment.category} Cancellation Refund`,
-      attachments: payment.attachments,
-      // The payment's own rate: the amount given back is worth what the payment counted for
-      ...(Number(savedPayment.rate) > 0 && payment.currency !== 'USD' && { rate: Number(savedPayment.rate) }),
-      actionType: 'cancellation',
+    await restoreOrderDebts(savedPayment.debtPayments, { session });
+    return { createdAt: new Date() };
     });
-    await emitAccountingEvent('statement', userStatement._id, {
-      // Old payments have no link to their wallet line: it is found, so the reversal is exact
-      reverses: await statementOfPayment(savedPayment),
-      target: { orderId: savedPayment?.order, category: savedPayment?.category, packageIds: (savedPayment?.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
-    }, req.user);
-    await restoreOrderDebts(savedPayment?.debtPayments);
-    await OrderPaymentHistory.findOneAndDelete({ _id: payment._id });
-    res.status(200).json({
-      createdAt: userStatement.createdAt
-    });
+    res.status(200).json(outcome);
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 404, error.message));
   }
@@ -407,6 +385,14 @@ module.exports.verifyStatement = async (req, res, next) => {
 }
 
 const roundToTwo = (num) => Math.round(num * 100) / 100;
+const positiveWalletAmount = (value) => {
+  if (value === undefined || value === null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim())) {
+    throw new ErrorHandler(400, 'Amount must be greater than 0');
+  }
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) throw new ErrorHandler(400, 'Amount must be greater than 0');
+  return amount;
+};
 const signedAmount = (statement) => (statement.calculationType === '-' ? -1 : 1) * Number(statement.amount || 0);
 
 // Balance before the first inserted statement (usually 0)
@@ -415,7 +401,7 @@ const getOpeningBalance = (statementsAsc) => (
 );
 
 // New statements are appended to the last stored total, so keep the stored running totals in insert order
-const rebuildStatementTotals = async (statementsAsc, openingBalance) => {
+const rebuildStatementTotals = async (statementsAsc, openingBalance, session) => {
   let runningTotal = openingBalance;
   const updates = [];
   statementsAsc.forEach((item) => {
@@ -424,15 +410,17 @@ const rebuildStatementTotals = async (statementsAsc, openingBalance) => {
       updates.push({ updateOne: { filter: { _id: item._id }, update: { $set: { total: runningTotal } } } });
     }
   });
-  if (updates.length) await UserStatement.bulkWrite(updates);
+  if (updates.length) await UserStatement.bulkWrite(updates, { session });
 }
 
-const adjustWalletBalance = async (userId, currency, delta) => {
-  const wallet = await Wallet.findOneAndUpdate({ user: userId, currency }, { $inc: { balance: delta } }, { new: true });
-  if (!wallet) return { before: null, after: null };
+const adjustWalletBalance = async (userId, currency, delta, session) => {
+  const filter = { user: userId, currency };
+  if (delta < 0) filter.balance = { $gte: -delta };
+  const wallet = await Wallet.findOneAndUpdate(filter, { $inc: { balance: delta } }, { new: true, session });
+  if (!wallet) throw new ErrorHandler(400, 'Wallet missing or deposit money already spent. Cancel the payments made from it first.');
 
   const after = roundToTwo(wallet.balance);
-  await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: after });
+  await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: after }, { session });
   return { before: roundToTwo(after - delta), after };
 }
 
@@ -457,60 +445,59 @@ const POSTED_STATEMENT_FIELDS = ['createdAt', 'amount', 'office', 'actionType'];
 module.exports.deleteStatement = async (req, res, next) => {
   try {
     const { statementId, id } = req.params;
+    const result = await runInTransaction(async (session) => {
 
-    const statement = await UserStatement.findOne({ _id: statementId, user: id }).populate('createdBy', 'firstName lastName');
-    if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
-    // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
-    if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
-    const locked = protectedStatement(statement);
-    if (locked) return next(new ErrorHandler(400, locked));
-    await assertOpenPeriod(req.user, statement.createdAt);
-    // A deposit whose money was already spent cannot be taken back from the wallet
-    if (statement.calculationType === '+') {
-      const current = await Wallet.findOne({ user: id, currency: statement.currency }).lean();
-      if ((current?.balance || 0) - Number(statement.amount) < -0.001) return next(new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.'));
-    }
-
-    const { currency } = statement;
-    const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 });
-    const openingBalance = getOpeningBalance(allStatements);
-
-    // Archive first, so nothing is removed or changed if the archive cannot be written
-    const snapshot = statement.toObject();
-    const archived = await DeletedStatement.create({
-      originalId: statement._id,
-      user: statement.user,
-      currency,
-      statement: {
-        ...snapshot,
-        createdBy: statement.createdBy?._id || snapshot.createdBy,
-        createdByName: statement.createdBy?.firstName ? `${statement.createdBy.firstName} ${statement.createdBy.lastName || ''}`.trim() : undefined,
-      },
-      deletedBy: req.user._id,
-      deletedAt: new Date(),
-    });
-
-    await UserStatement.deleteOne({ _id: statement._id });
-    await emitAccountingEvent('statementDeleted', statement._id, {}, req.user);
-
-    // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
-    const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement));
-    await DeletedStatement.updateOne(
-      { _id: archived._id },
-      { $set: { walletBalanceBefore: wallet.before, walletBalanceAfter: wallet.after } }
-    );
-
-    await rebuildStatementTotals(
-      allStatements.filter((item) => String(item._id) !== String(statement._id)),
-      openingBalance
-    );
-
-    res.status(200).json({
-      results: {
-        deletedId: statement._id,
-        walletBalance: wallet.after,
+      const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session).populate('createdBy', 'firstName lastName');
+      if (!statement) throw new ErrorHandler(404, 'Statement not found');
+      // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
+      if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
+      const locked = protectedStatement(statement);
+      if (locked) throw new ErrorHandler(400, locked);
+      await assertOpenPeriod(req.user, statement.createdAt, { session });
+      // A deposit whose money was already spent cannot be taken back from the wallet
+      if (statement.calculationType === '+') {
+        const current = await Wallet.findOne({ user: id, currency: statement.currency }).session(session).lean();
+        if ((current?.balance || 0) - Number(statement.amount) < -0.001) throw new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.');
       }
+
+      const { currency } = statement;
+      const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 }).session(session);
+      const openingBalance = getOpeningBalance(allStatements);
+
+      // Archive first, so nothing is removed or changed if the archive cannot be written
+      const snapshot = statement.toObject();
+      const [archived] = await DeletedStatement.create([{
+        originalId: statement._id,
+        user: statement.user,
+        currency,
+        statement: {
+          ...snapshot,
+          createdBy: statement.createdBy?._id || snapshot.createdBy,
+          createdByName: statement.createdBy?.firstName ? `${statement.createdBy.firstName} ${statement.createdBy.lastName || ''}`.trim() : undefined,
+        },
+        deletedBy: req.user._id,
+        deletedAt: new Date(),
+      }], { session });
+
+      await UserStatement.deleteOne({ _id: statement._id }, { session });
+      await emitAccountingEvent('statementDeleted', statement._id, {}, req.user, { session });
+
+      // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
+      const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement), session);
+      await DeletedStatement.updateOne(
+        { _id: archived._id },
+        { $set: { walletBalanceBefore: wallet.before, walletBalanceAfter: wallet.after } },
+        { session }
+      );
+
+      await rebuildStatementTotals(
+        allStatements.filter((item) => String(item._id) !== String(statement._id)),
+        openingBalance, session
+      );
+
+      return { deletedId: statement._id, walletBalance: wallet.after };
     });
+    res.status(200).json({ results: result });
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
@@ -521,87 +508,90 @@ const EDITABLE_STATEMENT_FIELDS = ['createdAt', 'description', 'note', 'amount',
 module.exports.updateStatement = async (req, res, next) => {
   try {
     const { statementId, id } = req.params;
+    const result = await runInTransaction(async (session) => {
 
-    const statement = await UserStatement.findOne({ _id: statementId, user: id });
-    if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
-    // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
-    if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
+      const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session);
+      if (!statement) throw new ErrorHandler(404, 'Statement not found');
+      // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
+      if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
 
-    const changes = {};
-    EDITABLE_STATEMENT_FIELDS.forEach((field) => {
-      if (req.body[field] === undefined) return;
-      let value = req.body[field];
+      const changes = {};
+      EDITABLE_STATEMENT_FIELDS.forEach((field) => {
+        if (req.body[field] === undefined) return;
+        let value = req.body[field];
 
-      if (field === 'amount') {
-        value = roundToTwo(Number(value));
-        if (!Number.isFinite(value) || value <= 0) throw new ErrorHandler(400, 'Amount must be greater than 0');
+        if (field === 'amount') {
+          value = roundToTwo(Number(value));
+          if (!Number.isFinite(value) || value <= 0) throw new ErrorHandler(400, 'Amount must be greater than 0');
+        }
+        if (field === 'createdAt') {
+          value = new Date(value);
+          if (isNaN(value.getTime())) throw new ErrorHandler(400, 'Invalid date');
+        }
+        if ((field === 'office' || field === 'actionType') && value === '') value = undefined;
+
+        const current = statement[field];
+        const isSame = field === 'createdAt'
+          ? new Date(current).getTime() === value.getTime()
+          : String(current ?? '') === String(value ?? '');
+        if (!isSame) changes[field] = value;
+      });
+
+      if (!Object.keys(changes).length) {
+        return statement;
       }
-      if (field === 'createdAt') {
-        value = new Date(value);
-        if (isNaN(value.getTime())) throw new ErrorHandler(400, 'Invalid date');
+      const postedChanged = POSTED_STATEMENT_FIELDS.some((field) => field in changes);
+      const locked = protectedStatement(statement);
+      if (locked && postedChanged) throw new ErrorHandler(400, locked);
+      // A deposit cannot be turned into a payment given back: that kind reverses a payment
+      if (RETURN_ACTIONS.includes(changes.actionType) || changes.actionType === 'withdrawal') {
+        throw new ErrorHandler(400, 'An incoming line can only be cash, bank, refund or compensation. A payment given back or a withdrawal is made by its own action.');
       }
-      if ((field === 'office' || field === 'actionType') && value === '') value = undefined;
+      // Neither the old date nor a new one may be in a closed period (owner excepted)
+      await assertOpenPeriod(req.user, statement.createdAt, { session });
+      // A deposit lowered below what was already spent from it would leave the wallet below zero
+      if (changes.amount !== undefined && statement.calculationType === '+') {
+        const current = await Wallet.findOne({ user: id, currency: statement.currency }).session(session).lean();
+        if ((current?.balance || 0) + (Number(changes.amount) - Number(statement.amount)) < -0.001) throw new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.');
+      }
+      if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt, { session });
+      if (('office' in changes || 'actionType' in changes) && !statement.accountId) {
+        await assertDepositPlace(changes.office ?? statement.office, statement.currency, changes.actionType ?? statement.actionType);
+      }
 
-      const current = statement[field];
-      const isSame = field === 'createdAt'
-        ? new Date(current).getTime() === value.getTime()
-        : String(current ?? '') === String(value ?? '');
-      if (!isSame) changes[field] = value;
+      if (!String(changes.description ?? statement.description).trim()) {
+        throw new ErrorHandler(400, 'Description is required');
+      }
+
+      const before = {};
+      Object.keys(changes).forEach((field) => { before[field] = statement[field]; });
+
+      const { currency } = statement;
+      const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 }).session(session);
+      const openingBalance = getOpeningBalance(allStatements);
+      const previousSigned = signedAmount(statement);
+
+      Object.keys(changes).forEach((field) => { statement[field] = changes[field]; });
+      statement.editHistory.push({ editedBy: req.user._id, editedAt: new Date(), before });
+      await statement.save({ session });
+
+      // Only an amount change moves money in the wallet
+      const walletDelta = roundToTwo(signedAmount(statement) - previousSigned);
+      if (walletDelta !== 0) {
+        await adjustWalletBalance(id, currency, walletDelta, session);
+      }
+
+      await rebuildStatementTotals(
+        allStatements.map((item) => (String(item._id) === String(statement._id) ? statement : item)),
+        openingBalance, session
+      );
+
+      // Re-posted (old entry reversed, new one posted) only when something it is made from changed
+      if (postedChanged) await emitAccountingEvent('statementUpdated', statement._id, {}, req.user, { session });
+      const updated = await UserStatement.findById(statement._id).session(session).populate('user');
+      return updated;
     });
-
-    if (!Object.keys(changes).length) {
-      return res.status(200).json({ results: statement });
-    }
-    const postedChanged = POSTED_STATEMENT_FIELDS.some((field) => field in changes);
-    const locked = protectedStatement(statement);
-    if (locked && postedChanged) return next(new ErrorHandler(400, locked));
-    // A deposit cannot be turned into a payment given back: that kind reverses a payment
-    if (RETURN_ACTIONS.includes(changes.actionType) || changes.actionType === 'withdrawal') {
-      return next(new ErrorHandler(400, 'An incoming line can only be cash, bank, refund or compensation. A payment given back or a withdrawal is made by its own action.'));
-    }
-    // Neither the old date nor a new one may be in a closed period (owner excepted)
-    await assertOpenPeriod(req.user, statement.createdAt);
-    // A deposit lowered below what was already spent from it would leave the wallet below zero
-    if (changes.amount !== undefined && statement.calculationType === '+') {
-      const current = await Wallet.findOne({ user: id, currency: statement.currency }).lean();
-      if ((current?.balance || 0) + (Number(changes.amount) - Number(statement.amount)) < -0.001) return next(new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.'));
-    }
-    if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt);
-    if (('office' in changes || 'actionType' in changes) && !statement.accountId) {
-      await assertDepositPlace(changes.office ?? statement.office, statement.currency, changes.actionType ?? statement.actionType);
-    }
-
-    if (!String(changes.description ?? statement.description).trim()) {
-      return next(new ErrorHandler(400, 'Description is required'));
-    }
-
-    const before = {};
-    Object.keys(changes).forEach((field) => { before[field] = statement[field]; });
-
-    const { currency } = statement;
-    const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 });
-    const openingBalance = getOpeningBalance(allStatements);
-    const previousSigned = signedAmount(statement);
-
-    Object.keys(changes).forEach((field) => { statement[field] = changes[field]; });
-    statement.editHistory.push({ editedBy: req.user._id, editedAt: new Date(), before });
-    await statement.save();
-
-    // Only an amount change moves money in the wallet
-    const walletDelta = roundToTwo(signedAmount(statement) - previousSigned);
-    if (walletDelta !== 0) {
-      await adjustWalletBalance(id, currency, walletDelta);
-    }
-
-    await rebuildStatementTotals(
-      allStatements.map((item) => (String(item._id) === String(statement._id) ? statement : item)),
-      openingBalance
-    );
-
-    // Re-posted (old entry reversed, new one posted) only when something it is made from changed
-    if (postedChanged) await emitAccountingEvent('statementUpdated', statement._id, {}, req.user);
-    const updated = await UserStatement.findById(statement._id).populate('user');
-    res.status(200).json({ results: updated });
+    res.status(200).json({ results: result });
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
@@ -774,6 +764,8 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
+    const amountValue = roundToTwo(positiveWalletAmount(amount));
+    if (amountValue <= 0) throw new ErrorHandler(400, 'Amount must be at least 0.01');
 
     // Dinars paid on an order are counted at a rate that may not be lower than the accountant's
     // rate by more than the tolerance
@@ -785,15 +777,13 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       }
     }
 
-    const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
-
     const wallet = await Wallet.findOne({
       user: id,
       currency,
     });
     if (!wallet) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
 
-    if (wallet.balance < amount) {
+    if (wallet.balance < amountValue) {
       return next(new ErrorHandler(400, 'Insufficient wallet balance'));
     }
 
@@ -816,31 +806,32 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       }
     }
 
+    const userStatement = await runInTransaction(async (session) => {
     // Deducted atomically and only if the balance still covers it: two payments at the same moment
     // (a double click, two employees) cannot both spend the same money. It used to read the
     // balance, subtract, and write the result, so the second payment overwrote the first.
     const deducted = await Wallet.findOneAndUpdate(
-      { user: id, currency, balance: { $gte: truncateToTwo(Number(amount)) - 0.001 } },
-      { $inc: { balance: -truncateToTwo(Number(amount)) } },
-      { new: true },
+      { user: id, currency, balance: { $gte: amountValue - 0.001 } },
+      { $inc: { balance: -amountValue } },
+      { new: true, session },
     );
-    if (!deducted) return next(new ErrorHandler(400, 'Insufficient wallet balance'));
-    await Wallet.updateOne({ _id: deducted._id, balance: deducted.balance }, { balance: Math.max(0, Math.round(deducted.balance * 100) / 100) });
+    if (!deducted) throw new ErrorHandler(400, 'Insufficient wallet balance');
+    await Wallet.updateOne({ _id: deducted._id, balance: deducted.balance }, { balance: Math.max(0, Math.round(deducted.balance * 100) / 100) }, { session });
 
-    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
+    const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1).session(session);
     const previousTotal = Number(lastUserStatement[0]?.total || 0);
 
-    // Calculate total with truncation to two decimals
-    const total = truncateToTwo(previousTotal - Number(amount));
+    // Calculate the running total in cents
+    const total = roundToTwo(previousTotal - amountValue);
 
-    const userStatement = await UserStatement.create({
+    const [userStatement] = await UserStatement.create([{
       user: id,
       createdBy: req.user,
       calculationType: '-',
       paymentType: 'wallet',
       createdAt,
       description,
-      amount: truncateToTwo(Number(amount)),
+      amount: amountValue,
       currency,
       total,
       note,
@@ -848,20 +839,20 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       office,
       attachments: files,
       ...(currency === 'LYD' && Number(rate) > 0 && { rate: Number(rate) }),
-    });
+    }], { session });
 
-    const order = await Order.findOne({ orderId }).populate('user');
+    const order = await Order.findOne({ orderId }).session(session).populate('user');
     if (order) {
       const data = {
         createdBy: req.user,
         customer: order.user._id,
         order: order._id,
         paymentType: 'wallet',
-        receivedAmount: truncateToTwo(Number(amount)),
+        receivedAmount: amountValue,
         currency,
         createdAt,
         rate: Number(rate) || 0,
-        note: `(Wallet was ${truncateToTwo(previousTotal)} ${currency})`
+        note: `(Wallet was ${roundToTwo(previousTotal)} ${currency})`
       };
 
       if (category) {
@@ -874,13 +865,15 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       data.statementId = userStatement._id;
       // A debt opened on this order for the same thing is paid down by this payment too
       if (category) {
-        data.debtPayments = await payOrderDebts({ orderId: order._id, category, amount: data.receivedAmount, currency, rate: data.rate, createdAt, orderNumber: order.orderId });
+        data.debtPayments = await payOrderDebts({ orderId: order._id, category, amount: data.receivedAmount, currency, rate: data.rate, createdAt, orderNumber: order.orderId }, { session });
       }
-      await OrderPaymentHistory.create(data);
+      await OrderPaymentHistory.create([data], { session });
     }
     await emitAccountingEvent('statement', userStatement._id, {
       target: { orderId: order?._id, category, packageIds: (list || []).map((p) => p?._id || p?.id).filter(Boolean) },
-    }, req.user);
+    }, req.user, { session });
+    return userStatement;
+    });
 
     res.status(200).json({
       createdAt: userStatement.createdAt
@@ -889,5 +882,3 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
-
-

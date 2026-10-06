@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const orderSchema = new Schema({
+  accountingMutationVersion: { type: Number, default: 0 },
   user: { type: Schema.Types.ObjectId, ref: 'User' },
   madeBy: { type: Schema.Types.ObjectId, ref: 'User' },
   orderId: {
@@ -95,7 +96,7 @@ const orderSchema = new Schema({
     },
     method: {
       type: String,
-      required: true,
+      required: function () { return this.isShipment; },
       enum: ['air', 'sea', 'unknown']
     },
     estimatedDelivery: Date,
@@ -122,6 +123,11 @@ const orderSchema = new Schema({
   isRemittance: {
     type: Boolean,
     default: false,
+  },
+  // Transactional write guard for concurrent supplier refunds capped by what the customer paid.
+  customerRefundVersion: {
+    type: Number,
+    default: 0,
   },
   isPayment: {
     type: Boolean,

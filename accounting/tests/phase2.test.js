@@ -212,6 +212,75 @@ test('scenario 16 (claim): netting pays the partner\'s shipping claim', async ()
   expect((await balanceOf('121000', { partnerId: customerId })).usd).toBe(0);
 });
 
+test('concurrent nettings cannot exceed the open supplier bill', async () => {
+  const customerId = (await mongoose.connection.collection('users').insertOne({ firstName: 'Client', lastName: 'Test' })).insertedId;
+  const vendor = await newVendor('service', 'Partner');
+  const expense = await account('530800');
+  const bill = await tx((session) => payables.createBill({
+    vendorId: vendor._id, day: '2026-03-01', currency: 'USD', lines: [{ description: 'Service', amount: 1000, target: 'expense', accountId: expense._id, office: 'tripoli' }],
+  }, { session, req }));
+  const outcomes = await Promise.allSettled([1, 2].map((n) => tx((session) => people.createNetting({
+    vendorId: vendor._id, customerId, day: '2026-03-02', mode: 'payable_to_wallet', billId: bill._id,
+    walletCurrency: 'USD', amountUsd: 75000, idempotencyKey: `NETTING-RACE-${n}`,
+  }, { session, req }))));
+  expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  expect(outcomes.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  expect(await payables.apBalance(`BILL:${bill._id}`)).toBe(25000);
+  expect((await Wallet.findOne({ user: customerId, currency: 'USD' })).balance).toBe(750);
+});
+
+test('concurrent nettings cannot exceed the open customer claim across separate supplier bills', async () => {
+  const customerId = (await mongoose.connection.collection('users').insertOne({ firstName: 'Client', lastName: 'Claim' })).insertedId;
+  const vendor = await newVendor('service', 'Partner');
+  const expense = await account('530800');
+  const createBill = () => tx((session) => payables.createBill({
+    vendorId: vendor._id, day: '2026-03-01', currency: 'USD', lines: [{ description: 'Service', amount: 1000, target: 'expense', accountId: expense._id, office: 'tripoli' }],
+  }, { session, req }));
+  const bills = await Promise.all([createBill(), createBill()]);
+  const arKey = `NETTING-CLAIM-${oid()}`;
+  await post({
+    eventType: 'TEST_NETTING_CLAIM', eventKey: `TEST:${arKey}`, date: '2026-03-01',
+    lines: [{ role: 'customer_receivable', debit: 10000, partnerId: customerId, arKey }, { role: 'deferred_shipping_revenue', credit: 10000, packageId: oid() }],
+  });
+  const outcomes = await Promise.allSettled(bills.map((bill, index) => tx((session) => people.createNetting({
+    vendorId: vendor._id, customerId, day: '2026-03-02', mode: 'payable_to_ar', billId: bill._id,
+    arKey, amountUsd: 7500, idempotencyKey: `NETTING-CLAIM-RACE-${index}`,
+  }, { session, req }))));
+  expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  expect(outcomes.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  expect((await balanceOf('121000', { partnerId: customerId })).usd).toBe(2500);
+});
+
+test('salary requires an employee user, and company loan repayments cannot exceed the liability', async () => {
+  const customerId = (await mongoose.connection.collection('users').insertOne({ firstName: 'Customer', lastName: 'Only' })).insertedId;
+  const cash = await account('110101');
+  await expect(tx((session) => people.createSalary({
+    employeeId: customerId, month: '2026-03', day: '2026-03-31', office: 'tripoli', paidFromAccountId: cash._id, grossAmount: 500,
+  }, { session, req }))).rejects.toThrow('employee');
+
+  await fund('110101', 5000);
+  await tx((session) => people.createEquity({ type: 'loan_in', partyName: 'Lender A', day: '2026-03-01', accountId: cash._id, amount: 1000 }, { session, req }));
+  await expect(tx((session) => people.createEquity({ type: 'loan_repayment', partyName: 'Lender A', day: '2026-03-02', accountId: cash._id, amount: 1001 }, { session, req }))).rejects.toThrow('exceeds the outstanding loan balance');
+  expect((await balanceOf('230100')).usd).toBe(-100000);
+  await tx((session) => people.createEquity({ type: 'loan_repayment', partyName: 'Lender A', day: '2026-03-03', accountId: cash._id, amount: 1000 }, { session, req }));
+  expect((await balanceOf('230100')).usd).toBe(0);
+
+  await tx((session) => people.createEquity({ type: 'loan_in', partyName: 'Lender A', day: '2026-03-04', accountId: cash._id, amount: 1000 }, { session, req }));
+  const repayments = await Promise.allSettled([1, 2].map((n) => tx((session) => people.createEquity({
+    type: 'loan_repayment', partyName: 'Lender A', day: '2026-03-05', accountId: cash._id, amount: 750, idempotencyKey: `LOAN-REPAY-RACE-${n}`,
+  }, { session, req }))));
+  expect(repayments.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  expect(repayments.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  expect((await balanceOf('230100')).usd).toBe(-25000);
+
+  const loan = await tx((session) => people.createEquity({ type: 'loan_in', partyName: 'Lender B', day: '2026-03-06', accountId: cash._id, amount: 1000 }, { session, req }));
+  const repayment = await tx((session) => people.createEquity({ type: 'loan_repayment', partyName: 'Lender B', day: '2026-03-07', accountId: cash._id, amount: 500 }, { session, req }));
+  await expect(tx((session) => cancelDocument('AccountingEquityTransaction', loan._id, { session, req, reason: 'incorrect loan' }))).rejects.toThrow('Cancel repayments');
+  await tx((session) => cancelDocument('AccountingEquityTransaction', repayment._id, { session, req, reason: 'incorrect repayment' }));
+  await tx((session) => cancelDocument('AccountingEquityTransaction', loan._id, { session, req, reason: 'incorrect loan' }));
+  expect((await balanceOf('230100')).usd).toBe(-25000);
+});
+
 test('scenario 17: bank statement import, auto-match and a fee entry', async () => {
   await fund('110201', 5000);
   const bank110 = await account('110201');
@@ -233,6 +302,32 @@ test('scenario 17: bank statement import, auto-match and a fee entry', async () 
   await tx((session) => bank.createEntryForLine(fee._id, { counterAccountId: fees._id, office: 'turkey' }, { session, req }));
   expect((await balanceOf('110201')).usd).toBe(400000 - 1500);
   expect(await BankStatementLine.countDocuments({ lineStatus: 'unmatched' })).toBe(0);
+});
+
+test('concurrent bank matches cannot claim one journal movement twice for the same account', async () => {
+  await fund('110201', 1000);
+  const bank110 = await account('110201');
+  const expense = await account('530400');
+  const entry = await post({
+    eventType: 'TEST_BANK_MATCH', eventKey: 'TEST_BANK_MATCH_RACE', date: '2026-04-02', description: 'Bank fee',
+    lines: [
+      { accountId: expense._id, debit: 5000, office: 'tripoli' },
+      { accountId: bank110._id, credit: 5000, currency: 'USD', amountCurrency: -5000 },
+    ],
+  });
+  const { BankStatementLine } = require('../models/documents');
+  const lines = await BankStatementLine.create([
+    { accountId: bank110._id, day: '2026-04-02', description: 'Fee line A', amount: -5000 },
+    { accountId: bank110._id, day: '2026-04-02', description: 'Fee line B', amount: -5000 },
+  ]);
+  const outcomes = await Promise.allSettled(lines.map((line) => tx((session) => bank.manualMatch(line._id, [entry._id], { session, req }))));
+  expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  expect(outcomes.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  expect(await BankStatementLine.countDocuments({ accountId: bank110._id, lineStatus: 'matched' })).toBe(1);
+  expect((await JournalEntry.findById(entry._id).lean()).bankMatchedAccounts.map(String)).toEqual([String(bank110._id)]);
+  const matched = lines.find((_, index) => outcomes[index].status === 'fulfilled');
+  await tx((session) => bank.setIgnored(matched._id, false, { session, req }));
+  expect((await JournalEntry.findById(entry._id).lean()).bankMatchedAccounts).toHaveLength(0);
 });
 
 test('scenario 26: a bill with a payment cannot be cancelled until the payment is', async () => {
@@ -338,6 +433,24 @@ test('bank statements are never counted twice: a re-imported file, an entry type
   const left = await BankStatementLine.find({ description: /COMMISSION/, lineStatus: 'unmatched' });
   expect(left).toHaveLength(2);
   left.forEach((line) => expect(next[line._id]).toMatchObject({ source: 'rule', account: { code: '530400' } }));
+});
+
+test('concurrent imports of the same bank line create only one statement row and one journal entry', async () => {
+  await fund('110201', 5000);
+  const bank110 = await account('110201');
+  const fees = await account('530400');
+  const { BankStatementLine } = require('../models/documents');
+  const row = { day: '2026-06-10', description: 'SWIFT FEE REPLAY', reference: 'RACE-1', amount: -10, counterAccountId: fees._id, office: 'turkey' };
+
+  const outcomes = await Promise.all([
+    tx((session) => bank.importLines(bank110._id, [row], { session, req })),
+    tx((session) => bank.importLines(bank110._id, [row], { session, req })),
+  ]);
+  expect(outcomes.reduce((sum, result) => sum + result.count, 0)).toBe(1);
+  expect(await BankStatementLine.countDocuments({ accountId: bank110._id, reference: 'RACE-1' })).toBe(1);
+  expect(await SupplierBill.countDocuments({ status: 'posted' })).toBe(1);
+  expect(await SupplierPayment.countDocuments({ status: 'posted' })).toBe(1);
+  expect((await getBalance(fees._id)).usd).toBe(1000);
 });
 
 test('the table before importing: new, already imported, already in the books, and the account each goes to; then import posts it', async () => {

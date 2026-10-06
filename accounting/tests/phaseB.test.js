@@ -233,6 +233,21 @@ test('B10: the weekly Odoo comparison saves our three figures beside the ones ty
   expect((await odoo.listComparisons())).toHaveLength(1);
 });
 
+test('concurrent write-offs cannot exceed one open customer claim', async () => {
+  const { createWriteOff } = require('../services/posting/writeOff');
+  const customer = await newCustomer();
+  const order = await newOrder({ user: customer, isPayment: true, totalInvoice: 100 });
+  await tx((session) => syncOrder(order._id, { session }));
+  const arKey = `PUR:${order._id}`;
+  const results = await Promise.allSettled([1, 2].map((n) => tx((session) => createWriteOff({
+    day: '2026-03-01', arKey, amountUsd: 7500, reason: 'Uncollectible', idempotencyKey: `WRITE-OFF-RACE-${n}`,
+  }, { session, req }))));
+  expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  expect(await balanceOf('121000', { partnerId: customer })).toBe(2500);
+  expect(await balanceOf('220300')).toBe(-2500);
+});
+
 test('B9: a cancelled write-off puts the claim and the deferred revenue back', async () => {
   const { createWriteOff } = require('../services/posting/writeOff');
   const { cancelDocument } = require('../services/cancel');

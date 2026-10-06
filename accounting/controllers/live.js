@@ -26,8 +26,7 @@ module.exports.list = handle(async (req, res) => {
 module.exports.retry = handle(async (req, res) => {
   const event = await AccountingEvent.findById(req.params.id);
   if (!event) throw notFound('العملية غير موجودة');
-  event.attempts = 0;
-  const result = await processEvent(event);
+  const result = await processEvent(event, { resetAttempts: true });
   await runInTransaction((session) => logAudit({ req, action: 'live.retry', model: 'AccountingEvent', docId: event._id, after: { status: result.status } }, session));
   res.json(result);
 });

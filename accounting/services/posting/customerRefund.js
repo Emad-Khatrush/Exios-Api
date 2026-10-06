@@ -42,25 +42,35 @@ async function paidOnInvoice(orderId, session) {
 }
 
 async function createCustomerRefund(input, { session, req }) {
+  if (input.existingRefundId) return allocateWallet(input, { session, req });
   const existing = await findExisting(CustomerRefund, input.idempotencyKey, session);
   if (existing) return existing;
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
   if (!mongoose.isValidObjectId(input.orderId)) throw fail('الطلب غير موجود');
   const order = await Order.findById(input.orderId).select('orderId user isPayment isCanceled placedAt').session(session).lean();
   if (!order) throw fail('الطلب غير موجود');
+  // Serialize refunds against the same order. Transactions that race here retry and re-read both
+  // the paid amount and earlier refunds, so two refunds cannot consume the same remaining cap.
+  const locked = await Order.updateOne({ _id: order._id }, { $inc: { customerRefundVersion: 1 } }, { session });
+  if (locked.modifiedCount !== 1) throw fail('الطلب غير متاح لتسجيل الاسترداد');
   // A cancelled order gave the customer everything back already: what the supplier returns only
   // lowers the cost left on the order (settling it), nothing more goes to the wallet
   if (order.isCanceled && Number(input.walletUsd || 0) > 0) throw fail('الطلب ملغى وأُرجع للعميل كامل المدفوع. ما أعاده المورد يخفض تكلفة الطلب فقط: اجعل المضاف للمحفظة صفراً.');
   if (!order.isPayment) throw fail('الريفاند لفواتير الشراء فقط (مبلغ أعاده المورد على مشتريات الطلب)');
   const to = await getAccount(input.accountId, 'الحساب الذي دخل فيه المال');
   if (!to.isCash) throw fail('اختر الخزينة أو البنك الذي دخل فيه المال');
+  if (!input.bankLineId && await CustomerRefund.exists({ bankLineId: { $ne: null }, orderId: order._id, accountId: to._id,
+    day: input.day, amount: Number(input.amount), status: 'posted' }).session(session)) throw fail('هذا الاسترداد مسجل من كشف البنك؛ اختر الريفاند الموجود لإضافة مبلغ العميل دون تكرار استلام البنك');
   const currency = currencyOf(to);
-  const minor = await toCurrencyMinor(input.amount, currency);
+  const pendingLine = input.bankLineId ? null : await require('./pendingRefund').select(input, session);
+  const minor = pendingLine ? pendingLine.amount : await toCurrencyMinor(input.amount, currency);
+  const { currencies } = await require('../config').getConfig();
+  const receivedAmount = pendingLine ? minor / 10 ** (currencies.get(currency)?.decimals ?? 2) : Number(input.amount);
   if (!minor) throw fail('المبلغ المستلم مطلوب');
   // Its dollars: the amount itself on a dollar account, else the day's rate (owner's decision: the
   // amount received and what goes to the wallet are enough; a dollar value may still be given)
   const rates = new RateBook(session);
-  const usd = currency === 'USD' ? minor
+  const usd = pendingLine ? Math.round(pendingLine.valuationUsd * 100) : currency === 'USD' ? minor
     : Number(input.usdValue) > 0 ? Math.round(Number(input.usdValue) * 100) : await rates.toUsd(minor, currency, input.day);
   if (!(usd > 0)) throw fail('تعذّر تقييم المبلغ بالدولار؛ أدخل سعر اليوم لهذه العملة');
   const walletUsd = Math.round(Number(input.walletUsd || 0) * 100);
@@ -79,15 +89,18 @@ async function createCustomerRefund(input, { session, req }) {
   }
 
   const [doc] = await CustomerRefund.create([{
-    day: input.day, orderId: order._id, partnerId: order.user, accountId: to._id, currency, amount: Number(input.amount), usd, walletUsd,
+    day: input.day, orderId: order._id, partnerId: order.user, accountId: to._id, currency, amount: receivedAmount, usd, walletUsd,
     note: input.note, attachments: input.attachments, idempotencyKey: input.idempotencyKey, createdBy: req?.user?._id, status: 'posted',
+    bankLineId: pendingLine?._id || input.bankLineId, fundedFromPendingBankLineId: pendingLine?._id,
+    billId: input.billId, billLineId: input.billLineId, originalAmount: pendingLine?.originalAmount || input.originalAmount, originalCurrency: pendingLine?.originalCurrency || input.originalCurrency,
     number: await nextDocNumber('RF', input.day, session),
   }], { session });
 
   const label = `ريفاند ${doc.number} - طلب ${order.orderId}`;
   const office = order.placedAt;
   const lines = [
-    moneyLine(to, 'debit', minor, usd, { label }),
+    pendingLine ? { accountId: pendingLine.pendingRefundAccountId, debit: usd, label: 'تسوية استرداد مرحّل قيد التحديد؛ البنك استلمه سابقاً' }
+      : moneyLine(to, 'debit', minor, usd, { label }),
     { accountId: (await resolveAccount('purchase_cost_wip'))._id, credit: usd, orderId: order._id, office, label: 'مبلغ أعاده المورد' },
   ];
   if (walletUsd > 0) {
@@ -112,10 +125,48 @@ async function createCustomerRefund(input, { session, req }) {
     doc.userStatementId = statement._id;
   }
   await doc.save({ session });
+  if (pendingLine) {
+    pendingLine.pendingRefund = false; pendingLine.customerRefundId = doc._id; pendingLine.orderId = order._id;
+    await pendingLine.save({ session });
+    await logAudit({ req, action: 'bank.pendingRefundLinked', model: 'AccountingBankStatementLine', docId: pendingLine._id,
+      after: { refundId: doc._id, orderId: order._id } }, session);
+  }
   // The claim, the sale and the cost follow (the cost moved back out of cost of sales if recognised)
   await require('../claims/sync').syncOrder(order._id, { session, user: req?.user, date: input.day });
   await logAudit({ req, action: 'customer.refund', model: 'AccountingCustomerRefund', docId: doc._id, after: doc }, session);
   return doc;
+}
+
+// Add the customer part to a bank refund already recorded. No second bank/cost line.
+async function allocateWallet(input, { session, req }) {
+  if (!mongoose.isValidObjectId(input.existingRefundId)) throw fail('اختر الريفاند المسجل');
+  const refund = await CustomerRefund.findById(input.existingRefundId).session(session);
+  if (!refund || refund.status !== 'posted' || String(refund.orderId) !== String(input.orderId)) throw fail('الريفاند غير متاح لهذه الطلبية');
+  if (refund.walletUsd > 0 || refund.userStatementId) throw fail('أضيف مبلغ العميل لهذا الريفاند مسبقاً');
+  const order = await Order.findById(refund.orderId).session(session).lean();
+  if (!order || order.isCanceled || !order.isPayment) throw fail('الطلب غير متاح لإضافة الريفاند للمحفظة');
+  await Order.updateOne({ _id: order._id }, { $inc: { customerRefundVersion: 1 } }, { session });
+  const walletUsd = Math.round(Number(input.walletUsd) * 100);
+  if (!(walletUsd > 0) || !Number.isFinite(walletUsd)) throw fail('أدخل المبلغ المراد إضافته لمحفظة العميل');
+  const earlier = await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd').session(session).lean();
+  const left = Math.max(0, await paidOnInvoice(order._id, session) - earlier.reduce((sum, r) => sum + (r.walletUsd || 0), 0));
+  if (walletUsd > left) throw fail(`أقصى ما يُضاف لمحفظته الآن ${left / 100}$`);
+  const day = input.day || refund.day;
+  if (!isDay(day) || day < refund.day) throw fail('تاريخ إضافة مبلغ العميل غير صالح');
+  await postEntry({ eventType: 'REFUND', eventKey: `CUSTOMER_REFUND_WALLET:${refund._id}`, date: day,
+    description: `إضافة مبلغ العميل للريفاند ${refund.number} - طلب ${order.orderId}`, source: { model: 'AccountingCustomerRefund', id: refund._id },
+    lines: [
+      { accountId: (await resolveAccount('customer_receivable'))._id, debit: walletUsd, partnerId: order.user, orderId: order._id, arKey: purchaseKey(order._id), label: 'يُخصم من فاتورة العميل' },
+      { accountId: (await resolveAccount('wallet_usd'))._id, credit: walletUsd, currency: 'USD', amountCurrency: -walletUsd, partnerId: order.user, label: 'أُضيف لمحفظة العميل' },
+    ] }, { session, user: req?.user });
+  const statement = await moveWallet({ userId: order.user, currency: 'USD', amount: walletUsd / 100, description: `ريفاند على الطلب ${order.orderId}`, note: refund.number,
+    createdBy: req?.user?._id, source: { model: 'AccountingCustomerRefund', id: refund._id } }, session);
+  await UserStatement.updateOne({ _id: statement._id }, { $set: { actionType: 'refund' } }, { session });
+  refund.walletUsd = walletUsd; refund.userStatementId = statement._id;
+  await refund.save({ session });
+  await require('../claims/sync').syncOrder(order._id, { session, user: req?.user, date: day });
+  await logAudit({ req, action: 'customer.refundWallet', model: 'AccountingCustomerRefund', docId: refund._id, after: { walletUsd } }, session);
+  return refund;
 }
 
 module.exports = { createCustomerRefund };

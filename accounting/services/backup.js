@@ -58,46 +58,59 @@ async function writeDump(db, output) {
   const zip = archiver('zip', { zlib: { level: 6 } });
   const done = new Promise((resolve, reject) => {
     output.on('finish', resolve);
-    output.on('close', resolve);
+    output.on('close', () => { if (!output.writableFinished) reject(new Error('Backup output closed before completion')); });
     output.on('error', reject);
     zip.on('error', reject);
     zip.on('warning', reject);
   });
+  // The stream may fail while the next BSON entry is being prepared.
+  done.catch(() => {});
   zip.pipe(output);
   // One entry at a time: the next starts once the previous is fully written
   const add = (source, name) => {
     const written = new Promise((resolve) => zip.once('entry', resolve));
     zip.append(source, { name });
-    return written;
+    return Promise.race([written, done]);
   };
   const dbName = db.databaseName;
   const all = (await db.listCollections({}, { nameOnly: false }).toArray())
     .filter((c) => c.type !== 'view' && !SKIPPED(c.name))
     .sort((a, b) => a.name.localeCompare(b.name));
   const manifest = { database: dbName, createdAt: new Date().toISOString(), skipped: 'system.*, whatsapp*', collections: [] };
-  for (const info of all) {
-    const collection = db.collection(info.name);
-    let count = 0;
-    // Raw BSON as stored: nothing is decoded and re-encoded, so every value comes back exactly
-    const cursor = collection.find({}, { raw: true, batchSize: 500 });
-    async function* documents() {
-      for await (const doc of cursor) {
-        count += 1;
-        yield doc;
+  // One snapshot for every collection: a payment committed while the dump is streaming
+  // must not appear in the journal without its corresponding wallet/order documents.
+  const session = db.client.startSession({ snapshot: true });
+  try {
+    for (const info of all) {
+      const collection = db.collection(info.name);
+      let count = 0;
+      // Raw BSON as stored: nothing is decoded and re-encoded, so every value comes back exactly
+      const cursor = collection.find({}, { raw: true, batchSize: 500, session });
+      async function* documents() {
+        for await (const doc of cursor) {
+          count += 1;
+          yield doc;
+        }
       }
+      await add(Readable.from(documents()), `${dbName}/${info.name}.bson`);
+      const indexes = await collection.indexes();
+      const metadata = { indexes, uuid: '', collectionName: info.name, type: 'collection', options: info.options || {} };
+      await add(mongoose.mongo.BSON.EJSON.stringify(metadata, { relaxed: false }), `${dbName}/${info.name}.metadata.json`);
+      manifest.collections.push({ name: info.name, documents: count });
     }
-    await add(Readable.from(documents()), `${dbName}/${info.name}.bson`);
-    const indexes = await collection.indexes();
-    const metadata = { indexes, uuid: '', collectionName: info.name, type: 'collection', options: info.options || {} };
-    await add(mongoose.mongo.BSON.EJSON.stringify(metadata, { relaxed: false }), `${dbName}/${info.name}.metadata.json`);
-    manifest.collections.push({ name: info.name, documents: count });
+    manifest.documents = manifest.collections.reduce((sum, c) => sum + c.documents, 0);
+    await add(JSON.stringify(manifest, null, 2), 'manifest.json');
+    await add(readme(dbName), 'README.txt');
+    await zip.finalize();
+    await done;
+    return { ...manifest, bytes: zip.pointer() };
+  } catch (error) {
+    zip.destroy();
+    output.destroy();
+    throw error;
+  } finally {
+    await session.endSession();
   }
-  manifest.documents = manifest.collections.reduce((sum, c) => sum + c.documents, 0);
-  await add(JSON.stringify(manifest, null, 2), 'manifest.json');
-  await add(readme(dbName), 'README.txt');
-  await zip.finalize();
-  await done;
-  return { ...manifest, bytes: zip.pointer() };
 }
 
 const readme = (dbName) => `Exios database backup (${dbName})

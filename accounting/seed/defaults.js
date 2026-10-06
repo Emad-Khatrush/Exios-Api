@@ -93,6 +93,7 @@ const ACCOUNTS = [
   g('21', 'الذمم الدائنة', 'Payables', 'liability', '2'),
   a('210100', 'ذمم شركات الشحن', 'Carrier payables', 'liability', '21', { requires: ['vendor'] }),
   a('210200', 'ذمم الموردين', 'Supplier payables', 'liability', '21', { requires: ['vendor'] }),
+  a('219100', 'استردادات موردين قيد التحديد', 'Unidentified supplier refunds', 'liability', '21'),
   g('22', 'محافظ العملاء والإيرادات المؤجلة', 'Customer wallets and deferred revenue', 'liability', '2'),
   a('220100', 'محافظ العملاء - دولار', 'Customer wallets - USD', 'liability', '22', { currency: 'USD', requires: ['partner'] }),
   a('220200', 'محافظ العملاء - دينار', 'Customer wallets - LYD', 'liability', '22', { currency: 'LYD', requires: ['partner'] }),
@@ -338,6 +339,7 @@ const EVENT_JOURNALS = {
 
 // seedKey -> vendor. 'cash_expenses' is the vendor of quick expenses paid on the spot.
 const VENDORS = [
+  ...require('./merchants'),
   { seedKey: 'historical_carrier', name: 'شركة شحن - تاريخي', type: 'carrier' },
   { seedKey: 'historical_supplier', name: 'مورد مشتريات - تاريخي', type: 'supplier' },
   { seedKey: 'cash_expenses', name: 'مصروفات نقدية', type: 'service' },
@@ -384,6 +386,7 @@ const SITE_VENDORS = {
 const MUTAHEDA_VENDOR = 'مورد خدمات - المتحدة';
 
 const BANK_RULES = [
+  ...require('./merchants').flatMap(v => v.bankAliases.map(keyword => [keyword, '510400', 0, { vendor: v.name }])),
   // Websites: buying for customers' invoices (purchase invoice cost)
   ...['alibaba', '1688', 'taobao', 'aliexpress', 'amazon', 'amzn', 'ebay', 'temu', 'shein', 'noon', 'trendyol', 'hepsiburada', 'iherb', 'walmart',
     // Gulf shops paid through their payment pages
@@ -423,7 +426,7 @@ const BANK_RULES = [
 ].map(([keyword, accountCode, priority = 0, { bank, vendor, direction = 'any' } = {}]) => ({
   seedKey: `bank-rule:${bank ? `${bank}:` : ''}${keyword}${direction === 'any' ? '' : `:${direction}`}`, keyword, direction, accountCode, priority,
   bankCode: bank || null, vendorName: vendor || SITE_VENDORS[keyword] || undefined,
-}));
+})).filter((rule, index, all) => all.findIndex(other => other.seedKey === rule.seedKey) === index);
 
 const SETTINGS = {
   fiscalYearStartMonth: 1,

@@ -8,12 +8,13 @@ const Balance = require('../../../models/balance');
 const User = require('../../../models/user');
 const { JournalEntry, AccountingEvent } = require('../../models');
 const { postEntry, reverseEntry } = require('../ledger');
+const { lockClaimAllocations } = require('../claims/locks');
 const { getConfig } = require('../config');
 const { walletRole, resolveCashAccount, resolveStaffCashAccount } = require('../roles');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
 const { purchaseKey, shipmentKey, generalDebtKey, PACKAGE_FEES } = require('../claims/keys');
-const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount } = require('./common');const { roundHalfAway } = require('../money');
+const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount, lockPostingAccounts, isBeforeCashCount } = require('./common');const { roundHalfAway } = require('../money');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const CURRENCY_ALIASES = { EURO: 'EUR' };
@@ -254,6 +255,7 @@ async function postStatement(statementId, options = {}) {
     // the claim line here, then the order sync bills the customer that much less
     const linked = kind === 'SETTLEMENT_CANCEL' || (kind === 'REFUND' && (options.target?.orderId || options.target?.arKeys?.length));
     const keys = linked ? await resolveClaimKeys(options.target, session) : [];
+    if (keys.length) await lockClaimAllocations(keys, session);
     if (keys.length) {
       // Money given back for a payment: the claim is owed again (for a refund: until the sync
       // lowers the claim by the same amount)
@@ -274,17 +276,28 @@ async function postStatement(statementId, options = {}) {
   } else if (kind === 'WITHDRAWAL') {
     await walletOut();
     const cash = await cashAccount();
+    if (!options.isHistorical && !(await isBeforeCashCount(require('../dates').toDay(day)))) {
+      await lockPostingAccounts([cash], session);
+    }
     const cashUsd = cash.currency === currency
       ? await valueOut(cash, minor, { day, docRate: docRate, rates })
       : await rates.toUsd(minor, currency, day, docRate);
     lines.push(moneyLine(cash, 'credit', minor, cashUsd, { office, label: statement.description }));
   } else {
+    const recoveryBalance = target.balanceId && await Balance.findById(target.balanceId).select('status sourceBalance').session(session).lean();
+    if (recoveryBalance?.status === 'lost' && recoveryBalance.sourceBalance) {
+      await walletOut();
+      const recoveredUsd = await rates.toUsd(minor, currency, day, docRate);
+      const badDebt = await resolveAccount('bad_debt_expense');
+      lines.push({ accountId: badDebt._id, credit: recoveredUsd, partnerId, office, arKey: generalDebtKey(recoveryBalance.sourceBalance), label: 'Recovery of a written-off debt' });
+    } else {
     // WALLET_PAYMENT: the claims are paid at the operation's rate; the wallet gives up the
     // dinars at its average rate; the difference is an exchange gain/loss (spec 2.4, E8)
     await walletOut();
     const atRate = await rates.toUsd(minor, currency, day, docRate);
     const keys = await resolveClaimKeys(options.target, session);
     if (keys.length) {
+      await lockClaimAllocations(keys, session);
       const receivable = await resolveAccount('customer_receivable');
       // What is paid beyond what is owed is profit, not the customer's credit
       const { claimUsd, margin, role } = await rateMargin(keys, atRate, currency, options, session);
@@ -295,6 +308,7 @@ async function postStatement(statementId, options = {}) {
     } else {
       fallbacks.push('دفعة من المحفظة غير مربوطة بطلب أو دين؛ سُجّلت في حساب المعلّق');
       lines.push({ accountId: (await resolveAccount('migration_suspense'))._id, credit: atRate, label: statement.description });
+    }
     }
   }
   await addFxLine(lines, office);
@@ -410,6 +424,7 @@ async function postCashPayment(paymentId, options = {}) {
     orderId: payment.order, category: payment.category === 'receivedGoods' ? 'receivedGoods' : 'invoice',
     packageIds: (payment.list || []).map((p) => p?._id || p?.id).filter(Boolean),
   }, session);
+  if (keys.length) await lockClaimAllocations(keys, session);
   const receivable = await resolveAccount('customer_receivable');
   const lines = [cashLine];
   if (keys.length) {

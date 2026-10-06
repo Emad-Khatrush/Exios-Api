@@ -1,3 +1,4 @@
+const { lockWalletOwner } = require('../../../utils/walletLock');
 // Salaries (E28), capital / withdrawals / loans (E29), netting with a customer-vendor (E30)
 const mongoose = require('mongoose');
 const { SalaryPayment, EquityTransaction, Netting, Vendor, SupplierBill } = require('../../models/documents');
@@ -6,14 +7,16 @@ const Wallet = require('../../../models/wallet');
 const UserStatement = require('../../../models/userStatement');
 const User = require('../../../models/user');
 const { postEntry } = require('../ledger');
+const { getBalance } = require('../carrying');
+const { lockClaimAllocation } = require('../claims/locks');
 const { isDay } = require('../dates');
 const { toMinor, fromMinor } = require('../money');
 const { walletRole } = require('../roles');
 const { logAudit } = require('../audit');
-const { apBalance, billKey } = require('./payables');
+const { apBalance, billKey, lockBillAllocation } = require('./payables');
 const {
   fail, currencyOf, getAccount, decimalsOf, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine,
-  nextDocNumber, findExisting, officeExists, resolveAccount,
+  nextDocNumber, findExisting, officeExists, resolveAccount, lockPostingAccounts, isBeforeCashCount,
 } = require('./common');
 
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
@@ -27,8 +30,8 @@ async function createSalary(input, { session, req }) {
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
   if (!MONTH.test(input.month || '')) throw fail('شهر الراتب غير صالح');
   if (!(await officeExists(input.office))) throw fail('اختر المكتب');
-  const employee = input.employeeId && mongoose.isValidObjectId(input.employeeId) && await User.findById(input.employeeId).select('firstName lastName').session(session);
-  if (!employee) throw fail('اختر الموظف');
+  const employee = input.employeeId && mongoose.isValidObjectId(input.employeeId) && await User.findById(input.employeeId).select('firstName lastName roles.isEmployee').session(session);
+  if (!employee?.roles?.isEmployee) throw fail('Select a user marked as an employee');
   const cash = await getAccount(input.paidFromAccountId, 'حساب الصرف');
   if (!cash.isCash) throw fail('اختر الخزينة التي صُرف منها الراتب');
   const currency = currencyOf(cash);
@@ -52,6 +55,9 @@ async function createSalary(input, { session, req }) {
   }
   const deductionUsd = deduction ? await valueOut(loans, deduction, { day: input.day, docRate: input.rate, rates, employeeId: employee._id }) : 0;
   const net = gross - deduction;
+  if (net && !(await isBeforeCashCount(input.day))) {
+    await lockPostingAccounts([cash], session);
+  }
 
   const [doc] = await SalaryPayment.create([{
     employeeId: employee._id, month: input.month, day: input.day, office: input.office, currency, rate: input.rate,
@@ -99,6 +105,10 @@ async function createEquity(input, { session, req }) {
   const minor = await toCurrencyMinor(input.amount, currency);
   if (!minor) throw fail('المبلغ مطلوب');
 
+  if (type.direction === 'out' && !(await isBeforeCashCount(input.day))) {
+    await lockPostingAccounts([cash], session);
+  }
+
   const [doc] = await EquityTransaction.create([{
     type: input.type, partyName: input.partyName.trim(), day: input.day, accountId: cash._id, amount: Number(input.amount),
     rate: input.rate, note: input.note, idempotencyKey: input.idempotencyKey, createdBy: req?.user?._id, status: 'posted',
@@ -108,6 +118,12 @@ async function createEquity(input, { session, req }) {
   const rates = new RateBook(session);
   const atRate = await rates.toUsd(minor, currency, input.day, input.rate);
   const counter = await resolveAccount(type.role);
+  if (type.role === 'loans') {
+    const { balance: outstanding } = await lockCompanyLoanBalance(session);
+    if (input.type === 'loan_repayment' && (outstanding.usd >= 0 || atRate > -outstanding.usd)) {
+      throw fail('Loan repayment exceeds the outstanding loan balance');
+    }
+  }
   const label = `${type.label} - ${doc.partyName}`;
   const lines = type.direction === 'in'
     ? [moneyLine(cash, 'debit', minor, atRate, { label }), { accountId: counter._id, credit: atRate, label }]
@@ -129,6 +145,7 @@ async function createEquity(input, { session, req }) {
 // the system does: wallet balance + a statement line carrying the running total. The statement is
 // marked with its accounting source so it is never posted a second time as a deposit.
 async function moveWallet({ userId, currency, amount, description, note, createdBy, source }, session) {
+  await lockWalletOwner(userId, session);
   const wallet = await Wallet.findOneAndUpdate({ user: userId, currency }, { $inc: { balance: amount } }, { new: true, session });
   if (!wallet) await Wallet.create([{ user: userId, currency, balance: amount }], { session });
   else await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: Math.round(wallet.balance * 100) / 100 }, { session });
@@ -155,6 +172,8 @@ async function createNetting(input, { session, req }) {
   if (!bill || bill.status !== 'posted' || bill.isCreditNote || String(bill.vendorId) !== String(vendor._id)) throw fail('اختر فاتورة المورد');
   const amountUsd = Math.round(Number(input.amountUsd));
   if (!(amountUsd > 0)) throw fail('المبلغ مطلوب');
+  // Serialize nettings with supplier payments and other nettings against this bill.
+  await lockBillAllocation(bill, session);
   if (amountUsd > await apBalance(billKey(bill._id), session)) throw fail('المبلغ أكبر من المتبقي على الفاتورة');
 
   const [doc] = await Netting.create([{
@@ -167,6 +186,8 @@ async function createNetting(input, { session, req }) {
   const rates = new RateBook(session);
   if (input.mode === 'payable_to_ar') {
     if (!input.arKey) throw fail('اختر مطالبة العميل');
+    // Serialize against nettings using this same claim, even when they use different vendor bills.
+    await lockClaimAllocation(input.arKey, session);
     const receivable = await resolveAccount('customer_receivable');
     const [claim] = await JournalEntry.aggregate([
       { $match: { 'lines.arKey': input.arKey } },
@@ -206,4 +227,11 @@ async function createNetting(input, { session, req }) {
   return doc;
 }
 
-module.exports = { createSalary, createEquity, createNetting, moveWallet };
+async function lockCompanyLoanBalance(session) {
+  const account = await resolveAccount('loans');
+  const lockEntry = await JournalEntry.findOne({ 'lines.accountId': account._id }).sort({ _id: 1 }).select('_id').session(session).lean();
+  if (lockEntry) await JournalEntry.updateOne({ _id: lockEntry._id }, { $inc: { loanAllocationVersion: 1 } }, { session });
+  return { account, balance: await getBalance(account._id, { session }) };
+}
+
+module.exports = { createSalary, createEquity, createNetting, moveWallet, lockCompanyLoanBalance };

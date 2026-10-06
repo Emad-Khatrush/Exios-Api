@@ -91,8 +91,8 @@ router.post('/migration/runs/:runId/discard', P.setup, migration.discard);
 router.post('/migration/runs/:runId/commit', P.setup, migration.commit);
 
 router.get('/entries/event-types', ANY, entries.eventTypes);
-router.route('/entries').get(P.entries, entries.list).post(P.entries, entries.createManual);
-router.get('/entries/:id', can('entries', 'reports'), entries.get);
+router.route('/entries').get(can('entries', 'entries_view'), entries.list).post(P.entries, entries.createManual);
+router.get('/entries/:id', can('entries', 'entries_view', 'reports'), entries.get);
 router.post('/entries/:id/cancel', P.entries, P.cancel, entries.cancel);
 router.post('/entries/:id/attachments', can('entries', 'treasury'), upload.array('files'), entries.addAttachments);
 
@@ -127,7 +127,7 @@ router.delete('/exceptions/reviewed/:id', P.closing, handle(async (req, res) => 
 router.get('/summary/order/:id', P.reports, statements.orderSummary);
 router.get('/summary/trip/:id', P.reports, statements.tripSummary);
 router.get('/summary/customer/:id', P.reports, statements.customerSummary);
-router.get('/vouchers/:entryId', can('entries', 'treasury', 'payments', 'purchases'), statements.voucher);
+router.get('/vouchers/:entryId', can('entries', 'entries_view', 'treasury', 'payments', 'purchases'), statements.voucher);
 
 router.get('/close/month', P.closing, statements.monthChecklist);
 router.post('/close/month', P.closing, statements.closeMonth);
@@ -197,7 +197,13 @@ router.get('/trips', ANY, documents.listTrips);
 router.get('/balances/:id', can('treasury', 'payments', 'purchases', 'payroll', 'reports'), documents.accountBalance);
 
 router.get('/bank/lines', P.treasury, documents.listBankLines);
+router.get('/bank/lines/:id', P.treasury, documents.bankLineDetails);
+router.patch('/bank/lines/:id', P.treasury, documents.editBankLine);
 router.get('/bank/suggestions', P.treasury, documents.bankSuggestions);
+router.get('/bank/purchases', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankPurchaseReview').listPurchases(req.query))));
+router.get('/bank/refunds', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankRefund').list(req.query))));
+router.post('/bank/lines/:id/refund-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankRefund').match(req.params.id, req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/purchase-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankPurchaseReview').matchPurchase(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/classify', P.treasury, documents.classifyBankRows);
 router.route('/bank/rules').get(P.treasury, documents.listBankRules).post(P.treasury, documents.saveBankRule);
 router.delete('/bank/rules/:id', P.treasury, documents.deleteBankRule);

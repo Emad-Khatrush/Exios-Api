@@ -85,6 +85,19 @@ const app = express();
 const sendMessageQueue = require('./utils/messageQueue');
 
 const connectionUrl = process.env.MONGO_URL_2 || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
+const isLocalAccountingTrial = process.env.EXIOS_LOCAL_ACCOUNTING_TRIAL === '1'
+  && /^mongodb:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/exios-september-trial-\d{8}(?:\?|$)/.test(connectionUrl);
+if (isLocalAccountingTrial) process.env.BACKUP_BUCKET = '';
+if (isLocalAccountingTrial) app.get('/api/accounting/trial-status', async (req, res) => {
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return res.sendStatus(404);
+  if (mongoose.connection.readyState !== 1) return res.sendStatus(503);
+  try {
+    const { settings, count } = await require('./accounting/services/config').getConfig();
+    const { addDays } = require('./accounting/services/dates');
+    res.json({ database: mongoose.connection.db.databaseName, openingCountDay: count?.day || null,
+      operationalStartDate: count?.endOfDay ? addDays(count.day, 1) : count?.day || null, migrationDate: settings?.migrationDate });
+  } catch (_) { res.sendStatus(503); }
+});
 mongoose.connect(connectionUrl, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -211,6 +224,7 @@ function scheduleSnapshotRefresh() {
 // Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
 // require re-scanning the QR code.
 async function initializeWhatsAppClient() {
+  if (isLocalAccountingTrial) return;
   if (isShuttingDown) return;
   if (isInitializingWhatsApp) {
     console.log('WhatsApp client initialization already in progress, skipping.');
@@ -624,7 +638,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
   }
 });
 
-sendMessageQueue.process('resume-jobs', 1, async (job) => {
+if (!isLocalAccountingTrial) sendMessageQueue.process('resume-jobs', 1, async (job) => {
   // Resume the queue
   await sendMessageQueue.resume();
   console.log('Queue resumed.');
@@ -653,7 +667,7 @@ async function getNextClientSlot() {
 
 // Schedules every message up front as a delayed job (persisted in Redis), so
 // a Heroku restart mid-campaign doesn't lose the remaining messages.
-sendMessageQueue.process('send-large-messages', 1, async (job) => {
+if (!isLocalAccountingTrial) sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users, campaignId } = job.data;
 
   let nextSlot = await getNextClientSlot();
@@ -724,7 +738,7 @@ async function updateCampaignProgress(campaignId, userId, status) {
   }
 }
 
-sendMessageQueue.process('send-message', 1, async (job) => {
+if (!isLocalAccountingTrial) sendMessageQueue.process('send-message', 1, async (job) => {
   const { index, imgUrl, content, phone, customerId, campaign, campaignId, userId, retries = 0 } = job.data;
 
   try {

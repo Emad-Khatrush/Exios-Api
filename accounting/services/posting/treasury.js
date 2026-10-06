@@ -8,7 +8,7 @@ const { roundHalfAway } = require('../money');
 const { logAudit } = require('../audit');
 const {
   fail, currencyOf, isForeign, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
-  nextDocNumber, findExisting, resolveAccount,
+  nextDocNumber, findExisting, resolveAccount, lockPostingAccounts, isBeforeCashCount,
 } = require('./common');
 
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
@@ -34,6 +34,8 @@ async function createTransfer(input, { session, req }) {
   const { account: to, isAdvance: toAdvance } = await treasuryAccount(input.toAccountId, 'الحساب المستلم', input.employeeId);
   if (String(from._id) === String(to._id)) throw fail('الحساب المرسل والمستلم متطابقان');
 
+  const affectsCurrentCash = !(await isBeforeCashCount(input.day));
+  if (affectsCurrentCash) await lockPostingAccounts([from, to], session);
   const fromMinor = await toCurrencyMinor(input.fromAmount, currencyOf(from));
   const feesMinor = input.fees ? await toCurrencyMinor(input.fees, currencyOf(from)) : 0;
   if (!fromMinor) throw fail('المبلغ المرسل مطلوب');
@@ -113,6 +115,7 @@ async function createCashCount(input, { session, req }) {
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
   const account = await getAccount(input.accountId, 'الخزينة');
   if (!account.isCash) throw fail('اختر خزينة أو بنكاً');
+  await lockPostingAccounts([account], session);
   const currency = currencyOf(account);
   const counted = await toCurrencyMinor(input.countedAmount, currency);
   const balance = await getBalance(account._id, { session });

@@ -10,6 +10,7 @@ const Inventory = require('../../../models/inventory');
 const User = require('../../../models/user');
 const { getConfig } = require('../config');
 const { today, TZ } = require('../dates');
+const { allocate } = require('../claims/sync');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -102,10 +103,17 @@ async function tripProfitability({ status, search, shippingType } = {}) {
   const tripCost = (id) => sum(byTrip.get(String(id)), [...costIds, roles.trip_cost_wip]);
   // A domestic trip's cost, shared over its packages by chargeable weight
   const domesticWeight = new Map(domesticIds.map((id) => [id, (packagesOf.get(id) || []).reduce((t, p) => t + weightOf(p), 0)]));
+  // Match the ledger's cent-exact allocation, including who receives any leftover cents.
+  const domesticShareByPackage = new Map();
+  domesticIds.forEach((id) => {
+    const packages = packagesOf.get(id) || [];
+    const cents = allocate(tripCost(id), packages.map((pkg) => Math.round(Number(weightOf(pkg) || 0) * 1000)));
+    packages.forEach((pkg, index) => domesticShareByPackage.set(String(pkg._id), cents[index] || 0));
+  });
   const domesticShare = (pkg) => {
     const id = pkg.domesticTripId && String(pkg.domesticTripId);
     if (!id || !(domesticWeight.get(id) > 0)) return 0;
-    return Math.round((tripCost(id) * weightOf(pkg)) / domesticWeight.get(id));
+    return domesticShareByPackage.get(String(pkg._id)) || 0;
   };
 
   const results = trips.map((trip) => {
@@ -160,6 +168,8 @@ async function tripProfitability({ status, search, shippingType } = {}) {
     const totalRevenue = revenue + deferred;
     const profit = revenue - cost;
     const domesticCost = [...offices.values()].reduce((t, o) => t + o.domesticCost, 0);
+    const officeRows = [...offices.values()];
+    const officeOwnCosts = allocate(totalCost, officeRows.map((office) => Math.round(Number(office.weight || 0) * 1000)));
     return {
       ...base, recognizedPackages,
       revenue, profit, margin: revenue ? Math.round((profit / revenue) * 1000) / 10 : null,
@@ -167,8 +177,8 @@ async function tripProfitability({ status, search, shippingType } = {}) {
       // Per KG/CBM: this trip's own cost (shipping, customs...), then with the domestic transport
       costPerUnit: unit ? costPerUnitValue : null, revenuePerUnit: unit ? perUnit(totalRevenue, weight) : null,
       domesticCost, profitBeforeDomestic: totalRevenue - totalCost, profitAfterDomestic: totalRevenue - totalCost - domesticCost,
-      offices: [...offices.values()].map((o) => {
-        const ownCost = Math.round((totalCost * o.weight) / (weight || 1));
+      offices: officeRows.map((o, index) => {
+        const ownCost = officeOwnCosts[index] || 0;
         return {
           ...o, weight: Math.round(o.weight * 1000) / 1000, ownCost,
           costPerUnit: perUnit(ownCost, o.weight), fullCostPerUnit: perUnit(ownCost + o.domesticCost, o.weight), sellPerUnit: perUnit(o.revenue, o.weight),
