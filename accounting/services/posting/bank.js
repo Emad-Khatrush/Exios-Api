@@ -438,6 +438,13 @@ async function createEntryForLine(lineId, input, { session, req }) {
 
   // Match the original invoice currency before considering creation of another cost.
   const chosenCounter = input.counterAccountId && await Account.findById(input.counterAccountId).session(session).lean();
+  const config = await getConfig();
+  if (outOfBank && chosenCounter && !input.billId && !input.target && !input.link
+    && config.count?.accountIds.has(String(bank._id))
+    && (line.day < config.count.day || (line.day === config.count.day && config.count.endOfDay))
+    && String(chosenCounter._id) === String((await resolveAccount('cost_purchase_invoices'))._id)) {
+    throw fail('هذه مشتريات قبل الجرد؛ استخدم متابعة مشتريات الطلبيات للمطابقة أو التسوية الجماعية، حتى لا تتكرر التكلفة');
+  }
   if (outOfBank && input.target && !input.confirmNewBill && (await candidatesFor(line, bank, { session })).length) {
     throw fail('توجد فاتورة أصلية محتملة؛ راجع المطابقة أو أكد أن هذه عملية جديدة قبل إنشاء تكلفة أخرى');
   }
@@ -446,6 +453,7 @@ async function createEntryForLine(lineId, input, { session, req }) {
   if (existingBill) {
     const payables = require('./payables');
     let bill = await SupplierBill.findById(existingBill._id).session(session);
+    await require('./bankMatchValidation').assertMerchant(line, bank, bill.vendorId, session);
     const billAmount = bill.total ?? bill.lines.reduce((s, l) => s + Number(l.amount), 0);
     const knownOriginal = originalOf(line, bank.currency);
     const value = await paymentValue(input.manualBillMatch && !line.originalCurrency && knownOriginal.currency === bank.currency
@@ -757,6 +765,7 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
   }
   line.lineStatus = 'unmatched';
   line.pendingRefund = false; line.pendingRefundAccountId = undefined;
+  line.historicalPurchase = false; line.historicalCovered = false;
   line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...previousEntryIds.map(String)])];
   line.postingAttempt = (line.postingAttempt || 0) + 1;
   line.entryId = undefined;
@@ -780,6 +789,7 @@ async function setIgnored(lineId, ignored, { session, req }) {
     line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...line.matchedEntryIds.map(String)])];
     line.billId = undefined;
     line.paymentId = undefined;
+    line.historicalCovered = false;
     line.orderId = undefined;
     line.customerRefundId = undefined;
     line.receiptId = undefined;

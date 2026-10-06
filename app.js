@@ -1,6 +1,7 @@
 if (process.env.NODE_ENV !== "production") {
   require('dotenv').config();
 }
+const { isQa } = require('./utils/qaEnvironment');
 const express = require('express');
 const mongoose = require('mongoose');
 const morgan = require('morgan');
@@ -46,7 +47,9 @@ let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 let redisClient;
 
 // Use TLS for secure Redis connection (Redis Cloud requires TLS)
-if (process.env.REDIS_HOST) {
+if (isQa) {
+  redisClient = null;
+} else if (process.env.REDIS_HOST) {
   redisClient = new Redis({
     port: process.env.REDIS_PORT,
     host: process.env.REDIS_HOST,
@@ -58,11 +61,11 @@ if (process.env.REDIS_HOST) {
 }
 
 // Test Redis connection
-redisClient.on('connect', () => {
+redisClient?.on('connect', () => {
   console.log('Connected to Redis Cloud!');
 });
 
-redisClient.on('error', (err) => {
+redisClient?.on('error', (err) => {
   console.error('Redis connection error:', err);
 });
 
@@ -79,6 +82,8 @@ let isWhatsAppReady = false;
 let isInitializingWhatsApp = false; // guards against overlapping initialize() calls
 
 const app = express();
+app.get('/', (req, res) => res.json({ service: 'Exios API', environment: isQa ? 'qa' : 'production', databaseConnected: mongoose.connection.readyState === 1 }));
+app.get('/health', (req, res) => res.status(mongoose.connection.readyState === 1 ? 200 : 503).json({ ok: mongoose.connection.readyState === 1, environment: isQa ? 'qa' : 'production' }));
 
 // Bull queue with Redis client - shared module so controllers (e.g. campaign
 // delete, which cancels pending jobs) reference the same queue instance.
@@ -224,7 +229,7 @@ function scheduleSnapshotRefresh() {
 // Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
 // require re-scanning the QR code.
 async function initializeWhatsAppClient() {
-  if (isLocalAccountingTrial) return;
+  if (isLocalAccountingTrial || isQa) return;
   if (isShuttingDown) return;
   if (isInitializingWhatsApp) {
     console.log('WhatsApp client initialization already in progress, skipping.');
@@ -638,7 +643,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
   }
 });
 
-if (!isLocalAccountingTrial) sendMessageQueue.process('resume-jobs', 1, async (job) => {
+if (!isLocalAccountingTrial && !isQa) sendMessageQueue.process('resume-jobs', 1, async (job) => {
   // Resume the queue
   await sendMessageQueue.resume();
   console.log('Queue resumed.');
@@ -667,7 +672,7 @@ async function getNextClientSlot() {
 
 // Schedules every message up front as a delayed job (persisted in Redis), so
 // a Heroku restart mid-campaign doesn't lose the remaining messages.
-if (!isLocalAccountingTrial) sendMessageQueue.process('send-large-messages', 1, async (job) => {
+if (!isLocalAccountingTrial && !isQa) sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users, campaignId } = job.data;
 
   let nextSlot = await getNextClientSlot();
@@ -738,7 +743,7 @@ async function updateCampaignProgress(campaignId, userId, status) {
   }
 }
 
-if (!isLocalAccountingTrial) sendMessageQueue.process('send-message', 1, async (job) => {
+if (!isLocalAccountingTrial && !isQa) sendMessageQueue.process('send-message', 1, async (job) => {
   const { index, imgUrl, content, phone, customerId, campaign, campaignId, userId, retries = 0 } = job.data;
 
   try {

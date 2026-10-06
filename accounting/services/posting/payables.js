@@ -84,7 +84,7 @@ async function syncBillTargets(bill, { session, user, sync = {} }) {
 }
 
 // Checks the bill as typed; nothing is saved here
-async function validateBillInput(input, session) {
+async function validateBillInput(input, session, { readOnly = false } = {}) {
   const vendor = await Vendor.findById(input.vendorId).session(session);
   if (!vendor) throw fail('اختر المورد');
   if (!vendor.isActive) throw fail('المورد مؤرشف');
@@ -100,20 +100,20 @@ async function validateBillInput(input, session) {
     if (line.target === 'order') {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('placedAt').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
-      const available = await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      const available = readOnly ? { modifiedCount: 1 } : await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
       if (available.modifiedCount !== 1) throw fail('Order was deleted');
     }
     if (line.target === 'customs') {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('paymentList._id').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
-      const available = await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      const available = readOnly ? { modifiedCount: 1 } : await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
       if (available.modifiedCount !== 1) throw fail('Order was deleted');
       if (!line.packageId || !order.paymentList.id(line.packageId)) throw fail(`${where}: اختر الطرد الذي خُلِّص`);
     }
     if (line.target === 'trip') {
       const trip = line.tripId && mongoose.isValidObjectId(line.tripId) && await Inventory.findById(line.tripId).select('inventoryType').session(session);
       if (!trip) throw fail(`${where}: الرحلة غير موجودة`);
-      const available = await Inventory.updateOne({ _id: trip._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
+      const available = readOnly ? { modifiedCount: 1 } : await Inventory.updateOne({ _id: trip._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
       if (available.modifiedCount !== 1) throw fail('Trip was deleted');
       // Warehouses only track packages; they never carry costs (spec 4.3)
       if (trip.inventoryType !== 'inventoryGoods') throw fail(`${where}: هذا مخزن وليس رحلة؛ لا تُحمَّل عليه تكاليف`);
@@ -571,6 +571,6 @@ async function createReceipt(input, { session, req, user }) {
 }
 
 module.exports = {
-  createReceipt,
+  createReceipt, carriedValue,
   syncBillTargets, apBalance, billKey, advanceKey, lockBillAllocation, createBill, updateDraftBill, postDraftBill, deleteDraftBill, createPayment, validateBillInput,
 };

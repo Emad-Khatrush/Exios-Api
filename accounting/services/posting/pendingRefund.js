@@ -24,7 +24,7 @@ async function post(line, { session, req }) {
   await logAudit({ req, action: 'bank.pendingRefund', model: 'AccountingBankStatementLine', docId: line._id, after: { entryId: entry._id, usd } }, session);
   return line;
 }
-async function candidates(input, session, { allDates = false } = {}) {
+async function candidates(input, session, { allDates = false, suggestFractions = false } = {}) {
   if (!mongoose.isValidObjectId(input.accountId) || !isDay(input.day)) return [];
   const bank = await Account.findById(input.accountId).session(session || null).lean();
   if (!bank?.isCash) return [];
@@ -32,24 +32,50 @@ async function candidates(input, session, { allDates = false } = {}) {
   const usd = Number(input.usdValue) > 0 ? Math.round(Number(input.usdValue) * 100) : 0;
   if (!amount && !usd) return [];
   const { currencies } = await getConfig();
-  const rows = await BankStatementLine.find({ accountId: bank._id, lineStatus: 'created_entry', pendingRefund: true,
-    $or: [...(amount ? [{ amount }] : []), ...(usd ? [{ valuationUsd: usd / 100 }] : [])],
+  const scale = 10 ** (currencies.get(currencyOf(bank))?.decimals ?? 2);
+  const nativeFloor = Math.floor(amount / scale) * scale;
+  const dollarFloor = Math.floor(usd / 100);
+  const matchAmount = {
+    $or: [...(amount ? [{ amount: suggestFractions ? { $gte: nativeFloor, $lt: nativeFloor + scale } : amount }] : []),
+      ...(usd ? ['valuationUsd', 'settlementUsd'].map(field => ({ [field]: suggestFractions ? { $gte: dollarFloor, $lt: dollarFloor + 1 } : usd / 100 })) : []),
+      ...(usd ? [{ originalCurrency: 'USD', originalAmount: suggestFractions ? { $gte: dollarFloor, $lt: dollarFloor + 1 } : usd / 100 }] : []),
+      ...(usd && currencyOf(bank) === 'USD' ? [{ amount: suggestFractions ? { $gte: dollarFloor * scale, $lt: (dollarFloor + 1) * scale } : usd }] : [])],
+  };
+  const rows = await BankStatementLine.find({ accountId: bank._id, customerRefundId: null, receiptId: null,
+    $and: [matchAmount, { $or: [{ lineStatus: 'created_entry', pendingRefund: true },
+      { lineStatus: 'unmatched', entryId: null, amount: { $gt: 0 }, movementKind: { $ne: 'card_payment' } }] }],
     ...(!allDates && { day: { $gte: addDays(input.day, -7), $lte: addDays(input.day, 7) } }) }).sort({ day: -1 }).session(session || null).lean();
-  return rows.filter(line => line.amount === amount || (usd && Math.round(line.valuationUsd * 100) === usd)).map(line => ({
+  const merchant = await require('./bankMerchants').matcher(bank._id, session);
+  const eligible = rows.filter(line => line.lineStatus === 'created_entry' || line.movementKind === 'purchase_refund'
+    || (Number(line.originalAmount) > 0 && line.originalCurrency) || merchant(line));
+  const valued = eligible.map(line => ({ ...line, valuationUsd: line.lineStatus === 'created_entry' ? line.valuationUsd
+    : currencyOf(bank) === 'USD' ? line.amount / scale : Number(line.settlementUsd) > 0 ? Number(line.settlementUsd)
+      : line.originalCurrency === 'USD' && Number(line.originalAmount) > 0 ? Number(line.originalAmount) : undefined }));
+  return valued.filter(line => line.amount === amount || (usd && Math.round(line.valuationUsd * 100) === usd)
+    || (suggestFractions && ((amount && Math.floor(line.amount / scale) === Math.floor(amount / scale))
+      || (usd && Math.floor(Number(line.valuationUsd)) === dollarFloor)))).map(line => ({
     _id: line._id, day: line.day, description: line.description, amount: line.amount / 10 ** (currencies.get(currencyOf(bank))?.decimals ?? 2),
     currency: currencyOf(bank), usdValue: line.valuationUsd, nativeMatch: line.amount === amount, dollarMatch: !!usd && Math.round(line.valuationUsd * 100) === usd,
-  }));
+    unposted: line.lineStatus === 'unmatched',
+    nativeIntegerMatch: !!amount && Math.floor(line.amount / scale) === Math.floor(amount / scale),
+    dollarIntegerMatch: !!usd && Math.floor(Number(line.valuationUsd)) === dollarFloor,
+    amountDifference: amount ? (line.amount - amount) / scale : null,
+    usdDifference: usd && Number(line.valuationUsd) > 0 ? (Math.round(line.valuationUsd * 100) - usd) / 100 : null,
+  })).sort((a, b) => Number(b.nativeMatch || b.dollarMatch) - Number(a.nativeMatch || a.dollarMatch)
+    || b.day.localeCompare(a.day));
 }
-async function select(input, session) {
+async function select(input, session, req) {
   const possible = await candidates(input, session);
   if (!input.pendingBankLineId) {
-    if (possible.length) throw fail('يوجد استرداد مرحّل قيد التحديد يطابق المبلغ؛ اختره واعتمد الربط بدلاً من تكرار استلام البنك');
+    if (possible.length) throw fail('يوجد استرداد في الكشف يطابق المبلغ؛ اختره واعتمد الربط بدلاً من تكرار استلام البنك');
     return null;
   }
   if (!possible.some(line => String(line._id) === String(input.pendingBankLineId))) throw fail('الاسترداد المعلق لا يطابق البنك والمبلغ والفترة');
-  const line = await BankStatementLine.findOneAndUpdate({ _id: input.pendingBankLineId, pendingRefund: true, lineStatus: 'created_entry', customerRefundId: null },
+  const line = await BankStatementLine.findOneAndUpdate({ _id: input.pendingBankLineId, customerRefundId: null, receiptId: null,
+    $or: [{ pendingRefund: true, lineStatus: 'created_entry' }, { lineStatus: 'unmatched', entryId: null, amount: { $gt: 0 }, movementKind: { $ne: 'card_payment' } }] },
     { $inc: { pendingClaimVersion: 1 } }, { session, new: true });
   if (!line) throw fail('تم ربط الاسترداد بطلبية أخرى؛ حدّث القائمة');
+  if (line.lineStatus === 'unmatched') await post(line, { session, req });
   return line;
 }
 module.exports = { post, candidates, select };

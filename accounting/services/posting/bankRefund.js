@@ -8,12 +8,16 @@ const { fail, currencyOf, RateBook } = require('./common');
 const { originalOf } = require('./bankAmounts');
 const payables = require('./payables');
 const { logAudit } = require('../audit');
+const { assertDirection, assertMerchant } = require('./bankMatchValidation');
 
 async function list(input = {}) {
   if (!mongoose.isValidObjectId(input.accountId)) throw fail('اختر الحساب');
   const bank = await Account.findById(input.accountId).lean();
   if (!bank?.isCash || !bank.isActive) throw fail('اختر حساب البنك');
-  const line = input.lineId && mongoose.isValidObjectId(input.lineId) ? await BankStatementLine.findById(input.lineId).lean() : input;
+  const stored = input.lineId && mongoose.isValidObjectId(input.lineId) ? await BankStatementLine.findById(input.lineId).lean() : null;
+  if (input.lineId && !stored) throw fail('سطر الكشف غير موجود');
+  const line = stored || { ...input, amount: Math.round(Number(input.statementAmount ?? input.paid ?? 0) * 10 ** ((await getConfig()).currencies.get(bank.currency)?.decimals ?? 2)) };
+  assertDirection(line, true);
   if (line?.accountId && String(line.accountId) !== String(bank._id)) throw fail('سطر الكشف من حساب آخر');
   if ((input.from && !isDay(input.from)) || (input.to && !isDay(input.to)) || (input.from && input.to && input.from > input.to)) throw fail('فترة البحث غير صالحة');
   const { currencies } = await getConfig();
@@ -27,20 +31,32 @@ async function list(input = {}) {
   const credits = await SupplierBill.find({ status: 'posted', isCreditNote: true, originalBillId: { $in: bills.map(b => b._id) } }).lean();
   const postedRefunds = await CustomerRefund.find({ status: 'posted', $or: [{ billId: { $in: bills.map(b => b._id) } }, { orderId: { $in: bills.flatMap(b => b.lines.map(l => l.orderId?._id).filter(Boolean)) } }] }).lean();
   const used = new Set((await BankStatementLine.distinct('customerRefundId', { lineStatus: { $in: ['created_entry', 'matched'] } })).filter(Boolean).map(String));
-  const rows = refunds.map(r => ({ _id: `refund:${r._id}`, kind: 'existing_refund', refundId: r._id, source: 'order', number: r.number, day: r.day,
+  const refundBills = await SupplierBill.find({ _id: { $in: refunds.map(r => r.billId).filter(Boolean) } }).select('vendorId').lean();
+  const rows = refunds.map(r => {
+    const originalBill = refundBills.find(b => String(b._id) === String(r.billId));
+    const merchantMismatch = !!merchant && !!originalBill && String(merchant.vendorId) !== String(originalBill.vendorId);
+    return { _id: `refund:${r._id}`, kind: 'existing_refund', refundId: r._id, source: 'order', number: r.number, day: r.day,
     amount: r.originalAmount || r.usd / 100, currency: r.originalCurrency || 'USD', nativeKnown: !!r.originalCurrency, vendorName: 'ريفاند مسجل على الطلبية', description: r.note,
     orders: r.orderId ? [{ _id: r.orderId._id, number: r.orderId.orderId }] : [], status: 'recorded_refund',
-    bankAmount: r.amount, bankCurrency: r.currency, valuationUsd: r.usd / 100, walletUsd: r.walletUsd / 100, canMatch: !used.has(String(r._id)) && (!(line?.amount || input.paid) || Math.round(r.amount * 10 ** decimals) === (line?.amount || Math.round(Number(input.paid) * 10 ** decimals))),
-  }));
+    merchantMismatch, merchantMatch: !!merchant && !!originalBill && !merchantMismatch, statementVendorName: merchant?.vendorName,
+    matchProblems: merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : [],
+    bankAmount: r.amount, bankCurrency: r.currency, valuationUsd: r.usd / 100, walletUsd: r.walletUsd / 100, canMatch: !merchantMismatch && !used.has(String(r._id)) && (!(line?.amount || input.paid) || Math.round(r.amount * 10 ** decimals) === (line?.amount || Math.round(Number(input.paid) * 10 ** decimals))),
+  }; });
   for (const bill of bills.slice(0, 1000)) {
     const refunded = postedRefunds.filter(r => String(r.billId) === String(bill._id));
     const remaining = Math.max(0, Number(bill.total) - credits.filter(c => String(c.originalBillId) === String(bill._id)).reduce((s, c) => s + Number(c.total), 0)
       - refunded.reduce((s, r) => s + (r.originalCurrency === bill.currency ? Number(r.originalAmount || 0) : 0), 0));
     const orders = bill.lines.filter(l => l.orderId).map(l => ({ _id: l.orderId._id, number: l.orderId.orderId, description: l.description }));
+    const merchantMismatch = !!merchant && String(merchant.vendorId) !== String(bill.vendorId?._id);
+    const known = !!line?.originalCurrency || original.currency !== bank.currency;
+    const currencyMismatch = known && bill.currency !== original.currency;
+    const excessive = known && original.amount > remaining + 0.0005;
     rows.push({ _id: `bill:${bill._id}`, kind: 'bill', billId: bill._id, source: orders.length ? 'order' : 'direct', number: bill.number, day: bill.day,
       amount: bill.total, currency: bill.currency, vendorName: bill.vendorId?.name, vendorId: bill.vendorId?._id,
       merchantMatch: !!merchant && String(merchant.vendorId) === String(bill.vendorId?._id), description: bill.lines.map(l => l.description).join('، '), orders,
-      status: 'refundable', refundableAmount: remaining, canMatch: remaining > 0 && bill.lines.every(l => ['order', 'expense', 'trip', 'customs'].includes(l.target)),
+      merchantMismatch, statementVendorName: merchant?.vendorName,
+      matchProblems: [...(merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : []), ...(currencyMismatch ? ['العملة الأصلية مختلفة'] : []), ...(excessive ? ['الاسترداد أكبر من المتبقي'] : []), ...(line.day && bill.day > line.day ? ['الفاتورة بعد الاسترداد'] : [])],
+      status: 'refundable', refundableAmount: remaining, canMatch: !merchantMismatch && !currencyMismatch && !excessive && (!line.day || bill.day <= line.day) && remaining > 0 && bill.lines.every(l => ['order', 'expense', 'trip', 'customs'].includes(l.target)),
       refundLines: bill.lines.map(l => ({ _id: l._id, amount: l.amount, description: l.description, orderId: l.orderId?._id, orderNumber: l.orderId?.orderId, target: l.target })),
     });
   }
@@ -57,6 +73,7 @@ async function match(id, input, { session, req }) {
   const line = await BankStatementLine.findById(id).session(session);
   if (!line || line.lineStatus !== 'unmatched' || line.amount <= 0) throw fail('اختر سطر مبلغ مرتجع موجب وغير مطابق');
   const bank = await Account.findById(line.accountId).session(session).lean();
+  assertDirection(line, true);
   const { currencies } = await getConfig();
   const decimals = currencies.get(bank.currency)?.decimals ?? 2;
   const amount = line.amount / 10 ** decimals;
@@ -64,6 +81,10 @@ async function match(id, input, { session, req }) {
   if (input.kind === 'existing_refund') {
     const refund = mongoose.isValidObjectId(input.refundId) && await CustomerRefund.findById(input.refundId).session(session).lean();
     if (!refund || refund.status !== 'posted' || String(refund.accountId) !== String(bank._id) || Math.round(refund.amount * 10 ** decimals) !== line.amount) throw fail('الريفاند المسجل لا يطابق الحساب والمبلغ في الكشف');
+    if (refund.billId) {
+      const originalBill = await SupplierBill.findById(refund.billId).session(session).lean();
+      if (originalBill) await assertMerchant(line, bank, originalBill.vendorId, session);
+    }
     if (Math.abs(Date.parse(refund.day) - Date.parse(line.day)) > 7 * 86400000 && !input.confirmDifference) throw fail('أكد اختلاف التاريخ');
     const movements = await services.unmatchedMovements(bank._id, { session });
     if (movements.some(m => String(m._id) === String(refund.entryId) && m.amount === line.amount)) await services.manualMatch(line._id, [refund.entryId], { session, req });
@@ -84,6 +105,7 @@ async function match(id, input, { session, req }) {
   }
   const bill = mongoose.isValidObjectId(input.billId) && await SupplierBill.findById(input.billId).session(session).lean();
   if (!bill || bill.status !== 'posted' || bill.isCreditNote || bill.day > line.day) throw fail('اختر فاتورة أصلية مُرحلة بتاريخ يسبق الاسترداد');
+  await assertMerchant(line, bank, bill.vendorId, session);
   await payables.lockBillAllocation(bill, session);
   const original = originalOf(line, bank.currency, decimals);
   const known = !!line.originalCurrency || original.currency !== bank.currency;

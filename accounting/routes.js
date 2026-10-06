@@ -159,6 +159,10 @@ router.get('/vendors/:id/open-bills', can('purchases', 'payments'), documents.ve
 router.post('/vendors/:id/archive', P.purchases, documents.setVendorActive(false));
 router.post('/vendors/:id/unarchive', P.purchases, documents.setVendorActive(true));
 
+const billImport = require('./services/billImport');
+router.get('/bills/import/references', P.purchases, handle(async (req, res) => res.json(await billImport.templateReferences())));
+router.post('/bills/import/preview', P.purchases, handle(async (req, res) => res.json(await billImport.preview(req.body))));
+router.post('/bills/import/commit', P.purchases, handle(async (req, res) => res.status(201).json(await billImport.commit(req.body, req))));
 router.route('/bills').get(can('purchases', 'payments'), documents.listBills).post(P.purchases, documents.createBill);
 router.route('/bills/:id').get(can('purchases', 'payments'), documents.getBill).patch(P.purchases, documents.updateDraftBill).delete(P.purchases, documents.deleteDraftBill);
 router.post('/bills/:id/post', P.purchases, documents.postDraftBill);
@@ -201,6 +205,10 @@ router.get('/bank/lines/:id', P.treasury, documents.bankLineDetails);
 router.patch('/bank/lines/:id', P.treasury, documents.editBankLine);
 router.get('/bank/suggestions', P.treasury, documents.bankSuggestions);
 router.get('/bank/purchases', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankPurchaseReview').listPurchases(req.query))));
+router.get('/bank/purchase-reconciliation', can('treasury', 'reports'), handle(async (req, res) => res.json(await require('./services/posting/purchaseReconciliation').list(req.query))));
+router.get('/bank/purchase-reconciliation/candidates', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/purchaseReconciliation').statementCandidates(req.query))));
+router.get('/bank/historical-purchases', P.treasury, P.setup, handle(async (req, res) => res.json(await require('./services/posting/purchaseReconciliation').historicalRows(req.query))));
+router.post('/bank/historical-purchases/settle', P.treasury, P.setup, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/purchaseReconciliation').settleHistorical(req.body || {}, { session, req })))));
 router.get('/bank/refunds', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankRefund').list(req.query))));
 router.post('/bank/lines/:id/refund-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankRefund').match(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/purchase-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankPurchaseReview').matchPurchase(req.params.id, req.body || {}, { session, req })))));

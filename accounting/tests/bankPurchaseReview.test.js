@@ -32,6 +32,17 @@ async function imported(extra = {}) {
   await bank.importStatement(source._id, [row], { req });
   return { source, row, line: await BankStatementLine.findOne({ accountId: source._id }).lean() };
 }
+test('known merchant mismatch is blocked in the list, purchase matching and direct posting endpoints', async () => {
+  const original = await bill(55);
+  await Vendor.create({ name: 'Alibaba review merchant', type: 'supplier', bankAliases: ['Alibaba.com Luxembourg'] });
+  const { line, source } = await imported({ description: 'Alibaba.com Luxembourg (55.00 USD)' });
+  const result = await review.listPurchases({ accountId: String(source._id), lineId: String(line._id), status: 'all' });
+  expect(result.results.find(r => String(r.billId) === String(original._id))).toMatchObject({ merchantMismatch: true, canMatch: false });
+  const entries = await JournalEntry.countDocuments();
+  await expect(tx(session => review.matchPurchase(line._id, { kind: 'bill', billId: original._id, confirmDifference: true }, { session, req }))).rejects.toThrow('المورد المختار مختلف');
+  await expect(tx(session => bank.createEntryForLine(line._id, { billId: original._id, manualBillMatch: true, confirmDifference: true }, { session, req }))).rejects.toThrow('المورد المختار مختلف');
+  expect(await JournalEntry.countDocuments()).toBe(entries);
+});
 test('date and source filters separate direct bills, recorded orders and unrecorded order purchases without duplication', async () => {
   const recorded = await order('ORD-REC', 20);
   await order('ORD-RAW', 30);

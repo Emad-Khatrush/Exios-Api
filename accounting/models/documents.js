@@ -80,6 +80,8 @@ const billLineSchema = new Schema({
 const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
   vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
   vendorRef: String,
+  importReference: String,
+  importHash: String,
   day: { type: String, required: true },
   currency: { type: String, required: true },
   rate: Number,
@@ -314,6 +316,8 @@ const bankLineSchema = new Schema({
   matchedOriginalCurrency: String,
   matchDifferenceConfirmed: Boolean,
   purchaseReviewPending: Boolean,
+  historicalPurchase: { type: Boolean, default: false },
+  historicalCovered: { type: Boolean, default: false },
   movementKind: { type: String, enum: ['purchase', 'purchase_refund', 'card_payment'] },
   receiptId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierReceipt' },
   customerRefundId: { type: Schema.Types.ObjectId, ref: 'AccountingCustomerRefund' },

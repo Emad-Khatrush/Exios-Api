@@ -35,6 +35,35 @@ async function incoming(source, extra = {}) {
  await bank.importStatement(source._id, [{ day: '2026-08-02', amount: 3013.22, description: '1688.comLUXEMBOURGLU (62.34 USD)', originalAmount: 62.34, originalCurrency: 'USD', settlementUsd: 62.34, movementKind: 'purchase_refund', ...extra }], { req });
  return BankStatementLine.findOne({ accountId: source._id, lineStatus: 'unmatched' }).lean();
 }
+test('outgoing purchase cannot be listed or posted as refund, including the 109.39 USD versus 81 USD case', async () => {
+ const { source, bill } = await seed('expense', 'USD', 81);
+ const line = await incoming(source, { amount: -5227.53, originalAmount: 109.39, settlementUsd: 109.39,
+  description: 'Alibaba.com Luxembourg (109.39 USD)', movementKind: 'purchase' });
+ const count = await JournalEntry.countDocuments();
+ await expect(refund.list({ accountId: String(source._id), lineId: String(line._id) })).rejects.toThrow('ليست استرداداً');
+ await expect(refund.list({ accountId: String(source._id), statementAmount: -5227.53, paid: 5227.53, day: line.day })).rejects.toThrow('ليست استرداداً');
+ await expect(tx(session => refund.match(line._id, { kind: 'bill', billId: bill._id, confirmDifference: true }, { session, req }))).rejects.toThrow('مبلغ مرتجع');
+ expect(await JournalEntry.countDocuments()).toBe(count);
+ expect((await BankStatementLine.findById(line._id)).lineStatus).toBe('unmatched');
+});
+
+test('equal currency, date and amount cannot justify matching another known merchant', async () => {
+ const { source, bill } = await seed('expense', 'USD', 81);
+ await Vendor.create({ name: 'Alibaba review merchant', type: 'supplier', bankAliases: ['Alibaba.com Luxembourg'] });
+ const line = await incoming(source, { description: 'Alibaba.com Luxembourg (81.00 USD)', originalAmount: 81, settlementUsd: 81 });
+ const listed = await refund.list({ accountId: String(source._id), lineId: String(line._id), status: 'all' });
+ const row = listed.results.find(r => String(r.billId) === String(bill._id));
+ expect(row).toMatchObject({ merchantMismatch: true, canMatch: false });
+ const count = await JournalEntry.countDocuments();
+ await expect(tx(session => refund.match(line._id, { kind: 'bill', billId: bill._id, confirmDifference: true }, { session, req }))).rejects.toThrow('المورد المختار مختلف');
+ expect(await JournalEntry.countDocuments()).toBe(count);
+});
+
+test('card funding cannot be used as a merchant refund', async () => {
+ const { source, bill } = await seed('expense');
+ const line = await incoming(source, { movementKind: 'card_payment', description: 'ODEME ICIN' });
+ await expect(tx(session => refund.match(line._id, { kind: 'bill', billId: bill._id }, { session, req }))).rejects.toThrow('سداد بطاقة');
+});
 const attachedPdf = 'C:/Users/qweem/Downloads/Kart Ekstre-25.08.2026.pdf';
 (fs.existsSync(attachedPdf) ? test : test.skip)('the actual August PDF distinguishes 62.34 USD refund from purchases and card funding', async () => {
  const parsed = await bank.parsePdf(fs.readFileSync(attachedPdf));

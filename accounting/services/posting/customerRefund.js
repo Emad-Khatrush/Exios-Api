@@ -62,7 +62,7 @@ async function createCustomerRefund(input, { session, req }) {
   if (!input.bankLineId && await CustomerRefund.exists({ bankLineId: { $ne: null }, orderId: order._id, accountId: to._id,
     day: input.day, amount: Number(input.amount), status: 'posted' }).session(session)) throw fail('هذا الاسترداد مسجل من كشف البنك؛ اختر الريفاند الموجود لإضافة مبلغ العميل دون تكرار استلام البنك');
   const currency = currencyOf(to);
-  const pendingLine = input.bankLineId ? null : await require('./pendingRefund').select(input, session);
+  const pendingLine = input.bankLineId ? null : await require('./pendingRefund').select(input, session, req);
   const minor = pendingLine ? pendingLine.amount : await toCurrencyMinor(input.amount, currency);
   const { currencies } = await require('../config').getConfig();
   const receivedAmount = pendingLine ? minor / 10 ** (currencies.get(currency)?.decimals ?? 2) : Number(input.amount);
