@@ -52,6 +52,10 @@ async function createYuanPurchase(input, { session, req }) {
   const arrived = input.arrived !== false;
   const cny = Number(input.cnyReceived || input.cnyExpected);
   if (!(cny > 0)) throw fail('كمية اليوان مطلوبة');
+  const reconciliation = require('./alipayReconciliation');
+  // Contend with statement imports before checking their already posted wallet movements.
+  await Account.updateOne({ _id: to._id }, { $inc: { postingVersion: 1 } }, { session });
+  const transactionReference = arrived ? await reconciliation.beforeRecording(to._id, await toCurrencyMinor(cny, 'CNY'), input.day, input.transactionReference, session) : '';
 
   const rates = new RateBook(session);
   // The dollars that left: the payment's own value (a dinar or lira account at its average rate)
@@ -77,6 +81,7 @@ async function createYuanPurchase(input, { session, req }) {
   await rates.lock();
   doc.entryId = entry._id;
   await doc.save({ session });
+  if (arrived) await reconciliation.afterRecording(entry._id, to._id, transactionReference, { session, req });
   await logAudit({ req, action: 'alipay.purchase', model: 'AccountingYuanPurchase', docId: doc._id, after: doc }, session);
   return doc;
 }
@@ -92,9 +97,12 @@ async function completeYuanPurchase(id, input, { session, req }) {
   const cny = Number(input.cnyReceived || doc.cnyExpected);
   if (!(cny > 0)) throw fail('الكمية الواصلة مطلوبة');
   const to = await alipayAccount(input.toAccountId || doc.toAccountId);
+  const reconciliation = require('./alipayReconciliation');
+  await Account.updateOne({ _id: to._id }, { $inc: { postingVersion: 1 } }, { session });
+  const transactionReference = await reconciliation.beforeRecording(to._id, await toCurrencyMinor(cny, 'CNY'), day, input.transactionReference, session);
   const broker = await Vendor.findById(doc.vendorId).session(session);
   const label = `وصول يوان ${doc.number} من ${broker?.name || 'الوسيط'}`;
-  await postEntry({
+  const arrivalEntry = await postEntry({
     eventType: 'YUAN_ARRIVAL', eventKey: `YUAN_ARRIVAL:${doc._id}`, date: day, description: label,
     source: { model: 'AccountingYuanPurchase', id: doc._id },
     lines: [
@@ -104,12 +112,13 @@ async function completeYuanPurchase(id, input, { session, req }) {
   }, { session, user: req?.user });
   Object.assign(doc, { arrived: true, arrivedDay: day, cnyReceived: cny, toAccountId: to._id, rate: Math.round((cny / (doc.usd / 100)) * 10000) / 10000 });
   await doc.save({ session });
+  await reconciliation.afterRecording(arrivalEntry._id, to._id, transactionReference, { session, req });
   await logAudit({ req, action: 'alipay.arrival', model: 'AccountingYuanPurchase', docId: doc._id, after: { cny, day } }, session);
   return doc;
 }
 
 // Everything the Alipay screen shows
-async function dashboard({ from, to } = {}) {
+async function dashboard({ from, to, accountId } = {}) {
   const { accountsById, currencies } = await getConfig();
   const decimals = currencies.get('CNY')?.decimals ?? 2;
   const alipays = [...accountsById.values()].filter((a) => a.isCash && !a.isGroup && a.currency === 'CNY');
@@ -118,12 +127,14 @@ async function dashboard({ from, to } = {}) {
     const balance = await getBalance(account._id);
     accounts.push({
       _id: account._id, code: account.code, name: account.name, cny: balance.foreign, usd: balance.usd,
-      rate: balance.usd > 0 ? Math.round(((balance.foreign / 10 ** decimals) / (balance.usd / 100)) * 10000) / 10000 : null,
+      rate: balance.foreign && balance.usd && Math.sign(balance.foreign) === Math.sign(balance.usd) ? Math.round(((balance.foreign / 10 ** decimals) / (balance.usd / 100)) * 10000) / 10000 : null,
     });
   }
 
+  if (accountId && !alipays.some((a) => String(a._id) === String(accountId))) throw fail('اختر حساب Alipay صحيحًا');
+  const accountScope = accountId ? { toAccountId: accountId } : {};
   const range = from || to ? { day: { ...(from && { $gte: from }), ...(to && { $lte: to }) } } : {};
-  const purchases = await YuanPurchase.find({ status: 'posted', ...range }).sort({ day: -1 }).limit(500)
+  const purchases = await YuanPurchase.find({ status: 'posted', ...range, ...accountScope }).sort({ day: -1 })
     .populate('vendorId', 'name').populate('fromAccountId', 'code name currency').populate('toAccountId', 'code name').lean();
   const brokers = new Map();
   purchases.filter((p) => p.arrived).forEach((p) => {
@@ -135,7 +146,7 @@ async function dashboard({ from, to } = {}) {
     brokers.set(key, row);
   });
   const pendingSince = addDays(today(), -PENDING_DAYS);
-  const pending = (await YuanPurchase.find({ status: 'posted', arrived: false }).sort({ day: 1 }).populate('vendorId', 'name').lean())
+  const pending = (await YuanPurchase.find({ status: 'posted', arrived: false, ...accountScope }).sort({ day: 1 }).populate('vendorId', 'name').lean())
     .map((p) => ({ ...p, late: p.day < pendingSince }));
 
   // Orders marked as Alipay transfers: their revenue, cost and profit
@@ -184,7 +195,7 @@ async function dashboard({ from, to } = {}) {
   });
   return {
     accounts,
-    purchases: purchases.slice(0, 100).map((p) => ({ ...p, broker: p.vendorId?.name })),
+    purchases: purchases.map((p) => ({ ...p, broker: p.vendorId?.name })),
     brokers: [...brokers.values()].map((b) => ({ ...b, rate: b.usd ? Math.round((b.cny / (b.usd / 100)) * 10000) / 10000 : null })),
     pending,
     transfers,
@@ -216,11 +227,11 @@ async function remittanceStatus(orderId, { session } = {}) {
   const accounts = [];
   for (const account of alipays) {
     const balance = await getBalance(account._id, { session });
-    accounts.push({ _id: account._id, name: account.name, cny: balance.foreign / 10 ** decimals, usd: balance.usd, rate: balance.usd > 0 ? Math.round(((balance.foreign / 10 ** decimals) / (balance.usd / 100)) * 10000) / 10000 : null });
+    accounts.push({ _id: account._id, name: account.name, cny: balance.foreign / 10 ** decimals, usd: balance.usd, rate: balance.foreign && balance.usd && Math.sign(balance.foreign) === Math.sign(balance.usd) ? Math.round(((balance.foreign / 10 ** decimals) / (balance.usd / 100)) * 10000) / 10000 : null });
   }
   const { SupplierBill } = require('../../models/documents');
   const bills = await SupplierBill.find({ 'lines.orderId': order._id, status: 'posted', currency: 'CNY', paidImmediatelyFrom: { $in: alipays.map((a) => a._id) } })
-    .select('number day lines total totalUsd paidImmediatelyFrom').sort({ day: 1 }).session(session || null).lean();
+    .select('number day lines total totalUsd paidImmediatelyFrom alipayValuationEntryId alipayValuationUsd alipayValuationAdjustmentUsd alipayValuationProvisional').sort({ day: 1 }).session(session || null).lean();
   const sent = bills.map((bill) => {
     const orderCny = (bill.lines || []).filter((line) => line.target === 'order' && String(line.orderId) === String(order._id))
       .reduce((sum, line) => sum + Number(line.amount || 0), 0);
@@ -236,6 +247,14 @@ async function remittanceStatus(orderId, { session } = {}) {
 }
 
 async function sendRemittance(orderId, input, { session, req }) {
+  // Returning the same successful request must precede balance and duplicate checks.
+  if (input.idempotencyKey) {
+    const existing = await findExisting(require('../../models/documents').SupplierBill, input.idempotencyKey, session);
+    if (existing) {
+      if (!existing.lines.some(line => String(line.orderId) === String(orderId)) || String(existing.paidImmediatelyFrom) !== String(input.accountId)) throw fail('مرجع الطلب مستخدم لعملية أخرى');
+      return existing;
+    }
+  }
   const status = await remittanceStatus(orderId, { session });
   if (!status.order.isRemittance) throw fail('الطلب غير معلَّم «حوالة Alipay»؛ علّمه من فاتورة الشراء أولاً');
   if (status.order.isCanceled) throw fail('الطلب ملغى');
@@ -244,30 +263,30 @@ async function sendRemittance(orderId, input, { session, req }) {
   const cny = Number(input.cny);
   const cnyMinor = await toCurrencyMinor(cny, 'CNY');
   if (!cnyMinor) throw fail('اكتب اليوان المرسل');
-  // Serialize sends from the same Alipay account, then re-read the balance in this transaction.
-  // Without this write, two concurrent requests can both pass the stale balance check.
+  // Serialize sends so concurrent remittances use a consistent carrying valuation.
+  // Negative balances are allowed while deposits and statements await reconciliation.
   const locked = await Account.updateOne(
     { _id: account._id, isCash: true, isActive: true, currency: 'CNY' },
     { $inc: { postingVersion: 1 } },
     { session },
   );
   if (locked.modifiedCount !== 1) throw fail('حساب Alipay غير متاح للإرسال');
-  const currentBalance = await getBalance(account._id, { session });
-  if (cnyMinor > currentBalance.foreign) {
-    const balanceCny = currentBalance.foreign / (10 ** await decimalsOf('CNY'));
-    throw fail(`رصيد ${account.name} ${balanceCny} يوان فقط`);
-  }
-  const normalizedCny = cnyMinor / (10 ** await decimalsOf('CNY'));
   const day = input.day || today();
   if (!isDay(day)) throw fail('التاريخ غير صالح');
   notFuture(day);
+  const reconciliation = require('./alipayReconciliation');
+  const transactionReference = await reconciliation.beforeRecording(account._id, -cnyMinor, day, input.transactionReference, session);
+  const normalizedCny = cnyMinor / (10 ** await decimalsOf('CNY'));
   const vendor = await remittanceVendor(session);
   const { createBill } = require('./payables');
-  return createBill({
+  const bill = await createBill({
     vendorId: vendor._id, day, currency: 'CNY', paidImmediatelyFrom: account._id, enteredFrom: 'order', idempotencyKey: input.idempotencyKey || undefined,
     note: input.note || undefined,
     lines: [{ description: `حوالة Alipay - طلب ${status.order.orderId}`, amount: normalizedCny, target: 'order', orderId: status.order._id }],
   }, { session, req });
+  const payment = await require('../../models/documents').SupplierPayment.findById(bill.paymentId).session(session).lean();
+  if (payment?.entryId) await reconciliation.afterRecording(payment.entryId, account._id, transactionReference, { session, req });
+  return bill;
 }
 
 module.exports.remittanceStatus = remittanceStatus;

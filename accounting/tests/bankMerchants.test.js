@@ -97,3 +97,43 @@ test('accepting a real unknown merchant invoice learns its supplier and subseque
   expect((await bank.classifyRows(source._id, [row]))[0]).toMatchObject({ isRefund: true, vendorName: supplier.name, refundAccount: { code: '530800' } });
   expect(await Vendor.countDocuments({ name: supplier.name })).toBe(1);
 });
+
+
+test('YalukII and IKEA get distinct service and goods classifications', async () => {
+  const source = await account('110202');
+  const hints = await bank.classifyRows(source._id, [
+    {day:'2026-09-01', amount:-100, description:'YalukII factory visit'},
+    {day:'2026-09-01', amount:-200, description:'IKEA goods'},
+  ]);
+  expect(hints[0]).toMatchObject({source:'service', vendorName:'YalukII', office:'china', account:{code:'531700'}});
+  expect(hints[1]).toMatchObject({vendorName:'IKEA', account:{code:'510400'}});
+  expect((await merchants.matcher(source._id))({description:'Yalukll truck service'})).toMatchObject({vendorName:'YalukII',vendorType:'service'});
+});
+
+test('AlQFILA is yuan purchase, never a goods expense or a supplier refund by merchant name alone', async () => {
+  const source=await account('110202'); const expense=await account('510400');
+  const rows=[{day:'2026-09-01',amount:-100,description:'AlQFILA'}, {day:'2026-09-01',amount:100,description:'AlQFILA'}];
+  const hints=await bank.classifyRows(source._id,rows);
+  expect(hints[0]).toMatchObject({source:'yuan',account:null,requiresConfirmation:true});
+  expect(hints[1]).toMatchObject({source:'yuan',account:null,requiresConfirmation:true});
+  expect(hints[1].isRefund).toBeFalsy();
+  await bank.importStatement(source._id,[{...rows[0],counterAccountId:expense._id,office:'china'}],{req});
+  expect(await require('../models/documents').SupplierBill.countDocuments()).toBe(0);
+  expect(await getBalance(source._id)).toEqual({usd:0,foreign:0});
+});
+
+test('unknown purchase defaults to purchase cost while unknown transfers remain for review', async () => {
+  const source=await account('110202');
+  const hints=await bank.classifyRows(source._id,[{day:'2026-09-01',amount:-100,description:'Unlisted shop',originalAmount:100,originalCurrency:'USD'},
+    {day:'2026-09-01',amount:-200,description:'Personal transfer to unknown person'}]);
+  expect(hints[0]).toMatchObject({source:'purchase_default',account:{code:'510400'}});
+  expect(hints[1].account).toBeNull();
+});
+
+test('original YalukII supplier invoice wins over the default service expense', async () => {
+  const source=await account('110202');const expense=await account('531000');const vendor=await Vendor.findOne({name:'YalukII'});
+  const bill=await tx(session=>require('../services/posting/payables').createBill({vendorId:vendor._id,day:'2026-09-01',currency:'USD',
+    lines:[{target:'expense',accountId:expense._id,office:'china',description:'Recorded special service',amount:100}]},{session,req}));
+  const hint=(await bank.classifyRows(source._id,[{day:'2026-09-01',amount:-100,description:'YalukII service payment',originalAmount:100,originalCurrency:'USD'}]))[0];
+  expect(hint.source).toBe('bill');expect(String(hint.suggestedBillId)).toBe(String(bill._id));expect(hint.account).toBeNull();
+});

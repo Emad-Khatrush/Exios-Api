@@ -33,6 +33,8 @@ const journalEntrySchema = new Schema({
   date: { type: Date, required: true },
   // The accounting day in Libya time (YYYY-MM-DD); reports and the lock date work on this
   day: { type: String, required: true },
+  // Economic date retained when a closed period shifts the posting to an open day.
+  originalDay: String,
   description: String,
   eventType: { type: String, required: true },
   eventKey: { type: String, required: true, unique: true },
@@ -49,6 +51,8 @@ const journalEntrySchema = new Schema({
   // Bank statement reconciliation can match one journal entry once per cash account. Written
   // transactionally to prevent concurrent statement lines from claiming the same movement.
   bankMatchedAccounts: [{ type: Schema.Types.ObjectId, ref: 'AccountingAccount' }],
+  bankSourceReference: String,
+  bankSourceAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   // Contention point for concurrent nettings against the same customer receivable claim.
   claimAllocationVersion: { type: Number, default: 0 },
   // Contention point for concurrent repayments against the company loan balance.
@@ -83,5 +87,8 @@ journalEntrySchema.index({ 'lines.apKey': 1 });
 journalEntrySchema.index({ 'lines.tripId': 1 });
 journalEntrySchema.index({ 'lines.orderId': 1 });
 journalEntrySchema.index({ 'source.model': 1, 'source.id': 1 });
+journalEntrySchema.index({ bankSourceAccountId: 1, bankSourceReference: 1 }, {
+  unique: true, partialFilterExpression: { bankSourceReference: { $type: 'string' }, status: 'posted' },
+});
 
 module.exports = mongoose.model('AccountingJournalEntry', journalEntrySchema);

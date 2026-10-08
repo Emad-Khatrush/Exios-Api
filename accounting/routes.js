@@ -111,6 +111,18 @@ router.get('/reports/payables', can('reports', 'payments'), statements.payables)
 router.get('/customers', P.reports, statements.customers);
 router.get('/customer-invoices', P.reports, statements.customerInvoices);
 router.get('/exceptions', P.reports, statements.exceptions);
+const accountingReview = require('./services/accountingReview');
+const reviewTx = fn => require('./services/transaction').runInTransaction(fn);
+router.get('/review', can('reports', 'treasury'), handle(async (req, res) => {
+  const { allItems, fingerprint, ...report } = await accountingReview.queue(req.query);
+  res.json(report);
+}));
+router.post('/review/tasks', P.closing, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.updateTask(req.body, { session, req })))));
+router.post('/review/orders/:id/complete', P.purchases, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.certifyCost(req.params.id, req.body, { session, req })))));
+router.post('/review/trips/:id/complete', P.purchases, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.certifyTrip(req.params.id, req.body, { session, req })))));
+router.post('/review/bank/complete', P.treasury, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.certifyBank(req.body, { session, req })))));
+router.get('/review/status', P.reports, handle(async (req, res) => res.json(await accountingReview.approvalStatus(req.query))));
+router.post('/review/month/approve', P.closing, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.approveMonth(req.body.month, { session, req })))));
 // Review items the accountant accepted leave the daily list; the mark can be taken back
 const exceptionsService = () => require('./services/reports/exceptions');
 router.get('/exceptions/reviewed', P.reports, handle(async (req, res) => res.json({ results: await exceptionsService().listReviewed() })));
@@ -137,6 +149,7 @@ router.post('/close/year', P.closing, statements.closeYear);
 router.post('/close/year/reopen', ownerOnly, statements.reopenYear);
 
 router.get('/odoo', P.setup, odoo.overview);
+router.get('/odoo/master-data', P.setup, odoo.masterData);
 router.put('/odoo/settings', P.setup, odoo.saveSettings);
 router.put('/odoo/mapping', P.setup, odoo.saveMapping);
 router.post('/odoo/exports', P.setup, odoo.createExport);
@@ -160,6 +173,8 @@ router.post('/vendors/:id/archive', P.purchases, documents.setVendorActive(false
 router.post('/vendors/:id/unarchive', P.purchases, documents.setVendorActive(true));
 
 const billImport = require('./services/billImport');
+router.post('/bills/duplicate-preview', P.purchases, handle(async (req, res) => res.json(await require('./services/costDuplicates').preview(req.body, { excludeId: req.body.excludeId }))));
+router.post('/bills/:id/link-order', P.purchases, handle(async (req, res) => res.json(await reviewTx(session => require('./services/linkExistingCost').link(req.params.id, req.body, { session, req })))));
 router.get('/bills/import/references', P.purchases, handle(async (req, res) => res.json(await billImport.templateReferences())));
 router.post('/bills/import/preview', P.purchases, handle(async (req, res) => res.json(await billImport.preview(req.body))));
 router.post('/bills/import/commit', P.purchases, handle(async (req, res) => res.status(201).json(await billImport.commit(req.body, req))));

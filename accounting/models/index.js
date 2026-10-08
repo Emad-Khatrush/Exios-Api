@@ -18,6 +18,7 @@ const Journal = mongoose.model('AccountingJournal', new Schema({
   sequenceResetYearly: { type: Boolean, default: true },
   // Name of the matching journal in Odoo; empty = the default journal of the Odoo export
   odooJournal: { type: String, trim: true, default: '' },
+  odooExternalId: { type: String, trim: true, default: '' },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true }));
 
@@ -214,6 +215,9 @@ const OdooExport = mongoose.model('AccountingOdooExport', new Schema({
   // USD cents
   totalDebit: Number,
   companyCurrency: String,
+  referenceMode: { type: String, enum: ['mapping', 'external_id'], default: 'mapping' },
+  accountReferences: { type: Schema.Types.Mixed, default: undefined },
+  journalReferences: { type: Schema.Types.Mixed, default: undefined },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   undoneAt: Date,
   undoneBy: { type: Schema.Types.ObjectId, ref: 'User' },

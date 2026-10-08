@@ -261,7 +261,7 @@ const LISTS = {
   'yuan-purchases': { Model: docs.YuanPurchase, populate: [{ path: 'vendorId', select: 'name' }, { path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name' }] },
   'write-offs': { Model: docs.ClaimWriteOff, populate: [{ path: 'partnerId', select: 'firstName lastName customerId' }, { path: 'orderId', select: 'orderId' }] },
   receipts: { Model: docs.SupplierReceipt, populate: [{ path: 'vendorId', select: 'name' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'allocations.billId', select: 'number' }] },
-  transfers: { Model: docs.TreasuryTransfer, populate: [{ path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'employeeId', select: 'firstName lastName' }] },
+  transfers: { Model: docs.TreasuryTransfer, populate: [{ path: 'fromAccountId', select: 'code name currency' }, { path: 'toAccountId', select: 'code name currency' }, { path: 'feesFromAccountId', select: 'code name currency' }, { path: 'employeeId', select: 'firstName lastName' }] },
   'cash-counts': { Model: docs.CashCount, populate: [{ path: 'accountId', select: 'code name currency' }] },
   salaries: { Model: docs.SalaryPayment, populate: [{ path: 'employeeId', select: 'firstName lastName' }, { path: 'paidFromAccountId', select: 'code name currency' }] },
   equity: { Model: docs.EquityTransaction, populate: [{ path: 'accountId', select: 'code name currency' }] },
@@ -274,6 +274,7 @@ module.exports.listDocuments = (kind) => handle(async (req, res) => {
   if (isObjectId(req.query.vendorId)) extra.vendorId = req.query.vendorId;
   if (isObjectId(req.query.employeeId)) extra.employeeId = req.query.employeeId;
   if (isObjectId(req.query.accountId)) extra.$or = [{ accountId: oid(req.query.accountId) }, { fromAccountId: oid(req.query.accountId) }, { toAccountId: oid(req.query.accountId) }];
+  if (kind === 'transfers' && extra.$or) extra.$or.push({ feesFromAccountId: oid(req.query.accountId) });
   // The document number or its note
   if (req.query.search) {
     const pattern = new RegExp(escapeRegex(String(req.query.search)), 'i');
@@ -394,15 +395,57 @@ module.exports.accountBalance = handle(async (req, res) => {
 module.exports.listBankLines = handle(async (req, res) => {
   if (!isObjectId(req.query.accountId)) throw badRequest('اختر الحساب');
   const query = { accountId: req.query.accountId };
-  if (req.query.lineStatus) query.lineStatus = req.query.lineStatus;
-  const lines = await docs.BankStatementLine.find(query).sort({ day: -1 }).limit(500)
+  const { lineStatus, linkage, direction, from, to, search } = req.query;
+  if (lineStatus) {
+    if (!['unmatched', 'matched', 'created_entry', 'ignored'].includes(lineStatus)) throw badRequest('حالة الكشف غير صالحة');
+    query.lineStatus = lineStatus;
+  }
+  if (linkage && !['unlinked', 'linked', 'order', 'bill', 'refund', 'pending_refund'].includes(linkage)) throw badRequest('فلتر الربط غير صالح');
+  const orderLinks = [{ orderId: { $ne: null } }];
+  const billLinks = [{ billId: { $ne: null } }];
+  const refundLinks = ['customerRefundId', 'receiptId', 'creditNoteId'].map(field => ({ [field]: { $ne: null } }));
+  // A statement matched to an existing payment can carry its link through the journal
+  // entry instead of direct billId/orderId fields. Suggestions alone are never links.
+  if (linkage && linkage !== 'pending_refund') {
+    const entries = await JournalEntry.find({ 'lines.accountId': oid(req.query.accountId) }).select('lines.orderId lines.apKey source.model').lean();
+    const withEntries = (conditions, ids) => { if (ids.length) conditions.push({ entryId: { $in: ids } }, { matchedEntryIds: { $in: ids } }); };
+    const billIds = [...new Set(entries.flatMap(entry => entry.lines.map(line => String(line.apKey || '').replace(/^BILL:/, '')).filter(id => isObjectId(id))))];
+    const orderBillIds = billIds.length ? await docs.SupplierBill.distinct('_id', { _id: { $in: billIds }, lines: { $elemMatch: { orderId: { $ne: null } } } }) : [];
+    const orderBills = new Set(orderBillIds.map(String));
+    if (orderBillIds.length) orderLinks.push({ billId: { $in: orderBillIds } });
+    withEntries(orderLinks, entries.filter(entry => entry.lines.some(line => line.orderId || (line.apKey?.startsWith('BILL:') && orderBills.has(line.apKey.slice(5))))).map(entry => entry._id));
+    withEntries(billLinks, entries.filter(entry => entry.lines.some(line => /^BILL:/.test(line.apKey || ''))).map(entry => entry._id));
+    withEntries(refundLinks, entries.filter(entry => ['AccountingCustomerRefund', 'AccountingSupplierReceipt'].includes(entry.source?.model)).map(entry => entry._id));
+  }
+  const links = [...orderLinks, ...billLinks, ...refundLinks];
+  if (linkage === 'unlinked') query.$nor = links;
+  if (linkage === 'linked') query.$or = links;
+  if (linkage === 'order') query.$or = orderLinks;
+  if (linkage === 'bill') query.$or = billLinks;
+  if (linkage === 'refund') query.$or = refundLinks;
+  if (linkage === 'pending_refund') query.pendingRefund = true;
+  if (direction && !['in', 'out'].includes(direction)) throw badRequest('اتجاه الحركة غير صالح');
+  if (direction) query.amount = direction === 'in' ? { $gt: 0 } : { $lt: 0 };
+  if (from || to) {
+    const { isDay } = require('../services/dates');
+    if ((from && !isDay(from)) || (to && !isDay(to)) || (from && to && from > to)) throw badRequest('نطاق التاريخ غير صالح');
+    query.day = { ...(from && { $gte: from }), ...(to && { $lte: to }) };
+  }
+  if (search) {
+    if (typeof search !== 'string' || search.length > 200) throw badRequest('نص البحث طويل أو غير صالح');
+    const expression = new RegExp(escapeRegex(search.trim()), 'i');
+    query.$and = [{ $or: ['description', 'reference', 'counterparty', 'sourceTransactionId'].map(field => ({ [field]: expression })) }];
+  }
+  const total = await docs.BankStatementLine.countDocuments(query);
+  const lines = await docs.BankStatementLine.find(query).sort({ day: -1, _id: -1 }).limit(500)
     .populate({ path: 'matchedEntryIds', select: 'number day status lines.accountId', populate: { path: 'lines.accountId', select: 'code name' } })
     .populate({ path: 'entryId', select: 'number status lines.accountId', populate: { path: 'lines.accountId', select: 'code name' } })
-    .populate('billId', 'number').populate('orderId', 'orderId').populate('customerRefundId', 'number walletUsd status').lean();
+    .populate('billId', 'number').populate('orderId', 'orderId').populate('customerRefundId', 'number walletUsd status')
+    .populate('historicalSettlementPaymentId', 'number day').lean();
   const movements = await bank.unmatchedMovements(req.query.accountId);
   const balance = await getBalance(req.query.accountId);
   const lastWithBalance = await docs.BankStatementLine.findOne({ accountId: req.query.accountId, balanceAfter: { $ne: null } }).sort({ day: -1, createdAt: -1 }).lean();
-  res.json({ lines, unmatchedMovements: movements, bookBalance: balance, statementBalance: lastWithBalance?.balanceAfter ?? null });
+  res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements, bookBalance: balance, statementBalance: lastWithBalance?.balanceAfter ?? null });
 });
 
 module.exports.importBankLines = handle(async (req, res) => {
@@ -557,7 +600,7 @@ module.exports.lookupClaims = handle(async (req, res) => {
 // ---- Alipay (spec 19.5) ----
 
 module.exports.alipayDashboard = handle(async (req, res) => {
-  res.json(await require('../services/posting/alipay').dashboard({ from: req.query.from || undefined, to: req.query.to || undefined }));
+  res.json(await require('../services/posting/alipay').dashboard({ from: req.query.from || undefined, to: req.query.to || undefined, accountId: req.query.accountId || undefined }));
 });
 
 module.exports.completeYuanPurchase = handle(async (req, res) => {

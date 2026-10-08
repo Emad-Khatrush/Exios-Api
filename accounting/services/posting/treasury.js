@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 const { TreasuryTransfer, CashCount } = require('../../models/documents');
 const { postEntry } = require('../ledger');
-const { getBalance } = require('../carrying');
+const { getBalance, valueOutflow } = require('../carrying');
 const { isDay } = require('../dates');
 const { roundHalfAway } = require('../money');
 const { logAudit } = require('../audit');
@@ -34,10 +34,16 @@ async function createTransfer(input, { session, req }) {
   const { account: to, isAdvance: toAdvance } = await treasuryAccount(input.toAccountId, 'الحساب المستلم', input.employeeId);
   if (String(from._id) === String(to._id)) throw fail('الحساب المرسل والمستلم متطابقان');
 
+  const feesAmount = input.hasFees === false ? 0 : Number(input.fees || 0);
+  if (!Number.isFinite(feesAmount) || feesAmount < 0 || (input.hasFees === true && !feesAmount)) throw fail('أدخل قيمة رسوم تحويل موجبة');
+  if (input.hasFees === true && !input.feesFromAccountId) throw fail('اختر الخزينة التي دفعت منها رسوم التحويل');
+  const feesFrom = feesAmount ? await getAccount(input.feesFromAccountId || from._id, 'خزينة دفع الرسوم') : null;
+  if (feesFrom && !feesFrom.isCash) throw fail('اختر خزينة أو بنكاً أو محفظة إلكترونية لدفع الرسوم');
   const affectsCurrentCash = !(await isBeforeCashCount(input.day));
-  if (affectsCurrentCash) await lockPostingAccounts([from, to], session);
+  if (affectsCurrentCash) await lockPostingAccounts([from, to, feesFrom], session);
   const fromMinor = await toCurrencyMinor(input.fromAmount, currencyOf(from));
-  const feesMinor = input.fees ? await toCurrencyMinor(input.fees, currencyOf(from)) : 0;
+  const feesMinor = feesFrom ? await toCurrencyMinor(feesAmount, currencyOf(feesFrom)) : 0;
+  if (feesAmount && !feesMinor) throw fail('قيمة الرسوم أصغر من دقة عملة الخزينة');
   if (!fromMinor) throw fail('المبلغ المرسل مطلوب');
   // Custody and loans are given and settled in the same currency (owner's request 2026-10-04): the
   // money comes back at the rate it went out at, and closing it leaves no exchange difference
@@ -52,8 +58,10 @@ async function createTransfer(input, { session, req }) {
   }
 
   const rates = new RateBook(session);
-  const outUsd = await valueOut(from, fromMinor + feesMinor, { day: input.day, docRate: input.rate, rates, ...(fromAdvance && { employeeId: input.employeeId }) });
-  const feesUsd = feesMinor ? roundHalfAway((outUsd * feesMinor) / (fromMinor + feesMinor)) : 0;
+  const feesFromSender = feesFrom && String(feesFrom._id) === String(from._id);
+  const senderFeesMinor = feesFromSender ? feesMinor : 0;
+  const outUsd = await valueOut(from, fromMinor + senderFeesMinor, { day: input.day, docRate: input.rate, rates, ...(fromAdvance && { employeeId: input.employeeId }) });
+  let feesUsd = senderFeesMinor ? roundHalfAway((outUsd * senderFeesMinor) / (fromMinor + senderFeesMinor)) : 0;
   const sentUsd = outUsd - feesUsd;
 
   let toMinor;
@@ -71,9 +79,21 @@ async function createTransfer(input, { session, req }) {
     toUsd = isForeign(to) ? sentUsd : toMinor;
   }
 
+  if (feesMinor && !feesFromSender) {
+    if (String(feesFrom._id) === String(to._id) && isForeign(to)) {
+      // Fees paid after receiving this transfer leave at the receiving account's new average.
+      const held = await getBalance(to._id, { session });
+      feesUsd = valueOutflow({ usd: held.usd + toUsd, foreign: held.foreign + toMinor }, feesMinor);
+      if (feesUsd === null) feesUsd = await rates.toUsd(feesMinor, currencyOf(feesFrom), input.day, input.feesRate);
+    } else {
+      feesUsd = await valueOut(feesFrom, feesMinor, { day: input.day, docRate: input.feesRate, rates });
+    }
+  }
+
   const [doc] = await TreasuryTransfer.create([{
     day: input.day, fromAccountId: from._id, fromAmount: Number(input.fromAmount), toAccountId: to._id,
-    toAmount: staffMoney ? Number(input.fromAmount) : !to.currency ? toMinor / 100 : Number(input.toAmount), fees: Number(input.fees || 0),
+    toAmount: staffMoney ? Number(input.fromAmount) : !to.currency ? toMinor / 100 : Number(input.toAmount), fees: feesAmount,
+    ...(feesFrom && { feesFromAccountId: feesFrom._id, feesCurrency: currencyOf(feesFrom) }),
     employeeId: input.employeeId || undefined, note: input.note, attachments: input.attachments,
     idempotencyKey: input.idempotencyKey, createdBy: req?.user?._id, status: 'posted',
     number: await nextDocNumber('TRF', input.day, session),
@@ -82,11 +102,13 @@ async function createTransfer(input, { session, req }) {
   const employee = input.employeeId ? { employeeId: toId(input.employeeId) } : {};
   const lines = [
     moneyLine(to, 'debit', toMinor, toUsd, { label: `تحويل من ${from.name}`, ...(toAdvance && employee) }),
-    moneyLine(from, 'credit', fromMinor + feesMinor, outUsd, { label: `تحويل إلى ${to.name}`, ...(fromAdvance && employee) }),
+    moneyLine(from, 'credit', fromMinor + senderFeesMinor, outUsd, { label: `تحويل إلى ${to.name}`, ...(fromAdvance && employee) }),
   ];
-  if (feesUsd) {
+  if (feesMinor) {
+    if (!feesFromSender) lines.push(moneyLine(feesFrom, 'credit', feesMinor, feesUsd, { label: `دفع رسوم تحويل ${doc.number}` }));
     const feesAccount = input.feesAccountId ? await getAccount(input.feesAccountId, 'حساب الرسوم') : await resolveAccount('bank_fees');
-    lines.push({ accountId: feesAccount._id, debit: feesUsd, office: from.office || to.office, label: 'رسوم التحويل' });
+    if (feesAccount.type !== 'expense' || feesAccount.isCash) throw fail('حساب الرسوم يجب أن يكون حساب مصروف');
+    if (feesUsd) lines.push({ accountId: feesAccount._id, debit: feesUsd, office: feesFrom.office || from.office || to.office, label: 'رسوم التحويل' });
     doc.feesAccountId = feesAccount._id;
   }
   await addFxLine(lines, from.office || to.office);

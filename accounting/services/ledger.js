@@ -226,6 +226,7 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
     journalId: journal._id,
     date,
     day,
+    originalDay: toDay(inputDate),
     description: input.description,
     eventType: input.eventType,
     eventKey: input.eventKey,
@@ -241,6 +242,12 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
     fallbacks: input.fallbacks,
   }], { session });
 
+  if (!input.migrationRunId && input.eventType !== 'ALIPAY_REVALUATION') {
+    const valuation = require('./posting/alipayValuation');
+    for (const accountId of cashAccountIds) {
+      if (config.accountsById.get(accountId)?.currency === 'CNY') valuation.queue(session, accountId, user);
+    }
+  }
   return entry;
 }
 

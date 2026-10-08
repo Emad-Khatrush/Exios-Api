@@ -133,8 +133,9 @@ const albarakaAccount = {
           if (Math.abs(candidate - expected) < 1) { received = candidate; break; }
         }
         description = `${received.toFixed(2)} TRY Karşılığı ${sale[2]} ${sale[3]} Satış, Kur: ${sale[4]}`;
-        row.counterAmount = received;
-        row.counterCurrency = 'TRY';
+        const accountCurrency = text.match(/Tutar\s*\((USD|TRY|EUR)\)/i)?.[1].toUpperCase();
+        row.counterAmount = accountCurrency === 'TRY' ? Number(sale[2]) : received;
+        row.counterCurrency = accountCurrency === 'TRY' ? sale[3].toUpperCase() : 'TRY';
         row.exchangeRate = Number(sale[4]);
       } else {
         // The receipt number comes first, glued to the text: it is dropped

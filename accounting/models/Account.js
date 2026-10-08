@@ -35,6 +35,7 @@ const accountSchema = new Schema({
   seedKey: { type: String, default: undefined },
   // The account in Odoo that this one is exported to (its code there)
   odooCode: { type: String, trim: true, default: '' },
+  odooExternalId: { type: String, trim: true, default: '' },
 }, { timestamps: true });
 
 accountSchema.index({ seedKey: 1 }, { unique: true, sparse: true });

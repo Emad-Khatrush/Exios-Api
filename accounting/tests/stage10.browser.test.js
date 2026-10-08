@@ -132,16 +132,51 @@ suite('stage 10: real production frontend against isolated accounting', () => {
   });
 
   test('all accounting sections render without JS errors or failed API requests, desktop and mobile', async () => {
-    const routes = ['', 'entries', 'accounts', 'trial-balance', 'rates', 'settings', 'audit', 'bills', 'customers', 'customer-invoices', 'vendors', 'payments', 'receipts/new', 'expenses', 'office-expenses', 'trips', 'treasury', 'bank', 'employees', 'assets', 'equity', 'netting', 'migration', 'guide', 'suspense', 'reports', 'exceptions', 'closing', 'odoo', 'alipay', 'start', 'access', 'backups'];
+    const routes = ['', 'entries', 'accounts', 'trial-balance', 'rates', 'settings', 'audit', 'bills', 'customers', 'customer-invoices', 'vendors', 'payments', 'receipts/new', 'expenses', 'office-expenses', 'trips', 'treasury', 'bank', 'employees', 'assets', 'equity', 'netting', 'migration', 'guide', 'suspense', 'reports', 'exceptions', 'review', 'closing', 'odoo', 'alipay', 'start', 'access', 'backups'];
     for (const route of routes) {
       await go(`/accounting/${route}`);
       expect(await page.$('.acc-page-header')).not.toBeNull();
     }
     await page.setViewport({ width: 390, height: 844 });
-    for (const route of ['reports', 'treasury', 'exceptions']) await go(`/accounting/${route}`);
+    for (const route of ['reports', 'treasury', 'exceptions', 'review', 'closing']) await go(`/accounting/${route}`);
     await page.setViewport({ width: 1440, height: 1050 });
     expect(errors).toEqual([]);
     expect(failed).toEqual([]);
+  });
+
+  test('review protects bank closing and account approval through the real browser', async () => {
+    const bank = await account('110202');
+    await post({ eventType: 'MANUAL', eventKey: 'BROWSER_REVIEW:OPENING', date: '2026-09-01', description: 'Isolated bank opening',
+      lines: [{ accountId: bank._id, debit: 100000 }, { accountId: (await account('390000'))._id, credit: 100000 }] }, { user: owner });
+    await go('/accounting/review?from=2026-09-01&to=2026-09-30');
+    await page.waitForFunction(() => document.body.textContent.includes('الرصيد الختامي لم يُراجع مقابل الكشف'));
+    await clickText('مراجعة الرصيد الختامي');
+    await type(await field('الرصيد الختامي من الكشف (USD)', '[role="dialog"]'), '1000');
+    const checked = page.waitForResponse(r => r.url().endsWith('/review/bank/complete') && r.request().method() === 'POST');
+    await clickText('حفظ المراجعة');
+    expect((await checked).status()).toBe(200);
+    await page.waitForFunction(() => !document.body.textContent.includes('الرصيد الختامي لم يُراجع مقابل الكشف'));
+    await go('/accounting/closing');
+    await clickText('2026-09', '.acc-months__label');
+    await pause(600);
+    const locked = page.waitForResponse(r => r.url().endsWith('/close/month') && r.request().method() === 'POST');
+    await clickText('إقفال 2026-09');
+    await page.click('[role="dialog"] input[type="checkbox"]');
+    await clickText('تأكيد');
+    expect((await locked).status()).toBe(200);
+    await page.waitForFunction(() => document.body.textContent.includes('مقفل مسبقاً'));
+    const approved = page.waitForResponse(r => r.url().endsWith('/review/month/approve') && r.request().method() === 'POST');
+    await clickText('اعتماد حسابات 2026-09');
+    await page.click('[role="dialog"] input[type="checkbox"]');
+    await clickText('تأكيد');
+    expect((await approved).status()).toBe(200);
+    await page.waitForFunction(() => document.body.textContent.includes('حسابات هذا الشهر معتمدة'));
+    expect(await usd('110202')).toBe(100000);
+    await resetDb();
+    await AccountingSettings.updateOne({ key: 'main' }, { $set: { liveEnabled: true, migrationDate: '2026-01-01', cutoffAt: new Date('2026-01-01') } });
+    invalidateConfig();
+    await CurrencyRate.create({ currency: 'LYD', day: '2026-01-01', rate: 10 });
+    await User.collection.insertMany([owner, customer]);
   });
 
   test('manual journal is posted and cancelled through browser controls, with exact ledger reversal', async () => {

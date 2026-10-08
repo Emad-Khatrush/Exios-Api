@@ -386,7 +386,7 @@ const SITE_VENDORS = {
 const MUTAHEDA_VENDOR = 'مورد خدمات - المتحدة';
 
 const BANK_RULES = [
-  ...require('./merchants').flatMap(v => v.bankAliases.map(keyword => [keyword, '510400', 0, { vendor: v.name }])),
+  ...require('./merchants').filter(v => v.bankPurpose !== 'yuan_purchase').flatMap(v => v.bankAliases.map(keyword => [keyword, v.bankAccountCode || '510400', 0, { vendor: v.name, office: v.bankOffice }])),
   // Websites: buying for customers' invoices (purchase invoice cost)
   ...['alibaba', '1688', 'taobao', 'aliexpress', 'amazon', 'amzn', 'ebay', 'temu', 'shein', 'noon', 'trendyol', 'hepsiburada', 'iherb', 'walmart',
     // Gulf shops paid through their payment pages
@@ -423,9 +423,9 @@ const BANK_RULES = [
   // Mutaheda: it has no rule, so it is matched to that deposit
   ['com', '530400', 2, { bank: '110201', vendor: '@bank' }],
   ['1414', '531700', 0, { bank: '110201', vendor: `${MUTAHEDA_VENDOR} {party:1414}`, direction: 'out' }],
-].map(([keyword, accountCode, priority = 0, { bank, vendor, direction = 'any' } = {}]) => ({
+].map(([keyword, accountCode, priority = 0, { bank, vendor, office, direction = 'any' } = {}]) => ({
   seedKey: `bank-rule:${bank ? `${bank}:` : ''}${keyword}${direction === 'any' ? '' : `:${direction}`}`, keyword, direction, accountCode, priority,
-  bankCode: bank || null, vendorName: vendor || SITE_VENDORS[keyword] || undefined,
+  bankCode: bank || null, office, vendorName: vendor || SITE_VENDORS[keyword] || undefined,
 })).filter((rule, index, all) => all.findIndex(other => other.seedKey === rule.seedKey) === index);
 
 const SETTINGS = {

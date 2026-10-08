@@ -15,7 +15,7 @@ async function details(id) {
   if (!line) throw notFound('سطر الكشف غير موجود');
   const currentIds = [line.entryId, ...(line.matchedEntryIds || [])].filter(Boolean).map(String);
   const payments = await SupplierPayment.find({ $or: [
-    { entryId: { $in: currentIds } }, ...(line.paymentId ? [{ _id: line.paymentId }] : []),
+    { entryId: { $in: currentIds } }, ...(line.paymentId ? [{ _id: line.paymentId }] : []), ...(line.historicalSettlementPaymentId ? [{ _id: line.historicalSettlementPaymentId }] : []),
   ] }).populate('vendorId', 'name').lean();
   const refunds = await CustomerRefund.find({ $or: [{ entryId: { $in: currentIds } }, { bankLineId: line._id }, ...(line.customerRefundId ? [{ _id: line.customerRefundId }] : [])] }).lean();
   currentIds.push(...refunds.flatMap(refund => (refund.bankValuationEntryIds || []).map(String)));

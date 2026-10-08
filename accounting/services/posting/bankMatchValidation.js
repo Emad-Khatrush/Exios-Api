@@ -1,6 +1,7 @@
 const { fail } = require('./common');
 const { matcher } = require('./bankMerchants');
 function assertDirection(line, refund) {
+  require('./alipayReconciliation').assertWallet(line);
   if (!Number.isFinite(Number(line.amount)) || !Number(line.amount)) throw fail('مبلغ سطر الكشف غير صالح');
   if (refund && (Number(line.amount) <= 0 || line.movementKind === 'card_payment')) throw fail('هذه الحركة شراء أو سداد بطاقة وليست استرداداً وارداً؛ صحح اتجاه السطر أو اختر سداد المشتريات');
   if (!refund && Number(line.amount) >= 0) throw fail('سداد المشتريات يتطلب مبلغاً خارجاً من الحساب');

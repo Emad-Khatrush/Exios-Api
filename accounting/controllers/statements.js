@@ -15,21 +15,27 @@ const period = (query) => {
   return { from: from || undefined, to: to || undefined, asOf: asOf || undefined };
 };
 
+const reviewedResponse = async (res, result, query = {}) => {
+  let reviewStatus;
+  try { reviewStatus = await require('../services/accountingReview').approvalStatus({ from: query.from, to: query.to || query.asOf }); }
+  catch (error) { reviewStatus = { status: 'provisional', checkUnavailable: true, message: 'تعذّر التحقق من اكتمال المراجعة' }; }
+  res.json({ ...result, reviewStatus });
+};
 module.exports.incomeStatement = handle(async (req, res) => {
   const columns = ['month', 'year', 'office'].includes(req.query.columns) ? req.query.columns : undefined;
-  res.json(await statements.incomeStatement({ ...period(req.query), office: req.query.office || undefined, columns }));
+  await reviewedResponse(res, await statements.incomeStatement({ ...period(req.query), office: req.query.office || undefined, columns }), req.query);
 });
-module.exports.balanceSheet = handle(async (req, res) => res.json(await statements.balanceSheet(period(req.query))));
-module.exports.cashFlow = handle(async (req, res) => res.json(await statements.cashFlow(period(req.query))));
-module.exports.cashMovements = handle(async (req, res) => res.json(await statements.cashMovements(period(req.query))));
-module.exports.fx = handle(async (req, res) => res.json(await statements.fxReport(period(req.query))));
+module.exports.balanceSheet = handle(async (req, res) => reviewedResponse(res, await statements.balanceSheet(period(req.query)), req.query));
+module.exports.cashFlow = handle(async (req, res) => reviewedResponse(res, await statements.cashFlow(period(req.query)), req.query));
+module.exports.cashMovements = handle(async (req, res) => reviewedResponse(res, await statements.cashMovements(period(req.query)), req.query));
+module.exports.fx = handle(async (req, res) => reviewedResponse(res, await statements.fxReport(period(req.query)), req.query));
 
 module.exports.trips = handle(async (req, res) => {
   const { status, search, shippingType } = req.query;
-  res.json(await operations.tripProfitability({ status: status || undefined, search: search || undefined, shippingType: shippingType || undefined }));
+  await reviewedResponse(res, await operations.tripProfitability({ status: status || undefined, search: search || undefined, shippingType: shippingType || undefined }), req.query);
 });
 module.exports.purchases = handle(async (req, res) => {
-  res.json(await operations.purchaseProfitability({ search: req.query.search || undefined, onlyWithoutCost: req.query.withoutCost === 'true' }));
+  await reviewedResponse(res, await operations.purchaseProfitability({ search: req.query.search || undefined, onlyWithoutCost: req.query.withoutCost === 'true' }), req.query);
 });
 module.exports.receivables = handle(async (req, res) => {
   const partnerId = isObjectId(req.query.partnerId) ? req.query.partnerId : undefined;
@@ -69,7 +75,12 @@ module.exports.exceptions = handle(async (req, res) => {
   res.json((await exceptions.latest()) || (await exceptions.runAndStore()));
 });
 
-module.exports.monthChecklist = handle(async (req, res) => res.json(await closing.monthChecklist(String(req.query.month || ''))));
+module.exports.monthChecklist = handle(async (req, res) => {
+  const month = String(req.query.month || '');
+  const checklist = await closing.monthChecklist(month);
+  const reviewStatus = await require('../services/accountingReview').approvalStatus({ from: month + '-01', to: checklist.end });
+  res.json({ ...checklist, reviewStatus });
+});
 module.exports.closeMonth = handle(async (req, res) => {
   const result = await runInTransaction((session) => closing.closeMonth(String(req.body?.month || ''), { session, req }));
   closing.refreshConfig();

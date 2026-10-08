@@ -264,7 +264,8 @@ test('unknown refund posts to suspense, later links from the order without repea
  const suggestions = await require('../services/posting/pendingRefund').candidates(input);
  expect(suggestions.map(row => String(row._id))).toContain(String(line._id));
  expect((await require('../services/posting/pendingRefund').candidates({ ...input, day: '2026-10-05' }, null, { allDates: true })).map(row => String(row._id))).toContain(String(line._id));
- await expect(tx(session => createCustomerRefund(input, { session, req }))).rejects.toThrow('قيد التحديد');
+ await expect(tx(session => createCustomerRefund(input, { session, req }))).rejects.toThrow(/قيد التحديد|اختره واعتمد الربط/);
+ expect(await getBalance(source._id)).toEqual({ usd: 6234, foreign: 301322 });
  const doc = await tx(session => createCustomerRefund({ ...input, pendingBankLineId: line._id }, { session, req }));
  expect(doc).toMatchObject({ usd: 6234, walletUsd: 6200, amount: 3013.22 });
  expect(await getBalance(source._id)).toEqual({ usd: 6234, foreign: 301322 });

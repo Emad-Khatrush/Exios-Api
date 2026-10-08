@@ -76,7 +76,7 @@ async function list(input = {}) {
       const currency = item.currency || 'USD';
       if ((input.from && itemDay < input.from) || (input.to && itemDay > input.to) || (input.currency && currency !== input.currency)) continue;
       const linked = bankLines.filter(l => id(l.purchaseItemId) === id(item));
-      const represented = coverage.some(b => b.idempotencyKey === `MIG:PURCH:${item._id}` || linked.some(l => id(l.billId) === id(b)));
+      const represented = coverage.some(b => b.idempotencyKey === `MIG:PURCH:${item._id}` || b.lines.some(l => id(l.purchaseItemId) === id(item)) || linked.some(l => id(l.billId) === id(b)));
       const sameItems = order.purchaseItems.filter(i => (i.currency || 'USD') === currency && Number(i.unitPrice) === Number(item.unitPrice));
       const sameBills = coverage.filter(b => b.currency === currency && b.lines.some(l => id(l.orderId) === id(order) && Number(l.amount) === Number(item.unitPrice)));
       if (represented || (sameItems.length === 1 && sameBills.length === 1)) continue;

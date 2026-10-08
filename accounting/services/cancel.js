@@ -18,6 +18,8 @@ const RULES = {
   AccountingSupplierBill: {
     Model: docs.SupplierBill,
     async check(bill, { session }) {
+      if (await docs.BankStatementLine.exists({ billId: bill._id, historicalSettlementPaymentId: { $ne: null }, lineStatus: 'created_entry' }).session(session))
+        throw fail('الفاتورة لها تسوية سداد تاريخي مع البنك؛ ألغِ التسوية من سطر الكشف أولاً');
       const payments = await docs.SupplierPayment.find({ 'allocations.billId': bill._id, status: ACTIVE, autoFromBillId: { $ne: bill._id } }).session(session);
       if (payments.length) throw fail(`على الفاتورة دفعات (${payments.map((p) => p.number).join('، ')}). ألغِ الدفعات أولاً.`);
       const notes = await docs.SupplierBill.find({ originalBillId: bill._id, status: ACTIVE }).session(session);
@@ -46,8 +48,13 @@ const RULES = {
   },
   AccountingSupplierPayment: {
     Model: docs.SupplierPayment,
+    async check(payment, { session }) {
+      if (await docs.BankStatementLine.exists({ historicalSettlementPaymentId: payment._id, lineStatus: 'created_entry' }).session(session))
+        throw fail('هذا السداد التاريخي تمت تسويته مع البنك؛ ألغِ التسوية من سطر الكشف أولاً');
+    },
     // A payment that changed its bills' cost: their orders and trips take the change back
     async after(payment, context) {
+      await require('./posting/alipayReconciliation').releaseDocumentMatches('AccountingSupplierPayment', payment._id, context);
       if (!payment.costDifferenceUsd) return;
       const { syncBillTargets } = require('./posting/payables');
       for (const allocation of payment.allocations) {
@@ -73,7 +80,11 @@ const RULES = {
       }
     },
   },
-  AccountingYuanPurchase: { Model: docs.YuanPurchase },
+  AccountingYuanPurchase: { Model: docs.YuanPurchase,
+    async after(purchase, context) {
+      await require('./posting/alipayReconciliation').releaseDocumentMatches('AccountingYuanPurchase', purchase._id, context);
+    },
+  },
   AccountingCustomerRefund: {
     Model: docs.CustomerRefund,
     async check(refund, { session, confirmNegative }) {
@@ -137,7 +148,8 @@ const RULES = {
       const currency = to.currency || 'USD';
       const balance = await getBalance(to._id, { session });
       const have = currency === 'USD' ? balance.usd : balance.foreign;
-      const out = await toCurrencyMinor(transfer.toAmount, currency);
+      let out = await toCurrencyMinor(transfer.toAmount, currency);
+      if (transfer.fees && String(transfer.feesFromAccountId) === String(transfer.toAccountId)) out -= await toCurrencyMinor(transfer.fees, currency);
       if (have - out < 0) {
         throw fail(`الحساب المستلم «${to.name}» سيصبح سالباً بعد الإلغاء (صُرف منه بعد التحويل). أكّد الإلغاء للمتابعة.`);
       }

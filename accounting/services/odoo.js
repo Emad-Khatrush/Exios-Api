@@ -13,7 +13,8 @@ const { nextSeq } = require('./counter');
 
 const refuse = (message) => new ErrorHandler(400, message);
 const COMPANY_CURRENCIES = ['USD', 'LYD'];
-const DEFAULT_SETTINGS = { companyCurrency: 'USD', defaultJournal: 'Miscellaneous Operations' };
+const DEFAULT_SETTINGS = { companyCurrency: 'USD', defaultJournal: 'Miscellaneous Operations', referenceMode: 'mapping', targetVersion: '19' };
+const { ref: masterRef, buildMaster } = require('./odooMaster');
 const DECIMALS = { USD: 2, LYD: 3 };
 
 async function odooSettings() {
@@ -21,7 +22,7 @@ async function odooSettings() {
   return { ...DEFAULT_SETTINGS, ...(settings?.odoo || {}) };
 }
 
-async function saveSettings({ companyCurrency, defaultJournal }) {
+async function saveSettings({ companyCurrency, defaultJournal, referenceMode, targetVersion }) {
   const current = await odooSettings();
   const next = { ...current };
   if (companyCurrency !== undefined) {
@@ -31,6 +32,14 @@ async function saveSettings({ companyCurrency, defaultJournal }) {
   if (defaultJournal !== undefined) {
     if (!String(defaultJournal).trim()) throw refuse('اكتب اسم اليومية الافتراضية في أودو');
     next.defaultJournal = String(defaultJournal).trim();
+  }
+  if (referenceMode !== undefined) {
+    if (!['mapping', 'external_id'].includes(referenceMode)) throw refuse('طريقة الربط غير صالحة');
+    next.referenceMode = referenceMode;
+  }
+  if (targetVersion !== undefined) {
+    if (!['17', '18', '19'].includes(targetVersion)) throw refuse('إصدار أودو غير مدعوم');
+    next.targetVersion = targetVersion;
   }
   await AccountingSettings.updateOne({ key: 'main' }, { $set: { odoo: next } });
   return next;
@@ -61,9 +70,10 @@ async function pendingSummary(upTo) {
     { $match: match }, { $unwind: '$lines' },
     { $group: { _id: '$lines.accountId', lines: { $sum: 1 } } },
   ]);
-  const accounts = await Account.find({ _id: { $in: used.map((row) => row._id) } }).select('code name odooCode').lean();
+  const accounts = await Account.find({ _id: { $in: used.map((row) => row._id) } }).select('code name odooCode odooExternalId').lean();
   const lines = new Map(used.map((row) => [String(row._id), row.lines]));
-  const unmapped = accounts.filter((account) => !String(account.odooCode || '').trim())
+  const settings = await odooSettings();
+  const unmapped = accounts.filter((account) => settings.referenceMode !== 'external_id' && !String(account.odooCode || '').trim())
     .map((account) => ({ _id: account._id, code: account.code, name: account.name, lines: lines.get(String(account._id)) || 0 }))
     .sort((a, b) => a.code.localeCompare(b.code));
   return {
@@ -116,7 +126,7 @@ async function buildRows(entries, settings) {
   });
   const [accounts, journals, partners, trips] = await Promise.all([
     Account.find({ _id: { $in: [...accountIds] } }).select('code name odooCode').lean(),
-    Journal.find({ _id: { $in: [...journalIds] } }).select('code name odooJournal').lean(),
+    Journal.find({ _id: { $in: [...journalIds] } }).select('code name odooJournal odooExternalId').lean(),
     User.find({ _id: { $in: [...partnerIds] } }).select('customerId').lean(),
     Inventory.find({ _id: { $in: [...tripIds] } }).select('odoReferenceCode voyage').lean(),
   ]);
@@ -125,7 +135,11 @@ async function buildRows(entries, settings) {
   const partnerById = new Map(partners.map((p) => [String(p._id), p.customerId]));
   const tripById = new Map(trips.map((t) => [String(t._id), t]));
 
-  const missing = accounts.filter((a) => !String(a.odooCode || '').trim());
+  if (settings.referenceMode === 'external_id') {
+    if ([...accountIds].some(id => !accountById.has(id)) || [...journalIds].some(id => !journalById.has(id)))
+      throw refuse('يوجد حساب أو دفتر مفقود؛ راجع القيود قبل التصدير');
+  }
+  const missing = accounts.filter((a) => settings.referenceMode !== 'external_id' && !String(a.odooCode || '').trim());
   if (missing.length) throw refuse(`حسابات بلا رمز أودو: ${missing.map((a) => a.code).join('، ')}. اربطها أولاً.`);
 
   const company = settings.companyCurrency;
@@ -135,24 +149,27 @@ async function buildRows(entries, settings) {
     const amounts = await companyAmounts(entry, company, rateCache);
     entry.lines.forEach((line, index) => {
       const trip = line.tripId && tripById.get(String(line.tripId));
-      // A line in another currency than the company's keeps its amount in that currency
+      // Odoo 19 requires an explicit currency on every imported journal item.
       const lineCurrency = line.currency || 'USD';
-      let currency = '';
-      let amountCurrency = '';
-      if (lineCurrency !== company) {
-        currency = lineCurrency;
-        amountCurrency = lineCurrency === 'USD'
-          ? major((line.debit || 0) - (line.credit || 0), 'USD')
-          : Number.isFinite(line.amountCurrency) ? major(line.amountCurrency, lineCurrency) : '';
-        if (amountCurrency === '') currency = '';
+      const currency = lineCurrency;
+      let amountCurrency;
+      if (lineCurrency === company) {
+        amountCurrency = major((amounts[index].debit || 0) - (amounts[index].credit || 0), company);
+      } else if (lineCurrency === 'USD') {
+        amountCurrency = major((line.debit || 0) - (line.credit || 0), 'USD');
+      } else {
+        if (!Number.isFinite(line.amountCurrency)) throw refuse('قيد بلا مبلغ العملة الأصلية: ' + entry.number + ' — ' + lineCurrency);
+        amountCurrency = major(line.amountCurrency, lineCurrency);
       }
       rows.push({
         id: index === 0 ? externalId(entry.number) : '',
-        journal_id: index === 0 ? (journalById.get(String(entry.journalId))?.odooJournal || settings.defaultJournal) : '',
+        [settings.referenceMode === 'external_id' ? 'journal_id/id' : 'journal_id']: index === 0 ? (settings.referenceMode === 'external_id' ? (settings.journalReferences?.[String(entry.journalId)] || (settings.journalReferences ? masterRef('journal', entry.journalId) : journalById.get(String(entry.journalId))?.odooExternalId || masterRef('journal', entry.journalId))) : journalById.get(String(entry.journalId))?.odooJournal || settings.defaultJournal) : '',
         date: index === 0 ? entry.day : '',
+        currency_id: index === 0 ? company : '',
         ref: index === 0 ? `${entry.number}${entry.description ? ` - ${entry.description}` : ''}` : '',
-        'line_ids/account_id': accountById.get(String(line.accountId))?.odooCode || '',
+        [settings.referenceMode === 'external_id' ? 'line_ids/account_id/id' : 'line_ids/account_id']: settings.referenceMode === 'external_id' ? (settings.accountReferences?.[String(line.accountId)] || (settings.accountReferences ? masterRef('account', line.accountId) : accountById.get(String(line.accountId))?.odooExternalId || masterRef('account', line.accountId))) : accountById.get(String(line.accountId))?.odooCode || '',
         'line_ids/partner_id/id': line.partnerId ? (partnerById.get(String(line.partnerId)) || '') : '',
+        'line_ids/id': externalId(entry.number) + '_line_' + (index + 1),
         'line_ids/name': line.label || entry.description || entry.number,
         'line_ids/debit': major(amounts[index].debit, company),
         'line_ids/credit': major(amounts[index].credit, company),
@@ -161,6 +178,15 @@ async function buildRows(entries, settings) {
         'line_ids/analytic_distribution': trip?.odoReferenceCode ? `{ "${trip.odoReferenceCode}": 100 }` : '',
       });
     });
+  }
+  const entryIds = new Set(), lineIds = new Set();
+  for (const row of rows) {
+    if (row.id) {
+      if (entryIds.has(row.id)) throw refuse('معرّف قيد مكرر في التصدير: ' + row.id);
+      entryIds.add(row.id);
+    }
+    if (!row['line_ids/id'] || lineIds.has(row['line_ids/id'])) throw refuse('معرّف عنصر يومية مكرر أو مفقود');
+    lineIds.add(row['line_ids/id']);
   }
   return rows;
 }
@@ -175,6 +201,8 @@ async function createExport({ upTo, user }) {
 
   const settings = await odooSettings();
   const entries = await JournalEntry.find(await pendingMatch(upTo)).sort({ day: 1, number: 1 }).lean();
+  if (settings.referenceMode === 'external_id') settings.accountReferences = Object.fromEntries((await Account.find({}).select('odooExternalId').lean()).map(a => [String(a._id), a.odooExternalId || masterRef('account', a._id)]));
+  if (settings.referenceMode === 'external_id') settings.journalReferences = Object.fromEntries((await Journal.find({}).select('odooExternalId').lean()).map(j => [String(j._id), j.odooExternalId || masterRef('journal', j._id)]));
   // Built before anything is marked: a missing rate or mapping leaves nothing half-exported
   const rows = await buildRows(entries, settings);
 
@@ -182,7 +210,8 @@ async function createExport({ upTo, user }) {
   const batch = await OdooExport.create({
     number: `ODOO/${String(seq).padStart(5, '0')}`, upTo, firstDay: summary.firstDay, lastDay: summary.lastDay,
     entryIds: entries.map((entry) => entry._id), count: entries.length, totalDebit: summary.totalDebit,
-    companyCurrency: settings.companyCurrency, createdBy: user?._id,
+    companyCurrency: settings.companyCurrency, referenceMode: settings.referenceMode,
+    accountReferences: settings.accountReferences, journalReferences: settings.journalReferences, createdBy: user?._id,
   });
   await JournalEntry.updateMany({ _id: { $in: batch.entryIds }, exportedToOdooAt: null }, { $set: { exportedToOdooAt: batch.createdAt, odooExportId: batch._id } });
   return { export: batch.toObject(), rows };
@@ -192,7 +221,7 @@ async function createExport({ upTo, user }) {
 async function exportRows(id) {
   const batch = await OdooExport.findById(id).lean();
   if (!batch) throw new ErrorHandler(404, 'دفعة التصدير غير موجودة');
-  const settings = { ...(await odooSettings()), companyCurrency: batch.companyCurrency || (await odooSettings()).companyCurrency };
+  const settings = { ...(await odooSettings()), companyCurrency: batch.companyCurrency || (await odooSettings()).companyCurrency, referenceMode: batch.referenceMode || 'mapping', accountReferences: batch.referenceMode === 'external_id' ? batch.accountReferences || {} : undefined, journalReferences: batch.referenceMode === 'external_id' ? batch.journalReferences || {} : undefined };
   return { export: batch, rows: await buildRows(await loadEntries(batch.entryIds), settings) };
 }
 
@@ -243,4 +272,15 @@ async function saveComparison({ day, odoo, note }, user) {
 
 const listComparisons = () => require('../models').OdooComparison.find({}).sort({ day: -1, createdAt: -1 }).limit(30).lean();
 
-module.exports = { ourFigures, saveComparison, listComparisons, OdooExport, odooSettings, saveSettings, pendingSummary, buildRows, createExport, exportRows, undoExport, listExports, COMPANY_CURRENCIES };
+async function masterData() {
+  const [accounts, journals, config, settings] = await Promise.all([
+    Account.find({}).sort({ code: 1 }).lean(), Journal.find({}).sort({ _id: 1 }).lean(),
+    AccountingSettings.findOne({ key: 'main' }).select('accountRoles').lean(), odooSettings(),
+  ]);
+  const files = buildMaster(accounts, journals, config?.accountRoles || {}, settings.targetVersion);
+  return { ...files, targetVersion: settings.targetVersion, companyCurrency: settings.companyCurrency,
+    warnings: ['استورد المجموعات ثم الحسابات ثم اليوميات داخل نفس الشركة، وفعّل العملات المطلوبة.',
+      'المعرّف الخارجي يمنع تكرار ملفات إكسيوس؛ الحساب الموجود سابقًا بنفس الرقم دون هذا المعرّف يحتاج ربطًا أولًا.',
+      'لا تتضمن الملفات أرصدة افتتاحية أو ضرائب أو جهات اتصال؛ لا تحذف حسابات أودو المستخدمة أو المطلوبة لإعداداته.'] };
+}
+module.exports = { masterData, ourFigures, saveComparison, listComparisons, OdooExport, odooSettings, saveSettings, pendingSummary, buildRows, createExport, exportRows, undoExport, listExports, COMPANY_CURRENCIES };

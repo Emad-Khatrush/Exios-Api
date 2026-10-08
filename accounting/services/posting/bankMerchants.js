@@ -9,18 +9,19 @@ const prefix = (text, alias) => {
   return key.length >= 3 && (` ${text}`.includes(` ${key}`));
 };
 async function matcher(accountId, session) {
-  const vendors = await Vendor.find({ isActive: true, type: 'supplier' }).session(session || null).lean();
+  const vendors = await Vendor.find({ isActive: true, type: { $in: ['supplier', 'service'] } }).session(session || null).lean();
+  const details = v => ({ vendorType: v.type, bankPurpose: v.bankPurpose, bankAccountCode: v.bankAccountCode, bankOffice: v.bankOffice });
   return line => {
     const text = merchantKey(line.description);
     if (!text || line.movementKind === 'card_payment') return null;
     const mapped = vendors.flatMap(v => (v.bankMappings || []).filter(m => String(m.accountId) === String(accountId) && m.merchant === text)
-      .map(m => ({ vendorId: v._id, vendorName: v.name, counterAccountId: m.counterAccountId, learned: true })));
+      .map(m => ({ vendorId: v._id, vendorName: v.name, counterAccountId: m.counterAccountId, learned: true, ...details(v) })));
     if (mapped.length) return mapped.length === 1 ? mapped[0] : null;
     const found = vendors.map(v => ({ v, length: Math.max(0, ...[v.name, ...(v.bankAliases || [])]
       .filter(alias => prefix(text, alias)).map(alias => normalize(alias).length)) })).filter(m => m.length);
     const best = found.sort((a, b) => b.length - a.length);
     if (!best.length || (best[1] && best[0].length === best[1].length)) return null;
-    return { vendorId: best[0].v._id, vendorName: best[0].v.name, learned: false };
+    return { vendorId: best[0].v._id, vendorName: best[0].v.name, learned: false, ...details(best[0].v) };
   };
 }
 async function learn(line, vendorId, counterAccountId, session) {

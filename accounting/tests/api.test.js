@@ -22,7 +22,8 @@ const makeUser = (n, roles) => User.create({
   username: `u${n}`, firstName: `F${n}`, lastName: 'L', phone: 900000 + n, password: 'x', customerId: `C${n}`, roles,
 });
 const tokenFor = (user) => jwt.sign({ id: user._id }, process.env.JWT_SECRET);
-const api = (method, url, token = adminToken) => request(server)[method](`/api/accounting${url}`).set('Authorization', `Bearer ${token}`);
+// Test requests must not reuse an idle socket across database resets on Windows/Node 22.
+const api = (method, url, token = adminToken) => request(server)[method](`/api/accounting${url}`).set('Connection', 'close').set('Authorization', `Bearer ${token}`);
 
 beforeAll(async () => {
   await startDb();
@@ -38,6 +39,30 @@ beforeEach(async () => {
   adminToken = tokenFor(await makeUser(1, { isAdmin: true }));
   employeeToken = tokenFor(await makeUser(2, { isEmployee: true, isAccountant: true }));
   customer = await makeUser(3, { isClient: true });
+});
+
+test('review routes protect access and a locked month remains provisional until approval', async () => {
+  expect((await api('get', '/review', employeeToken)).status).toBe(403);
+  expect((await api('post', '/review/month/approve', employeeToken).send({ month: '2026-01' })).status).toBe(403);
+  expect((await api('get', '/review?from=2026-01-01&to=2026-01-31')).status).toBe(200);
+  await api('post', '/close/month').send({ month: '2026-01' });
+  let report = await api('get', '/reports/income-statement?from=2026-01-01&to=2026-01-31');
+  expect(report.body.reviewStatus.status).toBe('provisional');
+  expect((await api('post', '/review/month/approve').send({ month: '2026-01' })).status).toBe(200);
+  report = await api('get', '/reports/income-statement?from=2026-01-01&to=2026-01-31');
+  expect(report.body.reviewStatus.status).toBe('approved');
+});
+
+test('HTTP duplicate preview identifies an existing cost and posting cannot bypass it', async () => {
+  const vendor = await api('post', '/vendors').send({ name: 'HTTP duplicate supplier', type: 'supplier' });
+  const data = { vendorId: vendor.body._id, currency: 'USD', day: '2026-09-10', vendorRef: 'HTTP-INV-1',
+    lines: [{ target: 'expense', accountId: (await account('510400'))._id, description: 'Actual purchase', amount: 800, office: 'tripoli' }] };
+  expect((await api('post', '/bills').send(data)).status).toBe(201);
+  const preview = await api('post', '/bills/duplicate-preview').send(data);
+  expect(preview.status).toBe(200);
+  expect(preview.body.results).toHaveLength(1);
+  expect(preview.body.canConfirmIndependent).toBe(false);
+  expect((await api('post', '/bills').send(data)).status).toBe(400);
 });
 
 test('only admins can open the accounting section', async () => {

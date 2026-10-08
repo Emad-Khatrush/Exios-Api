@@ -97,6 +97,7 @@ async function runSetup({ user } = {}) {
     else { await Journal.create(journal); created(`journal ${journal.code}`); }
   }
 
+  await require('./bankFundingSetup').ensureBankFundingSetup();
   // Every cash, bank and e-wallet account gets its own journal and numbering
   const cashAccounts = await Account.find({ isCash: true, isGroup: false }).sort({ code: 1 });
   for (const account of cashAccounts) {
@@ -137,7 +138,7 @@ async function runSetup({ user } = {}) {
     else if (account && (!rule.bankCode || bank)) {
       // The same rule typed by hand before it was a default is adopted, not doubled
       const typed = await BankRule.findOne({ seedKey: null, keyword: rule.keyword, accountId: bank?._id || null });
-      const fields = { seedKey: rule.seedKey, keyword: rule.keyword, direction: rule.direction, counterAccountId: account._id, accountId: bank?._id || null, priority: rule.priority || 0, vendorName: rule.vendorName };
+      const fields = { seedKey: rule.seedKey, keyword: rule.keyword, direction: rule.direction, counterAccountId: account._id, accountId: bank?._id || null, priority: rule.priority || 0, vendorName: rule.vendorName, office: rule.office };
       if (typed) { Object.assign(typed, fields); await typed.save(); } else await BankRule.create(fields);
       created(`bank rule ${rule.bankCode ? `${rule.bankCode} ` : ''}${rule.keyword}`);
     }

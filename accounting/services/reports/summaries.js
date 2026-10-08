@@ -42,7 +42,7 @@ const recentEntries = (match) => JournalEntry.find(match).sort({ day: -1, create
 async function billsFor(field, id) {
   const bills = await SupplierBill.find({ [`lines.${field}`]: id, status: { $ne: 'draft' } }).populate('vendorId', 'name').sort({ day: -1 }).lean();
   const payments = await SupplierPayment.find({ 'allocations.billId': { $in: bills.map((b) => b._id) }, status: 'posted' })
-    .populate('fromAccountId', 'code name').select('number day currency amount rate allocations costDifferenceUsd entryId fromAccountId fromAdvance').lean();
+    .populate('fromAccountId', 'code name').select('number day currency amount rate allocations costDifferenceUsd entryId fromAccountId fromAdvance alipayValuationAdjustmentUsd').lean();
   const entries = await JournalEntry.find({ _id: { $in: payments.filter((p) => p.costDifferenceUsd).map((p) => p.entryId) } }).select('lines').lean();
   const entryOf = new Map(entries.map((e) => [String(e._id), e]));
   return bills.map((bill) => {
@@ -50,6 +50,7 @@ async function billsFor(field, id) {
     const label = `فرق المدفوع عن الفاتورة ${bill.number}`;
     const paid = payments.filter((p) => p.allocations.some((a) => String(a.billId) === String(bill._id))).map((p) => ({
       paymentId: p._id, number: p.number, day: p.day, currency: p.currency, amount: p.amount, rate: p.rate, fromAdvance: p.fromAdvance, account: p.fromAccountId?.name,
+      alipayDifference: Number(p.alipayValuationAdjustmentUsd || 0),
       allocatedUsd: p.allocations.find((a) => String(a.billId) === String(bill._id))?.amountUsd || 0,
       // The part of the payment's difference that landed on this order or trip
       difference: (entryOf.get(String(p.entryId))?.lines || []).filter((l) => l.label === label && String(l[field]) === String(id))
@@ -57,9 +58,10 @@ async function billsFor(field, id) {
     }));
     const usd = lines.reduce((sum, line) => sum + (line.usd || 0), 0);
     const difference = paid.reduce((sum, p) => sum + p.difference, 0);
+    const alipayDifference = paid.reduce((sum, p) => sum + p.alipayDifference, 0);
     return {
       billId: bill._id, number: bill.number, day: bill.day, vendor: bill.vendorId?.name, status: bill.status, currency: bill.currency, isCreditNote: bill.isCreditNote,
-      amount: lines.reduce((sum, line) => sum + line.amount, 0), usd, payments: paid, difference, cost: usd + difference,
+      amount: lines.reduce((sum, line) => sum + line.amount, 0), usd, payments: paid, difference, alipayDifference, cost: usd + difference + alipayDifference,
       description: lines.map((line) => line.description).join('، '),
     };
   });
@@ -154,7 +156,7 @@ async function orderCostExplanation(orderId, roles) {
     const valuation = String(entry.eventKey || '').startsWith('REFUND_BANK_VALUE:');
     return [{ entryId: entry._id, number: entry.number, day: entry.day, description: entry.description, status: entry.status,
       reversalOf: entry.reversalOf, eventType: entry.eventType, impact, recognized, inProgress: progress, runningCost,
-      kind: entry.reversalOf ? 'reversal' : valuation ? 'refund_valuation' : refundEntry ? costLines.length ? 'refund' : 'wallet_refund'
+      kind: entry.reversalOf ? 'reversal' : entry.eventType === 'ALIPAY_REVALUATION' ? 'alipay_valuation' : valuation ? 'refund_valuation' : refundEntry ? costLines.length ? 'refund' : 'wallet_refund'
         : impact === 0 ? 'recognition' : entry.source?.model === 'AccountingSupplierBill' ? doc?.isCreditNote ? 'credit_note' : 'bill' : entry.source?.model === 'AccountingSupplierPayment' ? 'payment_difference' : 'other',
       document: doc ? { _id: doc._id, number: doc.number, model: entry.source.model, status: doc.status,
         vendor: doc.vendorId?.name, currency: doc.currency, amount: doc.amount ?? doc.total, rate: doc.rate,

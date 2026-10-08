@@ -147,6 +147,11 @@ async function prepare(kind, rows) {
           const sameReference = await SupplierBill.findOne({ vendorId: group.header.vendorId, vendorRef: group.header.vendorRef, status: { $ne: 'canceled' }, isCreditNote: { $ne: true } }).select('_id number').lean();
           if (sameReference) { group.existingId = String(sameReference._id); throw fail('رقم فاتورة المورد موجود بالفعل؛ راجع الفاتورة السابقة لتجنب تسجيل تكلفتها مرتين'); }
         }
+        if (!existing) {
+          group.duplicateReview = await require('./costDuplicates').preview(group.input);
+          if (group.duplicateReview.results.length) group.warnings.push('توجد تكلفة مشابهة مسجلة: افتحها للمراجعة، أو أكد أن هذه عملية مستقلة مع السبب قبل الترحيل');
+          group.previewHash = hash({ input: group.input, effectiveRate: group.rate, duplicateFingerprint: group.duplicateReview.fingerprint });
+        }
       } catch (error) { group.errors.push(error.message); }
     }
     if (group.errors.length) group.status = 'error';
@@ -164,8 +169,8 @@ async function commit(body, req) {
   if (groups.length !== 1) throw fail('اعتمد فاتورة واحدة في كل طلب');
   const group = groups[0];
   if (group.status === 'error') throw fail(group.errors.join(' · '));
-  if (body.previewHash !== group.previewHash) throw fail('تغيرت البيانات أو سعر الصرف منذ المعاينة؛ أعد المراجعة قبل الموافقة');
   if (group.status === 'duplicate') return { duplicate: true, _id: group.existingId, number: group.existingNumber };
+  if (body.previewHash !== group.previewHash) throw fail('تغيرت البيانات أو سعر الصرف منذ المعاينة؛ أعد المراجعة قبل الموافقة');
   const bill = await runInTransaction(async session => {
     // Serialize imports for the same supplier, including different Excel ids
     // that accidentally refer to the same supplier invoice number.
@@ -178,7 +183,9 @@ async function commit(body, req) {
       const current = { ...group.input };
       if (!(await carriedValue(current, session)) || current.rate !== group.rate) throw fail('تغير متوسط تكلفة رصيد الحساب؛ أعد المعاينة قبل الموافقة');
     }
-    const doc = await createBill({ ...group.input, ...(group.valuationSource !== 'carrying' && { rate: group.rate }), idempotencyKey: group.idempotencyKey }, { session, req, asDraft: body.mode === 'draft' });
+    const doc = await createBill({ ...group.input, ...(group.valuationSource !== 'carrying' && { rate: group.rate }), idempotencyKey: group.idempotencyKey,
+      ...(body.duplicateDecision === 'independent' && { duplicateDecision: 'independent', duplicateReason: body.duplicateReason, duplicateFingerprint: group.duplicateReview?.fingerprint }),
+    }, { session, req, asDraft: body.mode === 'draft' });
     doc.importReference = group.reference; doc.importHash = group.importHash;
     doc.total = group.total;
     await doc.save({ session });

@@ -98,10 +98,16 @@ async function validateBillInput(input, session, { readOnly = false } = {}) {
     if (!(Number(line.amount) > 0)) throw fail(`${where}: المبلغ يجب أن يكون أكبر من صفر`);
     if (!TARGETS.includes(line.target)) throw fail(`${where}: اختر نوع السطر`);
     if (line.target === 'order') {
-      const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('placedAt').session(session);
+      const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('placedAt purchaseItems').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
       const available = readOnly ? { modifiedCount: 1 } : await Order.updateOne({ _id: order._id, isDeleted: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
       if (available.modifiedCount !== 1) throw fail('Order was deleted');
+      if (line.purchaseItemId && !input.isCreditNote) {
+        const item = order.purchaseItems.find(i => String(i._id) === String(line.purchaseItemId));
+        if (!item || (item.currency || 'USD') !== input.currency || Math.abs(Number(item.unitPrice) - Number(line.amount)) > 0.0005) throw fail('بند مشتريات الطلبية لا يطابق مبلغ وعملة الفاتورة');
+        if (await SupplierBill.exists({ status: { $ne: 'canceled' }, ...(input._id && { _id: { $ne: input._id } }),
+          $or: [{ idempotencyKey: `MIG:PURCH:${item._id}` }, { 'lines.purchaseItemId': item._id }] }).session(session)) throw fail('بند المشتريات له فاتورة مسجلة؛ اربط الفاتورة الأصلية ولا تنشئ تكلفة ثانية');
+      }
     }
     if (line.target === 'customs') {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('paymentList._id').session(session);
@@ -330,13 +336,14 @@ async function postBill(bill, { session, user, sync }) {
   return bill;
 }
 
-const BILL_FIELDS = ['vendorId', 'vendorRef', 'day', 'currency', 'rate', 'lines', 'isCreditNote', 'originalBillId', 'paidImmediatelyFrom', 'employeeId', 'note', 'attachments', 'isQuickExpense', 'isHistorical', 'migrationRunId', 'officeExpense', 'office', 'expenseTypeId', 'enteredFrom', 'replaces', 'paidBeforeCount'];
+const BILL_FIELDS = ['duplicateDecision', 'duplicateReason', 'duplicateFingerprint', 'vendorRefKind', 'vendorId', 'vendorRef', 'day', 'currency', 'rate', 'lines', 'isCreditNote', 'originalBillId', 'paidImmediatelyFrom', 'employeeId', 'note', 'attachments', 'isQuickExpense', 'isHistorical', 'migrationRunId', 'officeExpense', 'office', 'expenseTypeId', 'enteredFrom', 'replaces', 'paidBeforeCount'];
 
 // `sync` carries the historical replay's context (as-of view of orders) to the order/trip sync
 async function createBill(input, { session, req, asDraft = false, sync }) {
   const existing = await findExisting(SupplierBill, input.idempotencyKey, session);
   if (existing) return existing;
   await validateBillInput(input, session);
+  if (!asDraft) await require('../costDuplicates').assertNoDuplicate(input, { session });
   const data = {};
   BILL_FIELDS.forEach((field) => { if (input[field] !== undefined && input[field] !== '') data[field] = input[field]; });
   const [bill] = await SupplierBill.create([{
@@ -353,6 +360,7 @@ async function updateDraftBill(id, input, { session, req }) {
   if (bill.status !== 'draft') throw fail('الفاتورة المُرحَّلة لا تُعدَّل؛ ألغِها وأنشئ فاتورة جديدة');
   const merged = { ...bill.toObject(), ...input };
   await validateBillInput(merged, session);
+  await require('../costDuplicates').assertNoDuplicate(merged, { session, excludeId: bill._id });
   const before = bill.toObject();
   BILL_FIELDS.forEach((field) => { if (input[field] !== undefined) bill[field] = input[field]; });
   await bill.save({ session });
@@ -365,6 +373,7 @@ async function postDraftBill(id, { session, req }) {
   if (!bill) throw fail('الفاتورة غير موجودة');
   if (bill.status !== 'draft') throw fail('الفاتورة ليست مسودة');
   await validateBillInput(bill.toObject(), session);
+  await require('../costDuplicates').assertNoDuplicate(bill.toObject(), { session, excludeId: bill._id });
   await postBill(bill, { session, user: req?.user });
   await logAudit({ req, action: 'bill.post', model: 'AccountingSupplierBill', docId: bill._id, after: bill }, session);
   return bill;

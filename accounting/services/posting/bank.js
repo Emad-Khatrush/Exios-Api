@@ -18,6 +18,8 @@ const { readKnownFormat } = require('./statementFormats');
 const { originalOf, paymentValue, currencyName } = require('./bankAmounts');
 const { candidatesFor, brief: briefBill, selectBill } = require('./bankBills');
 const bankMerchants = require('./bankMerchants');
+const bankTransferHints = require('./bankTransferHints');
+const alipayReconciliation = require('./alipayReconciliation');
 const { postEntry } = require('../ledger');
 const { isDay, addDays, dayStart: dayStartOf } = require('../dates');
 const { logAudit } = require('../audit');
@@ -51,11 +53,13 @@ const hasKeyword = (text, keyword) => {
   return key.includes(' ') && text.replace(/ /g, '').includes(key.replace(/ /g, ''));
 };
 const fingerprintOf = (line, repeat) => crypto.createHash('sha1')
-  .update([line.day, line.amount, normalize(line.reference), normalize(line.description), repeat].join('|')).digest('hex');
+  .update(line.sourceProvider === 'alipay' && line.sourceTransactionId
+    ? ['alipay', alipayReconciliation.referenceOf(line.sourceTransactionId)].join('|')
+    : [line.day, line.amount, normalize(line.reference), normalize(line.description), repeat].join('|')).digest('hex');
 const isPurchaseRefund = line => line.amount > 0 && (line.movementKind === 'purchase_refund'
   || (line.movementKind !== 'card_payment' && Number(line.originalAmount) > 0 && !!line.originalCurrency));
-const needsRefundReview = (line, hint) => isPurchaseRefund(line) || (line.amount > 0 && line.movementKind !== 'card_payment'
-  && (!!hint?.vendorId || hint?.account?.code === '510400'));
+const needsRefundReview = (line, hint) => !hint?.semanticTransfer && (isPurchaseRefund(line) || (line.sourceProvider !== 'alipay' && line.amount > 0 && line.movementKind !== 'card_payment'
+  && hint?.bankPurpose !== 'yuan_purchase' && ((!!hint?.vendorId && (hint?.vendorType !== 'service' || hint?.bankPurpose === 'china_services')) || hint?.account?.code === '510400')));
 
 // Statement rows as the lines they become, each with its fingerprint
 async function toDocs(account, rows, extra = {}) {
@@ -63,7 +67,9 @@ async function toDocs(account, rows, extra = {}) {
   const docs = [];
   // The same line twice on one day (two identical transfers) is two lines: each gets its repeat
   const repeats = new Map();
+  const alipayIds = new Map();
   for (const [index, row] of rows.entries()) {
+    if (row.statementCurrency && String(row.statementCurrency).toUpperCase() !== currencyOf(account)) throw fail(`عملة الكشف ${row.statementCurrency} تختلف عن حساب ${account.name} (${currencyOf(account)})؛ اختر حساب الكشف الصحيح`);
     if (!isDay(row.day)) throw fail(`السطر ${index + 1}: التاريخ غير صالح (YYYY-MM-DD)`);
     const amount = Number(row.amount);
     if (!Number.isFinite(amount) || amount === 0) throw fail(`السطر ${index + 1}: المبلغ غير صالح`);
@@ -76,6 +82,20 @@ async function toDocs(account, rows, extra = {}) {
       ...(row.purchaseMatch && { purchaseReviewPending: true }), ...extra,
       ...(['purchase', 'purchase_refund', 'card_payment'].includes(row.movementKind) && { movementKind: row.movementKind }),
     };
+    if (row.sourceProvider === 'alipay') {
+      if (currencyOf(account) !== 'CNY' || row.sourceCurrency !== 'CNY') throw fail('كشف Alipay يتطلب حسابًا بعملة CNY');
+      const id = alipayReconciliation.referenceOf(row.sourceTransactionId);
+      if (!id || typeof row.sourceTransactionId !== 'string' || id.length > 160 || /\s|[eE][+-]?\d+$/.test(id)) throw fail(`السطر ${index + 1}: رقم عملية Alipay غير صالح`);
+      if (!['balance', 'confirmed', 'unknown'].includes(row.walletImpact)) throw fail('راجع طريقة الدفع في كشف Alipay');
+      if (!['交易成功', '支付成功', '退款成功'].includes(row.transactionStatus)) throw fail('لا يمكن استيراد عملية Alipay غير مكتملة');
+      if (row.paymentMethod && !/^账户余额(?:[（(].*[）)])?$/.test(row.paymentMethod)) throw fail('هذه العملية ليست مدفوعة من رصيد Alipay؛ استخدم حساب الدفع الفعلي');
+      const previous = alipayIds.get(id);
+      if (previous && (previous.amount !== minor || previous.day !== row.day)) throw fail('رقم عملية Alipay مكرر ببيانات مختلفة في الملف');
+      Object.assign(doc, { sourceProvider: 'alipay', sourceCurrency: 'CNY', sourceTransactionId: id, reference: id,
+        walletImpact: row.paymentMethod ? 'balance' : row.walletImpact === 'confirmed' ? 'confirmed' : 'unknown' });
+      for (const key of ['merchantOrderId', 'counterparty', 'paymentMethod', 'transactionStatus', 'sourceTime', 'sourceReviewReason']) doc[key] = String(row[key] || '').trim();
+      alipayIds.set(id, doc);
+    }
     for (const field of ['originalAmount', 'settlementUsd', 'exchangeRate']) {
       if (row[field] !== undefined && row[field] !== null && row[field] !== '') {
         const value = Number(row[field]);
@@ -84,6 +104,8 @@ async function toDocs(account, rows, extra = {}) {
       }
     }
     if (row.originalCurrency) doc.originalCurrency = String(row.originalCurrency).toUpperCase();
+    const exchange = bankTransferHints.exchangeOf(doc.description, currencyOf(account), amount);
+    if (exchange && !exchange.error) Object.assign(doc, exchange);
     const base = fingerprintOf(doc, 0);
     const repeat = repeats.get(base) || 0;
     repeats.set(base, repeat + 1);
@@ -94,11 +116,21 @@ async function toDocs(account, rows, extra = {}) {
   return docs;
 }
 
-async function knownFingerprints(accountId, prints, session) {
+async function knownFingerprints(accountId, prints, session, docs = []) {
+  const alipayDocs = docs.filter(doc => doc.sourceProvider === 'alipay');
   const rows = await BankStatementLine.find({ accountId, $or: [
     { fingerprint: { $in: prints } }, { fingerprintAliases: { $in: prints } },
-  ] }).select('fingerprint fingerprintAliases').session(session || null).lean();
-  return new Set(rows.flatMap(row => [row.fingerprint, ...(row.fingerprintAliases || [])]));
+    ...(alipayDocs.length ? [{ sourceTransactionId: { $in: alipayDocs.map(doc => doc.sourceTransactionId) } }, { reference: { $in: alipayDocs.map(doc => doc.sourceTransactionId) } }] : []),
+  ] }).select('day amount reference sourceTransactionId fingerprint fingerprintAliases importedValues').session(session || null).lean();
+  const known = new Set(rows.flatMap(row => [row.fingerprint, ...(row.fingerprintAliases || [])]));
+  for (const doc of alipayDocs) {
+    const previous = rows.find(row => alipayReconciliation.referenceOf(row.sourceTransactionId || row.reference) === doc.sourceTransactionId);
+    if (!previous) continue;
+    const versions = [previous, previous.importedValues].filter(Boolean);
+    if (!versions.some(evidence => evidence.day === doc.day && evidence.amount === doc.amount)) throw fail(`رقم عملية Alipay ${doc.sourceTransactionId} مستورد مسبقًا بمبلغ أو تاريخ مختلف؛ راجع السطر الموجود`);
+    known.add(doc.fingerprint);
+  }
+  return known;
 }
 
 // Correct the imported evidence only after its posting/match has been undone.
@@ -118,9 +150,14 @@ async function editLine(lineId, input, { session, req }) {
     }
   }
   const fields = ['day', 'description', 'reference', 'amount', 'balanceAfter', 'originalAmount', 'originalCurrency', 'counterAmount', 'counterCurrency', 'settlementUsd'];
+  if (line.sourceProvider === 'alipay') {
+    if (String(input.reference || '').trim() !== line.sourceTransactionId) throw fail('رقم عملية Alipay ثابت لمنع التكرار؛ راجع المصدر قبل تغييره');
+    fields.push('walletImpact');
+    input = { ...input, walletImpact: line.walletImpact === 'unknown' && input.confirmWalletImpact === true ? 'confirmed' : line.walletImpact };
+  }
   const before = Object.fromEntries(fields.map(key => [key, line[key]]));
   const row = Object.fromEntries(fields.map(key => [key, input[key]]));
-  const [doc] = await toDocs(bank, [row]);
+  const [doc] = await toDocs(bank, [{ ...line.toObject(), ...row }]);
   if (!doc.amount) throw fail('المبلغ أصغر من دقة العملة');
   const original = line.importedValues || before;
   let repeat = line.fingerprintRepeat;
@@ -146,6 +183,7 @@ async function editLine(lineId, input, { session, req }) {
 // Imports what is new, matches what the books already hold, then posts every new line that was
 // given an account (from the table shown before importing) and is not in the books yet.
 async function importLines(accountId, rows, { session, req, deferPosting = false }) {
+  if (session?.inTransaction()) await require('../periodLock').lockPeriod(session);
   const account = await bankAccount(accountId);
   // Serialize imports per bank account before checking fingerprints. Otherwise two uploads of
   // the same statement can both decide a line is new and each post it.
@@ -161,8 +199,8 @@ async function importLines(accountId, rows, { session, req, deferPosting = false
   // Rows marked "ignore" in the table are kept (a later file will not bring them back) but are
   // neither matched nor posted
   docs.forEach((doc, index) => { if (rows[index].ignore) doc.lineStatus = 'ignored'; });
-  const existing = await knownFingerprints(account._id, docs.map(d => d.fingerprint), session);
-  const fresh = docs.filter((doc) => !existing.has(doc.fingerprint));
+  const existing = await knownFingerprints(account._id, docs.map(d => d.fingerprint), session, docs);
+  const fresh = docs.filter((doc, index) => !existing.has(doc.fingerprint) && docs.findIndex(d => d.fingerprint === doc.fingerprint) === index);
   if (fresh.length) await BankStatementLine.insertMany(fresh, { session });
   const { matched } = fresh.length ? await autoMatch(accountId, { session, req }) : { matched: 0 };
 
@@ -198,7 +236,7 @@ async function importStatement(accountId, rows, { req }) {
   for (const [index, doc] of docs.entries()) {
     const row = rows[index];
     if (row.ignore || !(row.counterAccountId || row.link || row.billId || row.purchaseMatch)) continue;
-    const line = await BankStatementLine.findOne({ accountId, fingerprint: doc.fingerprint, lineStatus: 'unmatched' }).lean();
+    const line = await BankStatementLine.findOne({ accountId, fingerprint: doc.fingerprint, importBatchId: result.batchId, lineStatus: 'unmatched' }).lean();
     if (!line) continue;
     try {
       // A unique merchant upsert may lose to another bank import; retry after rollback.
@@ -225,10 +263,12 @@ async function unmatchedMovements(accountId, { from, to, session } = {}) {
   if (from) dayFilter.$gte = from;
   if (to) dayFilter.$lte = to;
   const rows = await JournalEntry.aggregate([
-    { $match: { 'lines.accountId': new mongoose.Types.ObjectId(String(accountId)), ...(from || to ? { day: dayFilter } : {}) } },
+    { $match: { status: 'posted', reversalOf: { $exists: false }, 'lines.accountId': new mongoose.Types.ObjectId(String(accountId)), ...(from || to ? { day: dayFilter } : {}) } },
+    { $addFields: { allAccountIds: '$lines.accountId', allLines: '$lines' } },
     { $unwind: '$lines' },
     { $match: { 'lines.accountId': new mongoose.Types.ObjectId(String(accountId)) } },
-    { $group: { _id: '$_id', number: { $first: '$number' }, day: { $first: '$day' }, description: { $first: '$description' }, amount: { $sum: '$lines.amountCurrency' } } },
+    { $group: { _id: '$_id', number: { $first: '$number' }, day: { $first: '$day' }, description: { $first: '$description' },
+      allAccountIds: { $first: '$allAccountIds' }, ledgerLines: { $first: '$allLines' }, bankSourceReference: { $first: '$bankSourceReference' }, bankSourceAccountId: { $first: '$bankSourceAccountId' }, amount: { $sum: '$lines.amountCurrency' } } },
     { $sort: { day: 1 } },
   ]).session(session || null);
   return rows.filter((row) => !used.has(String(row._id)) && row.amount !== 0);
@@ -256,8 +296,9 @@ async function releaseMatchedEntries(accountId, entryIds, session) {
 
 const dayDistance = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
 
-// Same account, same amount in its currency, at most 3 days apart; the closest day wins
+// Same account and native amount within three days, only when one candidate is eligible.
 async function autoMatch(accountId, { session, req }) {
+  if (session?.inTransaction()) await require('../periodLock').lockPeriod(session);
   await bankAccount(accountId);
   const lines = await BankStatementLine.find({ accountId, lineStatus: 'unmatched', purchaseReviewPending: { $ne: true } }).sort({ day: 1 }).session(session);
   if (!lines.length) return { matched: 0 };
@@ -267,13 +308,20 @@ async function autoMatch(accountId, { session, req }) {
   const taken = new Set();
   let matched = 0;
   const guess = await guesser(accountId);
-  for (const line of lines) {
-    // Merchant credits need approval against their original purchase/refund document.
-    if (needsRefundReview(line, guess(line))) continue;
+  // Merchant credits need approval against their original purchase/refund document.
+  const matchableLines = lines.filter(line => alipayReconciliation.walletReady(line) && !needsRefundReview(line, guess(line)));
+  const compatible = (line, candidate) => candidate.amount === line.amount && dayDistance(candidate.day, line.day) <= MATCH_DAYS
+    && (line.sourceProvider !== 'alipay' || alipayReconciliation.exactMatch(line, candidate, accountId))
+    && bankTransferHints.matchesMovement(line, guess(line), candidate);
+  for (const line of matchableLines) {
     const eligible = candidates
-      .filter((c) => !taken.has(String(c._id)) && c.amount === line.amount && dayDistance(c.day, line.day) <= MATCH_DAYS)
+      .filter((c) => !taken.has(String(c._id)) && compatible(line, c))
       .sort((a, b) => dayDistance(a.day, line.day) - dayDistance(b.day, line.day));
     let best;
+    // Amount and proximity alone cannot choose between several plausible transactions.
+    if (eligible.length !== 1) continue;
+    // A single ledger movement must not be assigned arbitrarily between two statement rows.
+    if (matchableLines.filter(other => compatible(other, eligible[0])).length !== 1) continue;
     for (const candidate of eligible) {
       try {
         await reserveMatchedEntries(accountId, [candidate._id], session);
@@ -290,16 +338,25 @@ async function autoMatch(accountId, { session, req }) {
     await line.save({ session });
     matched++;
   }
+  if (matched && lines.some(line => line.sourceProvider === 'alipay')) require('./alipayValuation').queue(session, accountId, req?.user);
   await logAudit({ req, action: 'bank.autoMatch', model: 'AccountingBankStatementLine', after: { accountId, matched } }, session);
   return { matched };
 }
 
 async function manualMatch(lineId, entryIds, { session, req }) {
+  if (session?.inTransaction()) await require('../periodLock').lockPeriod(session);
   const line = await BankStatementLine.findById(lineId).session(session);
   if (!line || line.lineStatus !== 'unmatched') throw fail('سطر الكشف غير متاح للمطابقة');
+  alipayReconciliation.assertWallet(line);
   const movements = await unmatchedMovements(line.accountId, { session });
   const chosen = movements.filter((m) => entryIds.map(String).includes(String(m._id)));
   if (chosen.length !== entryIds.length) throw fail('بعض القيود غير متاحة أو مطابقة مسبقاً');
+  const semantic = bankTransferHints.describe(line, await bankAccount(line.accountId), [...(await getConfig()).accountsById.values()]);
+  if (semantic?.semanticTransfer
+    && !bankTransferHints.matchesMovement(line, semantic, { ledgerLines: chosen.flatMap(m => m.ledgerLines || []) }))
+    throw fail('القيد المختار لا يحتوي الحساب المقابل الصحيح لهذه الحركة؛ راجع التحويل أو السداد الأصلي');
+  if (line.sourceProvider === 'alipay' && chosen.some(m => String(m.bankSourceAccountId) === String(line.accountId)
+    && m.bankSourceReference && m.bankSourceReference !== line.sourceTransactionId)) throw fail('رقم عملية Alipay في القيد يختلف عن رقم العملية في الكشف');
   const total = chosen.reduce((sum, m) => sum + m.amount, 0);
   if (total !== line.amount) throw fail('مجموع القيود المختارة لا يساوي مبلغ سطر الكشف');
   await reserveMatchedEntries(line.accountId, chosen.map((m) => m._id), session);
@@ -314,6 +371,7 @@ async function manualMatch(lineId, entryIds, { session, req }) {
   const supplierReceipt = await require('../../models/documents').SupplierReceipt.findOne({ entryId: { $in: line.matchedEntryIds }, toAccountId: line.accountId, status: 'posted' }).session(session).lean();
   if (supplierReceipt) { line.receiptId = supplierReceipt._id; line.movementKind = 'purchase_refund'; }
   await line.save({ session });
+  if (line.sourceProvider === 'alipay') require('./alipayValuation').queue(session, line.accountId, req?.user);
   await logAudit({ req, action: 'bank.match', model: 'AccountingBankStatementLine', docId: line._id, after: line }, session);
   return line;
 }
@@ -351,7 +409,7 @@ async function exactLinks(bank, lines) {
     const found = items.filter(({ item }) => !taken.has(String(item._id))
       && Math.abs(Number(item.unitPrice) - want.amount) < 0.005
       && (item.currency || 'USD') === want.currency
-      && (!item.date || dayDistance(new Date(item.date).toISOString().slice(0, 10), line.day) <= DUPLICATE_DAYS));
+      && item.date && dayDistance(new Date(item.date).toISOString().slice(0, 10), line.day) <= DUPLICATE_DAYS);
     if (found.length !== 1) return null;
     const { order, item } = found[0];
     taken.add(String(item._id));
@@ -390,7 +448,7 @@ async function findNearLinks(bank, lines, links) {
     const line = lines[index];
     const found = items.filter(({ item }) => !taken.has(String(item._id))
       && Math.abs(Number(item.unitPrice) - usd) <= usd * NEAR
-      && (!item.date || dayDistance(new Date(item.date).toISOString().slice(0, 10), line.day) <= DUPLICATE_DAYS));
+      && item.date && dayDistance(new Date(item.date).toISOString().slice(0, 10), line.day) <= DUPLICATE_DAYS);
     if (found.length !== 1) return null;
     const { order, item } = found[0];
     taken.add(String(item._id));
@@ -418,8 +476,13 @@ async function linkTarget(link, session) {
 // chosen account. Refused while the books hold an unmatched entry that could be the same money,
 // unless `confirmNotDuplicate` says it is not.
 async function createEntryForLine(lineId, input, { session, req }) {
+  if (input.link?.orderId && input.link?.itemId) {
+    throw fail('اقتراح الطلبية يحتاج مراجعة واعتماد؛ اختر بند المشتريات من قائمة المطابقة لتتحقق العملة والمبلغ والتاريخ قبل الربط');
+  }
   const line = await BankStatementLine.findById(lineId).session(session);
   if (!line || line.lineStatus !== 'unmatched') throw fail('سطر الكشف غير متاح');
+  alipayReconciliation.assertWallet(line);
+  if (line.sourceProvider === 'alipay' && line.amount > 0 && !isPurchaseRefund(line)) throw fail('وارد Alipay لا يُسجل إيرادًا تلقائيًا؛ سجّل شراء اليوان أو التحويل أو إيداع العميل من قسمه ثم طابق قيده مع الكشف');
   if (!input.pendingRefund && !input.confirmNotRefund && line.amount > 0 && needsRefundReview(line, (await guesser(line.accountId))(line))) throw fail('هذا السطر استرداد مشتريات؛ اربطه بريفاند الطلبية أو الفاتورة الأصلية، أو أكد أنه ليس استرداداً');
   if (!input.confirmNotDuplicate) {
     const twins = await possibleDuplicates(line, session);
@@ -429,8 +492,25 @@ async function createEntryForLine(lineId, input, { session, req }) {
       throw error;
     }
   }
-  if (input.pendingRefund) return require('./pendingRefund').post(line, { session, req });
   const bank = await bankAccount(line.accountId);
+  const exchange = bankTransferHints.exchangeOf(line.description, currencyOf(bank), line.amount / 100);
+  if (exchange && !exchange.error) Object.assign(line, exchange);
+  const semantic = bankTransferHints.describe(line, bank, [...(await getConfig()).accountsById.values()]);
+  if (semantic?.semanticTransfer) {
+    if (input.target || input.link || input.billId || input.pendingRefund) throw fail('هذه حركة تحويل أو تسوية؛ لا تربطها كتكلفة شراء جديدة أو استرداد');
+    if ((semantic.account && String(input.counterAccountId) !== String(semantic.account._id))
+      || (!semantic.account && !['cash_deposit', 'investment_transfer'].includes(semantic.source))) throw fail(semantic.reason);
+    if (semantic.source === 'investment_transfer') {
+      const target = await getAccount(input.counterAccountId, 'حساب الاستثمار أو المشاركة');
+      if (target.type !== 'asset') throw fail('شراء الصندوق أو فتح حساب المشاركة يحتاج حساب أصل، وليس مصروف مشتريات');
+    }
+    if (semantic.source === 'cash_deposit') {
+      const source = await getAccount(input.counterAccountId, 'مصدر الإيداع النقدي');
+      if (source.isCash ? !['cash', 'current'].includes(source.cashKind) : !['equity', 'liability'].includes(source.type))
+        throw fail('اختر مصدر النقد الحقيقي: خزينة نقدية أو حساب تمويل المالك، وليس إيراد بيع أو حساب بنك آخر');
+    }
+  }
+  if (input.pendingRefund) return require('./pendingRefund').post(line, { session, req });
   const rates = new RateBook(session);
   const minor = Math.abs(line.amount);
   const label = input.description || line.description || 'حركة من كشف البنك';
@@ -448,7 +528,7 @@ async function createEntryForLine(lineId, input, { session, req }) {
   if (outOfBank && input.target && !input.confirmNewBill && (await candidatesFor(line, bank, { session })).length) {
     throw fail('توجد فاتورة أصلية محتملة؛ راجع المطابقة أو أكد أن هذه عملية جديدة قبل إنشاء تكلفة أخرى');
   }
-  const existingBill = outOfBank && !input.target && !chosenCounter?.isCash
+  const existingBill = !semantic?.semanticTransfer && outOfBank && !input.target && !chosenCounter?.isCash
     ? await selectBill(line, bank, input, session) : null;
   if (existingBill) {
     const payables = require('./payables');
@@ -485,6 +565,9 @@ async function createEntryForLine(lineId, input, { session, req }) {
     return line;
   }
 
+  const vendorHint = (await bankMerchants.matcher(bank._id, session))(line);
+  if (outOfBank && vendorHint?.bankPurpose === 'yuan_purchase') throw fail('هذه دفعة لشراء اليوان؛ سجّلها من صفحة Alipay ثم طابق قيدها مع الكشف، ولا تنشئ تكلفة مشتريات ثانية');
+
   // A line of a partner's current account (Aswaq, a funder...) or a bank that paid for a trip, an
   // order or a customer (spec 19.4): a supplier bill on the trip or order paid from this account,
   // or a debt on the customer whose money came from it
@@ -516,8 +599,16 @@ async function createEntryForLine(lineId, input, { session, req }) {
   }
 
   let lines;
-  if (counter.isCash) {
+  const monetaryCounter = semantic?.semanticTransfer && ['investment_transfer', 'owner_loan'].includes(semantic.source);
+  if (counter.isCash || monetaryCounter) {
     await lockPostingAccounts([bank, counter], session);
+    if (monetaryCounter && currencyOf(counter) !== currencyOf(bank)) throw fail('حساب الاستثمار أو قرض المالك يجب أن يكون بنفس عملة الكشف');
+    if (semantic?.source === 'owner_loan' && counter.type !== 'liability') throw fail('قرض عماد يحتاج حساب التزام، وليس إيراداً أو رأس مال');
+    if (semantic?.source === 'owner_loan' && outOfBank) {
+      const debt = await require('../carrying').getBalance(counter._id, { session, upToDay: line.day });
+      const outstanding = currencyOf(counter) === 'USD' ? debt.usd : debt.foreign;
+      if (outstanding >= 0 || minor > -outstanding) throw fail('قيمة رد قرض عماد أكبر من الدين المسجل؛ طابق السداد السابق أو سجّل أصل القرض أولاً');
+    }
     // Money between two of the company's own accounts (the bank paying the card, dollars sold
     // for lira): each side moves its own amount, both at the value that left
     let counterMinor = minor;
@@ -538,10 +629,21 @@ async function createEntryForLine(lineId, input, { session, req }) {
       const { currencies } = await getConfig();
       line.exchangeRate = (destinationMinor / 10 ** currencies.get(currencyOf(destination)).decimals) / (sourceMinor / 100);
     }
-    const sourceUsd = await valueOut(source, sourceMinor, { day: line.day, rates, docRate });
+    const sourceUsd = semantic?.source === 'owner_loan' && !outOfBank
+      ? await rates.toUsd(sourceMinor, currencyOf(source), line.day)
+      : await valueOut(source, sourceMinor, { day: line.day, rates, docRate });
     // Dollars received must be exactly their face amount, even when the sold lira had a
     // different carrying value. The difference belongs on the exchange account.
-    const destinationUsd = currencyOf(destination) === 'USD' ? destinationMinor : sourceUsd;
+    let destinationUsd = currencyOf(destination) === 'USD' ? destinationMinor : sourceUsd;
+    if (destination.type === 'liability' && currencyOf(destination) !== 'USD') {
+      // Repaying a funded purchase/card closes the debt at its own carrying value.
+      // Any difference from the bank's carrying value is FX, not another purchase cost.
+      const debt = await require('../carrying').getBalance(destination._id, { session, ...(semantic?.source === 'owner_loan' && { upToDay: line.day }) });
+      if (debt.foreign < 0) {
+        const carried = require('../carrying').valueOutflow(debt, destinationMinor);
+        if (carried !== null) destinationUsd = carried;
+      }
+    }
     lines = [moneyLine(destination, 'debit', destinationMinor, destinationUsd, { label }), moneyLine(source, 'credit', sourceMinor, sourceUsd, { label })];
     await addFxLine(lines, office);
   } else {
@@ -682,12 +784,17 @@ async function postAsBill(line, bank, counter, link, input, { session, req }) {
   const billLine = input.billTarget
     ? { description, amount: billAmount, ...input.billTarget }
     : link?.orderId
-    ? { description, amount: billAmount, target: 'order', orderId: link.orderId }
+    ? { description, amount: billAmount, target: 'order', orderId: link.orderId, purchaseItemId: link.itemId }
     : { description, amount: billAmount, target: 'expense', accountId: counter._id, office: input.office };
+  const duplicateInput = { vendorId: vendor._id, day: line.day, currency: original ? original.currency : 'USD', vendorRef: line.reference || undefined, vendorRefKind: 'bank', lines: [billLine] };
+  const duplicatePreview = input.confirmNewBill ? await require('../costDuplicates').preview(duplicateInput, { session }) : null;
   const bill = await payables.createBill({
     vendorId: vendor._id, day: line.day, currency: original ? original.currency : 'USD', ...(original && { rate: original.rate }), vendorRef: line.reference || undefined,
+    vendorRefKind: 'bank',
     note: `من كشف ${bank.name}، دُفعت ${paid} ${bankCurrency} مقابل ${abroad.amount} ${abroad.currency} بسعر مباشر ${value.crossRate.toFixed(6)} ${bankCurrency}/${abroad.currency}`,
     idempotencyKey: `BANK_LINE_BILL:${line._id}${suffix}`, lines: [billLine],
+    ...(duplicatePreview?.results.length ? { duplicateDecision: 'independent', duplicateFingerprint: duplicatePreview.fingerprint,
+      duplicateReason: `أكد المستخدم أن حركة الكشف ${line.description} عملية جديدة مستقلة عن الفواتير المقترحة` } : {}),
   }, { session, req });
   await bankMerchants.learn(line, vendor._id, counter?._id, session);
   const payment = await payables.createPayment({
@@ -766,6 +873,9 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
   line.lineStatus = 'unmatched';
   line.pendingRefund = false; line.pendingRefundAccountId = undefined;
   line.historicalPurchase = false; line.historicalCovered = false;
+  if (line.historicalSettlementPaymentId) {
+    line.historicalSettlementPaymentId = undefined; line.historicalSettlementUsd = undefined; line.billId = undefined;
+  }
   line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...previousEntryIds.map(String)])];
   line.postingAttempt = (line.postingAttempt || 0) + 1;
   line.entryId = undefined;
@@ -832,11 +942,22 @@ async function suggestions(accountId) {
   const movements = await unmatchedMovements(accountId);
   const result = {};
   for (const [index, line] of lines.entries()) {
+    if (!alipayReconciliation.walletReady(line)) {
+      result[line._id] = { account: null, requiresConfirmation: true, source: 'alipay', isRefund: isPurchaseRefund(line), reason: line.sourceReviewReason, duplicates: [] };
+      continue;
+    }
+    if (line.sourceProvider === 'alipay' && line.amount > 0 && !isPurchaseRefund(line)) {
+      const twins = movements.filter(m => m.amount === line.amount && dayDistance(m.day, line.day) <= DUPLICATE_DAYS);
+      result[line._id] = { account: null, requiresConfirmation: true, source: 'alipay', reason: 'شراء يوان أو تحويل أو إيداع؛ طابق القيد الموجود أو سجل العملية من قسمها ثم طابقها',
+        duplicates: twins.map(t => ({ _id: t._id, number: t.number, day: t.day, description: t.description })) };
+      continue;
+    }
     const twins = movements.filter((m) => m.amount === line.amount && dayDistance(m.day, line.day) <= DUPLICATE_DAYS);
     const link = links[index];
-    const billHint = await existingBillHint(line, await bankAccount(accountId), guess(line).vendorName);
+    const billHint = guess(line).semanticTransfer ? null : await existingBillHint(line, await bankAccount(accountId), guess(line).vendorName);
     result[line._id] = {
-      ...(billHint || (link ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link } : guess(line))),
+      ...(guess(line).semanticTransfer ? guess(line) : billHint || (link ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link,
+        requiresConfirmation: true, reason: 'اقتراح بالمبلغ والعملة وقرب التاريخ فقط؛ راجع هوية المورد والطلبية من قائمة المطابقة قبل الاعتماد.' } : guess(line))),
       duplicates: twins.map((t) => ({ _id: t._id, number: t.number, day: t.day, description: t.description })),
     };
     if (needsRefundReview(line, guess(line))) Object.assign(result[line._id], {
@@ -860,14 +981,15 @@ async function existingBillHint(line, bank, vendorName) {
 // Where a statement line goes: a rule whose keyword is in its text, else the account the same
 // text was posted to last time, else nothing
 async function guesser(accountId) {
-  const bankName = (await Account.findById(accountId).select('name').lean())?.name || '';
+  const sourceBank = await bankAccount(accountId);
+  const bankName = sourceBank.name || '';
   const [rules, history] = await Promise.all([
     BankRule.find({ $or: [{ accountId }, { accountId: null }] }).populate('counterAccountId', 'code name isActive').lean(),
     BankStatementLine.find({ accountId, lineStatus: 'created_entry' }).sort({ updatedAt: -1 }).limit(500).populate('entryId', 'lines').populate('billId', 'lines').lean(),
   ]);
   const learned = new Map();
   const merchant = await bankMerchants.matcher(accountId);
-  const merchantAccounts = new Map((await Account.find({ isActive: true }).select('code name').lean()).map(a => [String(a._id), a]));
+  const merchantAccounts = new Map((await Account.find({ isActive: true, isGroup: { $ne: true } }).select('code seedKey name currency type isCash cashKind office isActive').lean()).map(a => [String(a._id), a]));
   const purchaseAccount = [...merchantAccounts.values()].find(a => a.code === '510400');
   history.forEach((old) => {
     const key = normalize(old.description);
@@ -888,7 +1010,16 @@ async function guesser(accountId) {
   const learnedAccounts = new Map((await Account.find({ _id: { $in: [...learned.values()].map((v) => v.accountId) }, isActive: true }).select('code name').lean()).map((a) => [String(a._id), a]));
 
   return (line) => {
+    const transferHint = bankTransferHints.describe(line, sourceBank, [...merchantAccounts.values()]);
+    if (transferHint) return { ...transferHint, vendorName: transferHint.vendorName || null, vendorId: transferHint.vendorId || null, office: transferHint.office || sourceBank.office || null };
     const identified = merchant(line);
+    if (identified?.bankPurpose === 'yuan_purchase') return { ...identified, account: null, office: null,
+      source: 'yuan', requiresConfirmation: true, reason: 'شراء يوان من AlQFILA؛ سجّل شراء اليوان من صفحة Alipay ثم طابق قيده مع الكشف. ليست تكلفة بضائع.' };
+    if (identified?.bankPurpose === 'china_services') {
+      const serviceAccount = [...merchantAccounts.values()].find(a => a.code === (identified.bankAccountCode || '531700'));
+      return { ...identified, account: serviceAccount || null, office: identified.bankOffice || 'china', source: 'service',
+        reason: 'خدمات الصين: زيارة مصنع أو إرسال شاحنة. إذا وجدت فاتورة مرتبطة تُستخدم بدل إنشاء تكلفة جديدة.' };
+    }
     const text = normalize(`${line.description} ${line.reference || ''}`);
     const direction = line.amount < 0 ? 'out' : 'in';
     const rule = rules
@@ -898,13 +1029,19 @@ async function guesser(accountId) {
       .sort((a, b) => Number(!!b.accountId) - Number(!!a.accountId) || (b.priority || 0) - (a.priority || 0) || b.keyword.length - a.keyword.length)[0];
     const past = !rule && learned.get(normalize(line.description));
     const pastAccount = past && learnedAccounts.get(String(past.accountId));
+    const purchaseLike = line.amount < 0 && line.movementKind !== 'card_payment'
+      && !/transfer|withdraw|top.?up|currency exchange|d[oö]viz|换汇|转账|转出|提现|充值/i.test(text) && (line.movementKind === 'purchase' || Number(line.originalAmount) > 0
+      || /purchase|shopping|\bpos\b/i.test(text)
+      || (line.sourceProvider === 'alipay' && !/转账|转出|提现|充值|手续费|transfer|withdraw|top.?up/i.test(text)));
     return {
+      vendorType: identified?.vendorType,
       vendorId: identified?.vendorId || null,
       vendorName: identified?.vendorName || vendorFor(rule?.vendorName, line, bankName),
       account: identified?.learned ? merchantAccounts.get(String(identified.counterAccountId)) || purchaseAccount || null
-        : rule ? { _id: rule.counterAccountId._id, code: rule.counterAccountId.code, name: rule.counterAccountId.name } : pastAccount || (identified && purchaseAccount) || null,
+        : rule ? { _id: rule.counterAccountId._id, code: rule.counterAccountId.code, name: rule.counterAccountId.name } : pastAccount || (identified && purchaseAccount) || (purchaseLike && purchaseAccount) || null,
       office: rule?.office || (pastAccount && past.office) || null,
-      source: identified?.learned ? 'history' : rule ? 'rule' : pastAccount ? 'history' : identified ? 'vendor' : null,
+      source: identified?.learned ? 'history' : rule ? 'rule' : pastAccount ? 'history' : identified ? 'vendor' : purchaseLike ? 'purchase_default' : null,
+      reason: !rule && !pastAccount && !identified && purchaseLike ? 'مشتريات غير مرتبطة بفاتورة مورد؛ المقترح تكلفة شراء. راجع المطابقة قبل إنشاء تكلفة جديدة.' : null,
       keyword: rule?.keyword || null,
     };
   };
@@ -916,7 +1053,7 @@ async function guesser(accountId) {
 async function classifyRows(accountId, rows) {
   const account = await bankAccount(accountId);
   const docs = await toDocs(account, rows);
-  const known = await knownFingerprints(account._id, docs.map(d => d.fingerprint));
+  const known = await knownFingerprints(account._id, docs.map(d => d.fingerprint), null, docs);
   const days = docs.map((d) => d.day).sort();
   const movements = await unmatchedMovements(accountId, { from: addDays(days[0], -DUPLICATE_DAYS), to: addDays(days[days.length - 1], DUPLICATE_DAYS) });
   const guess = await guesser(accountId);
@@ -926,20 +1063,29 @@ async function classifyRows(accountId, rows) {
   const taken = new Set();
   return Promise.all(docs.map(async (doc, index) => {
     if (known.has(doc.fingerprint)) return { status: 'imported' };
+    if (!alipayReconciliation.walletReady(doc)) return { status: 'new', account: null, isRefund: isPurchaseRefund(doc), requiresConfirmation: true, source: 'alipay', reason: doc.sourceReviewReason };
     const near = movements.filter((m) => !taken.has(String(m._id)) && m.amount === doc.amount)
       .sort((a, b) => dayDistance(a.day, doc.day) - dayDistance(b.day, doc.day));
     const identifiedRefund = needsRefundReview(doc, guess(doc));
-    const match = !identifiedRefund && near.find((m) => dayDistance(m.day, doc.day) <= MATCH_DAYS);
+    const eligible = !identifiedRefund ? near.filter(m => dayDistance(m.day, doc.day) <= MATCH_DAYS
+      && (doc.sourceProvider !== 'alipay' || alipayReconciliation.exactMatch(doc, m, accountId))
+      && bankTransferHints.matchesMovement(doc, guess(doc), m)) : [];
+    const match = eligible.length === 1 && docs.filter(other => other.amount === eligible[0].amount && dayDistance(other.day, eligible[0].day) <= MATCH_DAYS).length === 1 ? eligible[0] : null;
     if (match) {
       taken.add(String(match._id));
       return { status: 'match', entry: { _id: match._id, number: match.number, day: match.day, description: match.description } };
     }
     const twin = near.find((m) => dayDistance(m.day, doc.day) <= DUPLICATE_DAYS);
+    if (doc.sourceProvider === 'alipay' && doc.amount > 0 && !identifiedRefund) return {
+      status: twin ? 'maybeDuplicate' : 'new', account: null, requiresConfirmation: true, source: 'alipay', reason: 'شراء يوان أو تحويل أو إيداع؛ يُطابق مع قيد العملية ولا يُسجل إيرادًا من الكشف',
+      entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description } : null,
+    };
     const link = links[index];
-    const billHint = await existingBillHint(doc, account, guess(doc).vendorName);
+    const billHint = guess(doc).semanticTransfer ? null : await existingBillHint(doc, account, guess(doc).vendorName);
     const target = identifiedRefund ? { ...guess(doc), source: 'refund', isRefund: true, requiresConfirmation: true,
-      refundAccount: guess(doc).account, account: null, reason: 'مبلغ وارد من مورد مشتريات؛ يلزم اعتماد المطابقة مع الأصل' } : billHint || (link
-      ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link }
+      refundAccount: guess(doc).account, account: null, reason: 'مبلغ وارد من مورد مشتريات؛ يلزم اعتماد المطابقة مع الأصل' } : guess(doc).semanticTransfer ? guess(doc) : billHint || (link
+      ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link,
+        requiresConfirmation: true, reason: 'اقتراح بالمبلغ والعملة وقرب التاريخ فقط؛ لا يُربط تلقائيًا دون مراجعة الطلبية والمورد.' }
       : guess(doc));
     // Purchases and expenses leaving the bank are posted as a bill of this vendor and its payment
     const type = target.account && accountsById.get(String(target.account._id))?.type;
@@ -1173,7 +1319,7 @@ async function linkGroup(lineIds, input, { session, req }) {
     vendorId: vendor._id, day: lines[0].day, currency: inOwnCurrency ? itemCurrency : 'USD',
     ...(inOwnCurrency && { rate: Number(item.unitPrice) / totalUsd }),
     note: `من كشف ${bank.name}: ${lines.length} عمليات`, idempotencyKey: `BANK_GROUP_BILL:${item._id}:${lines.map((l) => l._id).join(',')}${lines.some(l => l.postingAttempt) ? `:REPOST:${lines.map(l => l.postingAttempt || 0).join(',')}` : ''}`,
-    lines: [{ description, amount: inOwnCurrency ? Number(item.unitPrice) : totalUsd, target: 'order', orderId: order._id }],
+    lines: [{ description, amount: inOwnCurrency ? Number(item.unitPrice) : totalUsd, target: 'order', orderId: order._id, purchaseItemId: item._id }],
   }, { session, req });
   // Each line pays its share of the bill's dollars; the last takes what rounding left
   let left = bill.totalUsd;

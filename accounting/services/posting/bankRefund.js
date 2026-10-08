@@ -73,6 +73,8 @@ async function match(id, input, { session, req }) {
   const line = await BankStatementLine.findById(id).session(session);
   if (!line || line.lineStatus !== 'unmatched' || line.amount <= 0) throw fail('اختر سطر مبلغ مرتجع موجب وغير مطابق');
   const bank = await Account.findById(line.accountId).session(session).lean();
+  if (require('./bankTransferHints').describe(line, bank, [...(await require('../config').getConfig()).accountsById.values()])?.semanticTransfer)
+    throw fail('هذه حركة تحويل أو إيداع؛ ليست استرداد مشتريات');
   assertDirection(line, true);
   const { currencies } = await getConfig();
   const decimals = currencies.get(bank.currency)?.decimals ?? 2;

@@ -33,10 +33,14 @@ const withLifecycle = (definition, options = {}) => {
 };
 
 const vendorSchema = new Schema({
+  costPostingVersion: { type: Number, default: 0 },
   name: { type: String, required: true, trim: true },
   // Only automatically discovered merchants use this key; manual/historical vendors stay valid.
   bankNameKey: String,
   bankAliases: [String],
+  bankPurpose: { type: String, enum: ['china_services', 'yuan_purchase'] },
+  bankAccountCode: String,
+  bankOffice: String,
   bankMappings: [{ _id: false, accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
     merchant: String, counterAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' } }],
   // 'funder': a third party whose card buys for us (a friend); we settle with them later (spec 19.13)
@@ -55,6 +59,7 @@ vendorSchema.index({ bankNameKey: 1 }, { unique: true, partialFilterExpression: 
 const Vendor = mongoose.model('AccountingVendor', vendorSchema);
 
 const billLineSchema = new Schema({
+  purchaseItemId: { type: Schema.Types.ObjectId },
   description: { type: String, required: true },
   // In the bill currency
   amount: { type: Number, required: true },
@@ -78,8 +83,12 @@ const billLineSchema = new Schema({
 });
 
 const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
+  duplicateDecision: String,
+  duplicateReason: String,
+  duplicateFingerprint: String,
   vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
   vendorRef: String,
+  vendorRefKind: { type: String, enum: ['invoice', 'bank'] },
   importReference: String,
   importHash: String,
   day: { type: String, required: true },
@@ -88,6 +97,10 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
   lines: { type: [billLineSchema], required: true },
   total: Number,
   totalUsd: Number,
+  alipayValuationUsd: Number,
+  alipayValuationAdjustmentUsd: Number,
+  alipayValuationProvisional: Boolean,
+  alipayValuationEntryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
   // Incremented transactionally when a payment or refund is allocated to this bill.
   allocationVersion: { type: Number, default: 0 },
   isCreditNote: { type: Boolean, default: false },
@@ -114,6 +127,13 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
 }));
 
 const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycle({
+  historicalSettlementVersion: { type: Number, default: 0 },
+  // Automatic remittance valuation; original bill/payment and payable allocations stay intact.
+  alipayValuationUsd: Number,
+  alipayValuationAdjustmentUsd: Number,
+  alipayValuationProvisional: Boolean,
+  alipayValuationEntryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
+
   vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
   day: { type: String, required: true },
   // Paid from this cash/bank/e-wallet (or employee advances); null when an advance is applied
@@ -208,8 +228,10 @@ const TreasuryTransfer = mongoose.model('AccountingTreasuryTransfer', withLifecy
   fromAmount: { type: Number, required: true },
   toAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
   toAmount: { type: Number, required: true },
-  // Taken from the sending account on top of fromAmount
+  // Legacy transfers paid fees from the sending account; new transfers select the paying account.
   fees: { type: Number, default: 0 },
+  feesFromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+  feesCurrency: String,
   feesAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   employeeId: { type: Schema.Types.ObjectId, ref: 'User' },
 }));
@@ -292,6 +314,16 @@ const bankLineSchema = new Schema({
   description: String,
   reference: String,
   // Minor units of the account currency: positive = money in, negative = money out
+  sourceProvider: { type: String, enum: ['alipay'] },
+  sourceCurrency: String,
+  sourceTransactionId: String,
+  merchantOrderId: String,
+  counterparty: String,
+  paymentMethod: String,
+  transactionStatus: String,
+  sourceTime: String,
+  walletImpact: { type: String, enum: ['balance', 'unknown', 'confirmed'] },
+  sourceReviewReason: String,
   amount: { type: Number, required: true },
   balanceAfter: Number,
   matchedEntryIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' }],
@@ -318,6 +350,8 @@ const bankLineSchema = new Schema({
   purchaseReviewPending: Boolean,
   historicalPurchase: { type: Boolean, default: false },
   historicalCovered: { type: Boolean, default: false },
+  historicalSettlementPaymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' },
+  historicalSettlementUsd: Number,
   movementKind: { type: String, enum: ['purchase', 'purchase_refund', 'card_payment'] },
   receiptId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierReceipt' },
   customerRefundId: { type: Schema.Types.ObjectId, ref: 'AccountingCustomerRefund' },
@@ -344,8 +378,10 @@ const bankLineSchema = new Schema({
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 bankLineSchema.index({ accountId: 1, lineStatus: 1, day: 1 });
+bankLineSchema.index({ historicalSettlementPaymentId: 1 }, { unique: true, partialFilterExpression: { lineStatus: 'created_entry', historicalSettlementPaymentId: { $exists: true } } });
 bankLineSchema.index({ accountId: 1, fingerprint: 1 });
 bankLineSchema.index({ accountId: 1, fingerprintAliases: 1 });
+bankLineSchema.index({ accountId: 1, sourceProvider: 1, sourceTransactionId: 1 });
 const BankStatementLine = mongoose.model('AccountingBankStatementLine', bankLineSchema);
 
 const ExpenseType = mongoose.model('AccountingExpenseType', new Schema({

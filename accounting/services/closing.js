@@ -10,7 +10,7 @@ const { resolveAccount } = require('./roles');
 const { postEntry, reverseEntry } = require('./ledger');
 const { accountTotals } = require('./balances');
 const { logAudit } = require('./audit');
-const { TZ, today, monthOf } = require('./dates');
+const { TZ, today, monthOf, addDays } = require('./dates');
 const { monthsBetween, monthEnd } = require('./posting/schedules');
 const { runChecks } = require('./reports/exceptions');
 const { incomeStatement } = require('./reports/statements');
@@ -29,7 +29,7 @@ const refreshConfig = () => invalidateConfig();
 // shown for the accountant to decide.
 async function monthChecklist(month, { session } = {}) {
   if (!MONTH.test(month)) throw fail('الشهر غير صالح');
-  const { accountsById } = await getConfig();
+  const { accountsById, count } = await getConfig();
   const settings = await AccountingSettings.findOne({ key: 'main' }).session(session || null).lean();
   const end = monthEnd(month);
   const start = `${month}-01`;
@@ -48,12 +48,13 @@ async function monthChecklist(month, { session } = {}) {
   const cash = [...accountsById.values()].filter((a) => a.isCash && !a.isGroup && a.isActive);
   const totals = await accountTotals({ to: end, accountIds: cash.map((a) => a._id) });
   const counted = new Set((await CashCount.distinct('accountId', { status: 'posted', day: { $gte: start, $lte: end } })).map(String));
+  (await require('../models/review').BankMonthReview.distinct('accountId', { month }).session(session || null)).forEach(accountId => counted.add(String(accountId)));
   const uncounted = cash.filter((a) => (totals.get(String(a._id))?.closingUsd || 0) !== 0 && !counted.has(String(a._id)));
 
   const [unmatchedBank, failedEvents, checks] = await Promise.all([
-    BankStatementLine.countDocuments({ lineStatus: 'unmatched', day: { $lte: end } }),
+    BankStatementLine.countDocuments({ lineStatus: 'unmatched', day: { $lte: end, ...(count && { $gte: count.endOfDay ? addDays(count.day, 1) : count.day }) } }).session(session || null),
     AccountingEvent.countDocuments({ status: { $in: ['failed', 'pending'] } }).session(session || null),
-    runChecks({ only: ['balanced', 'wallets', 'cashBoxes', 'unrecognized', 'roles'] }),
+    runChecks(),
   ]);
   const statement = await incomeStatement({ from: start, to: end });
 
