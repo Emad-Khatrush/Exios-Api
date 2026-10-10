@@ -161,6 +161,10 @@ app.use(cors());
 
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
+if (isQa) db.once('open', () => {
+  require('./accounting/seed/qaServiceAccounts').ensureQaServiceAccounts()
+    .catch((error) => console.error('QA service account setup failed:', error.message));
+});
 
 const WHATSAPP_DATA_PATH = './.wwebjs_auth/';
 let whatsappStore; // created once DB is connected
