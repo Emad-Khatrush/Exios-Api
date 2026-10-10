@@ -91,7 +91,8 @@ const sendMessageQueue = require('./utils/messageQueue');
 
 const connectionUrl = process.env.MONGO_URL_2 || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
 const isLocalAccountingTrial = process.env.EXIOS_LOCAL_ACCOUNTING_TRIAL === '1'
-  && /^mongodb:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/exios-september-trial-\d{8}(?:\?|$)/.test(connectionUrl);
+  // A local trial database, or the local copy of the real data (never a remote one)
+  && /^mongodb:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/(?:exios-september-trial-\d{8}|exios-prod-copy)(?:\?|$)/.test(connectionUrl);
 if (isLocalAccountingTrial) process.env.BACKUP_BUCKET = '';
 if (isLocalAccountingTrial) app.get('/api/accounting/trial-status', async (req, res) => {
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return res.sendStatus(404);

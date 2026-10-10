@@ -13,6 +13,7 @@ const { getConfig } = require('../config');
 const { walletRole, resolveCashAccount, resolveStaffCashAccount } = require('../roles');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
+const { syncServiceDebts } = require('../claims/serviceDebt');
 const { purchaseKey, shipmentKey, generalDebtKey, PACKAGE_FEES } = require('../claims/keys');
 const { fail, toCurrencyMinor, RateBook, valueOut, moneyLine, addFxLine, resolveAccount, getAccount, lockPostingAccounts, isBeforeCashCount } = require('./common');const { roundHalfAway } = require('../money');
 
@@ -109,6 +110,27 @@ async function rateMargin(keys, usd, currency, options, session) {
 
 const ordersOf = (keys) => [...new Set(keys.filter((k) => !k.startsWith('GEN:')).map((k) => k.split(':')[1]))];
 
+async function servicePaymentAllocation(keys, statement, options) {
+  if (keys.length !== 1 || !keys[0].startsWith('GEN:')) return null;
+  const { session } = options;
+  const balance = await Balance.findById(keys[0].slice(4)).session(session).lean();
+  if (balance?.accountingKind !== 'service_sale') return null;
+  await postGeneralDebt(balance._id, options);
+  const initial = await JournalEntry.findOne({ eventKey: `GENERAL_DEBT:${balance._id}`, status: 'posted', reversalOf: null }).session(session).lean();
+  if (!initial) throw fail('قيد دين الخدمة الأصلي غير متاح؛ راجع الدين قبل السداد');
+  const quote = statement.serviceDebtSettlement;
+  const sameCurrency = statement.currency === balance.currency;
+  if (quote && (quote.debtCurrency !== balance.currency || quote.paymentCurrency !== statement.currency)) throw fail('عملة سداد الخدمة تغيرت؛ ألغِ السداد وأعد تسجيله من الدين');
+  const rate = sameCurrency ? 1 : quote?.paymentPerDebtUnit;
+  if (!(rate > 0)) throw fail('سداد الخدمة بعملة مختلفة يحتاج سعر التحويل المسجل من شاشة الدين');
+  const nativePaid = Math.round(Number(statement.amount) / rate * 100) / 100;
+  const ar = await resolveAccount('customer_receivable');
+  const billed = initial.lines.filter(l => String(l.accountId) === String(ar._id)).reduce((s, l) => s + l.debit - l.credit, 0);
+  const owed = Math.max((await openBalances(keys, session)).get(keys[0]) || 0, 0);
+  const claimUsd = Math.min(owed, roundHalfAway(billed * nativePaid / balance.initialAmount));
+  return { claimUsd, margin: 0 };
+}
+
 // The office of a staff member: the one set by the owner, else their city when it is an office
 async function officeOfCreator(userId, session) {
   if (!userId || !mongoose.isValidObjectId(String(userId))) return null;
@@ -190,6 +212,7 @@ async function postStatement(statementId, options = {}) {
     });
     const keys = reversals.flatMap((r) => r.lines.map((l) => l.arKey).filter(Boolean));
     for (const orderId of ordersOf(keys)) await syncOrder(orderId, { ...options, date: statement.createdAt });
+    await syncServiceDebts(keys, { ...options, date: statement.createdAt });
     return { reversed: reversals.length };
   }
   if (await JournalEntry.exists({ eventKey }).session(session)) return { skipped: 'already posted' };
@@ -288,8 +311,11 @@ async function postStatement(statementId, options = {}) {
     if (recoveryBalance?.status === 'lost' && recoveryBalance.sourceBalance) {
       await walletOut();
       const recoveredUsd = await rates.toUsd(minor, currency, day, docRate);
-      const badDebt = await resolveAccount('bad_debt_expense');
-      lines.push({ accountId: badDebt._id, credit: recoveredUsd, partnerId, office, arKey: generalDebtKey(recoveryBalance.sourceBalance), label: 'Recovery of a written-off debt' });
+      const originalDebt = await Balance.findById(recoveryBalance.sourceBalance).select('accountingKind').session(session).lean();
+      const serviceRecovery = originalDebt?.accountingKind === 'service_sale';
+      const recoveryAccount = await resolveAccount(serviceRecovery ? 'revenue_services' : 'bad_debt_expense');
+      lines.push({ accountId: recoveryAccount._id, credit: recoveredUsd, partnerId, office,
+        ...(!serviceRecovery && { arKey: generalDebtKey(recoveryBalance.sourceBalance) }), label: 'Recovery of a written-off debt' });
     } else {
     // WALLET_PAYMENT: the claims are paid at the operation's rate; the wallet gives up the
     // dinars at its average rate; the difference is an exchange gain/loss (spec 2.4, E8)
@@ -300,7 +326,8 @@ async function postStatement(statementId, options = {}) {
       await lockClaimAllocations(keys, session);
       const receivable = await resolveAccount('customer_receivable');
       // What is paid beyond what is owed is profit, not the customer's credit
-      const { claimUsd, margin, role } = await rateMargin(keys, atRate, currency, options, session);
+      const { claimUsd, margin, role } = await servicePaymentAllocation(keys, statement, options)
+        || await rateMargin(keys, atRate, currency, options, session);
       const parts = await splitOverClaims(keys, claimUsd, session);
       claimLines(parts, 'credit', partnerId).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
       if (margin) lines.push({ accountId: (await resolveAccount(role))._id, credit: margin, office, label: OVERPAID_LABEL, partnerId, ...(ordersOf(keys)[0] && { orderId: oid(ordersOf(keys)[0]) }) });
@@ -349,6 +376,7 @@ async function postStatement(statementId, options = {}) {
       }, { session, user: options.user });
     }
   }
+  await syncServiceDebts(affectedKeys, { ...options, date: day });
   return { entryId: entry._id };
 }
 
@@ -377,6 +405,7 @@ async function repostStatement(statementId, options = {}) {
   const result = await postStatement(statementId, { ...options, target, version });
   // Orders the old entry touched are brought up to date too
   for (const orderId of ordersOf(oldKeys)) await syncOrder(orderId, options);
+  await syncServiceDebts(oldKeys, options);
   return { reversed: reversals.length, ...result };
 }
 
@@ -385,6 +414,7 @@ async function reverseStatement(statementId, options = {}) {
   const reversals = await reverseSourceEntries('UserStatement', statementId, { ...options, reason: options.reason || 'حذف العملية من كشف العميل' });
   const keys = reversals.flatMap((r) => r.lines.map((l) => l.arKey).filter(Boolean));
   for (const orderId of ordersOf(keys)) await syncOrder(orderId, options);
+  await syncServiceDebts(keys, options);
   return { reversed: reversals.length };
 }
 
@@ -477,7 +507,10 @@ async function postGeneralDebt(balanceId, options = {}) {
   // (spec 19.8). A debt with no recorded source (all old ones) is money that left some box nobody
   // recorded: the suspense account, folded into the opening balance with the rest of history.
   const from = balance.source?.accountId && (await getConfig()).accountsById.get(String(balance.source.accountId));
-  if (from && (from.currency || 'USD') === balance.currency) {
+  if (balance.accountingKind === 'service_sale') {
+    lines.push({ accountId: (await resolveAccount('deferred_service_revenue'))._id, credit: usd,
+      partnerId: oid(balance.owner), arKey: key, office, label: balance.notes });
+  } else if (from && (from.currency || 'USD') === balance.currency) {
     const fromAccount = await getAccount(from._id, 'مصدر الدين');
     const out = await valueOut(fromAccount, minor, { day, rates });
     lines.push(moneyLine(fromAccount, 'credit', minor, out, { office: fromAccount.office || office, label: `دين على العميل: ${balance.notes}` }));
@@ -493,6 +526,7 @@ async function postGeneralDebt(balanceId, options = {}) {
     lines,
   }, { session, user: options.user });
   await rates.lock();
+  if (balance.accountingKind === 'service_sale') await syncServiceDebts([key], { ...options, date: day });
   return { posted: true };
 }
 
@@ -515,7 +549,9 @@ async function postDebtWriteOff(balanceId, options = {}) {
   const open = keys.length ? [...(await openBalances(keys, session)).values()].reduce((sum, v) => sum + Math.max(v, 0), 0) : 0;
   const usd = open > 0 && balance.currency !== 'USD' ? open : await rates.toUsd(await toCurrencyMinor(amount, balance.currency), balance.currency, day);
   const receivable = await resolveAccount('customer_receivable');
-  const lines = [{ accountId: (await resolveAccount('bad_debt_expense'))._id, debit: usd, office, label: balance.manualClosure.note }];
+  const serviceSale = balance.accountingKind === 'service_sale';
+  const lines = [{ accountId: (await resolveAccount(serviceSale ? 'deferred_service_revenue' : 'bad_debt_expense'))._id,
+    debit: usd, office, ...(serviceSale && { partnerId: oid(balance.owner), arKey: generalDebtKey(balance._id) }), label: balance.manualClosure.note }];
   if (keys.length) {
     claimLines(await splitOverClaims(keys, usd, session), 'credit', oid(balance.owner)).forEach((line) => lines.push({ ...line, accountId: receivable._id }));
   } else {
@@ -528,6 +564,7 @@ async function postDebtWriteOff(balanceId, options = {}) {
   }, { session, user: options.user });
   await rates.lock();
   for (const orderId of ordersOf(keys)) await syncOrder(orderId, { ...options, date: day });
+  await syncServiceDebts(keys, { ...options, date: day });
   return { posted: true };
 }
 

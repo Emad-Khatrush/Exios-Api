@@ -45,6 +45,13 @@ async function getConfig() {
     cache = await load();
     loadedAt = Date.now();
   }
+  const trial = require('./migration/bankTrial').context();
+  if (trial?.session) return { ...cache, count: trial.count };
+  // Bank previews must use the same opening-count boundary as trial posting.
+  if (trial?.bankRequest && process.env.EXIOS_QA === '1') {
+    const run = await MigrationRun.findOne({ status: 'review', bankTrialEnabled: true }).lean();
+    if (run) return { ...cache, count: countOf(run) };
+  }
   return cache;
 }
 
@@ -61,4 +68,4 @@ async function getDecimals(currencyCode) {
   return currency.decimals;
 }
 
-module.exports = { getConfig, invalidateConfig, getDecimals };
+module.exports = { getConfig, invalidateConfig, getDecimals, countOf };

@@ -47,15 +47,15 @@ test('outgoing purchase cannot be listed or posted as refund, including the 109.
  expect((await BankStatementLine.findById(line._id)).lineStatus).toBe('unmatched');
 });
 
-test('equal currency, date and amount cannot justify matching another known merchant', async () => {
+test('equal currency, date and amount do not match another known merchant without confirmation', async () => {
  const { source, bill } = await seed('expense', 'USD', 81);
  await Vendor.create({ name: 'Alibaba review merchant', type: 'supplier', bankAliases: ['Alibaba.com Luxembourg'] });
  const line = await incoming(source, { description: 'Alibaba.com Luxembourg (81.00 USD)', originalAmount: 81, settlementUsd: 81 });
  const listed = await refund.list({ accountId: String(source._id), lineId: String(line._id), status: 'all' });
  const row = listed.results.find(r => String(r.billId) === String(bill._id));
- expect(row).toMatchObject({ merchantMismatch: true, canMatch: false });
+ expect(row).toMatchObject({ merchantMismatch: true, canMatch: true });
  const count = await JournalEntry.countDocuments();
- await expect(tx(session => refund.match(line._id, { kind: 'bill', billId: bill._id, confirmDifference: true }, { session, req }))).rejects.toThrow('المورد المختار مختلف');
+ await expect(tx(session => refund.match(line._id, { kind: 'bill', billId: bill._id, confirmDifference: true }, { session, req }))).rejects.toThrow('مختلف عن تاجر الكشف');
  expect(await JournalEntry.countDocuments()).toBe(count);
 });
 

@@ -58,14 +58,15 @@ async function toCurrencyMinor(amount, currency) {
 
 // Collects the daily rates used, so they are locked once the entry is saved
 class RateBook {
-  constructor(session) {
+  constructor(session, { nearest = false } = {}) {
     this.session = session;
+    this.nearest = nearest;
     this.ids = [];
     this.fallbacks = [];
   }
 
   async rate(currency, day, docRate) {
-    const found = await getRate(currency, day, { docRate, session: this.session });
+    const found = await getRate(currency, day, { docRate, session: this.session, nearest: this.nearest });
     if (found.rateId) this.ids.push(found.rateId);
     if (found.source === 'previous') this.fallbacks.push(`سعر ${currency} ليوم ${found.day} (لا يوجد سعر ليوم ${toDay(day)})`);
     if (found.source === 'next') this.fallbacks.push(`سعر ${currency} ليوم ${found.day}، أقرب سعر بعد ${toDay(day)} (لا يوجد سعر قبله)`);

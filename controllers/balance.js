@@ -164,10 +164,15 @@ module.exports.createBalance = async (req, res, next) => {
         if (!user) throw new ErrorHandler(400, errorMessages.USER_NOT_FOUND);
       }
 
-      // A debt is real money owed: it says where the money came from (a cash box, or a partner who
-      // paid for us). A debt that only reminds of an order's own claim needs no source.
+      // General service sales need no funding source; their supplier cost is independent.
+      // Linked debts remain reminders of their original invoice/shipping claim.
       let source;
-      if (balanceType === 'debt') {
+      const serviceSale = balanceType === 'debt' && debtType === 'general';
+      if (serviceSale) {
+        // Customer selling price is independent of the supplier cost and funding account.
+        await require('../accounting/services/roles').resolveAccount('deferred_service_revenue');
+        await require('../accounting/services/roles').resolveAccount('revenue_services');
+      } else if (balanceType === 'debt') {
         try {
           source = await debtSource({ accountId: req.body.sourceAccountId, currency, orderLinked: !!order && debtType !== 'general' });
         } catch (error) {
@@ -186,6 +191,7 @@ module.exports.createBalance = async (req, res, next) => {
         createdBy: req.user,
         initialAmount: amount,
         debtType,
+        accountingKind: serviceSale ? 'service_sale' : undefined,
         followsOrder: !!order,
         source,
       }], { session });
@@ -332,6 +338,10 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         amount: roundToTwo(Number(amount)),
         currency,
         total,
+        ...(existingBalance.accountingKind === 'service_sale' && { serviceDebtSettlement: {
+          debtCurrency: existingBalance.currency, paymentCurrency: currency,
+          paymentPerDebtUnit: currency === existingBalance.currency ? 1 : rateValue,
+        } }),
         note: `Payment for ${existingBalance?.debtType || ''} debt ${existingBalance?.order ? existingBalance?.order?.orderId : ''} #${balance.notes}`,
         attachments: files,
         actionType: 'wallet',

@@ -336,6 +336,34 @@ const bankLineSchema = new Schema({
   pendingRefund: { type: Boolean, default: false },
   pendingClaimVersion: { type: Number, default: 0 },
   pendingRefundAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+  tripCostSettlementId: { type: Schema.Types.ObjectId, ref: 'AccountingTripCostSettlement' },
+  // Parked as unidentified ("لا أعرف بعد"): the bank side is posted against a clearing account
+  // until the line is explained, or the owner decides where it goes after its waiting period
+  // A partner's line dated before the count, tied to the wallet deposits it was (no entry: the count holds it)
+  partnerStatementIds: [{ type: Schema.Types.ObjectId, ref: 'UserStatement' }],
+  // A line of the count period with nothing to post (a transfer between two counted accounts): why
+  coveredNote: String,
+  // Supplier payments this line made for a partner's grouped Alipay transfers (cancelled with the match)
+  groupPaymentIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' }],
+  unidentified: {
+    status: { type: String, enum: ['open', 'decided', 'resolved'] },
+    hint: { type: String, enum: ['purchase', 'shipping', 'refund', 'customer', 'expense', 'unknown'] },
+    note: String,
+    assigneeId: { type: Schema.Types.ObjectId, ref: 'User' },
+    parkedAt: Date,
+    parkedDay: String,
+    parkedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    clearingAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+    decision: {
+      kind: String,
+      accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+      reason: String,
+      day: String,
+      entryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
+      decidedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+      decidedAt: Date,
+    },
+  },
   // A purchase or expense line becomes a supplier bill and its payment
   billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
   paymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' },

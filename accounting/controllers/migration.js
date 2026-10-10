@@ -9,6 +9,7 @@ const migration = require('../services/migration');
 module.exports.overview = handle(async (req, res) => {
   const { settings, count } = await getConfig();
   res.json({ ...(await migration.inventory()), migrationDate: settings?.migrationDate || null, liveEnabled: !!settings?.liveEnabled,
+    bankTrialAvailable: process.env.EXIOS_QA === '1',
     openingCountDay: count?.day || null, operationalStartDate: count?.endOfDay ? addDays(count.day, 1) : count?.day || null });
 });
 
@@ -32,7 +33,7 @@ module.exports.start = handle(async (req, res) => {
   });
   const countDay = req.body?.countDay || undefined;
   if (countDay && (!isDay(countDay) || countDay > today())) throw badRequest('تاريخ الجرد غير صالح أو في المستقبل');
-  const run = await migration.startRun({ user: req.user, config: { costAccounts, openingCounts, countDay, closeSuspense: !!req.body?.closeSuspense } });
+  const run = await migration.startRun({ user: req.user, config: { costAccounts, openingCounts, countDay, closeSuspense: !!req.body?.closeSuspense, purchaseCostsFromStatements: !!req.body?.purchaseCostsFromStatements } });
   await runInTransaction((session) => logAudit({ req, action: 'migration.start', model: 'AccountingMigrationRun', docId: run._id, after: { runId: run.runId, costAccounts: costAccounts.length, openingCounts: openingCounts.length } }, session));
   res.status(201).json(run);
 });
@@ -41,6 +42,10 @@ module.exports.get = handle(async (req, res) => {
   const run = await MigrationRun.findOne({ runId: req.params.runId }).populate('createdBy', 'firstName lastName').lean();
   if (!run) throw notFound('التشغيل غير موجود');
   res.json(run);
+});
+
+module.exports.enableBankTrial = handle(async (req, res) => {
+  res.json(await require('../services/migration/bankTrial').enable(req.params.runId, req.user));
 });
 
 module.exports.discard = handle(async (req, res) => {

@@ -55,7 +55,10 @@ async function pendingMatch(upTo) {
   const match = { exportedToOdooAt: null };
   if (upTo) match.day = { $lte: upTo };
   const unfinished = await unfinishedRunIds();
-  if (unfinished.length) match.migrationRunId = { $nin: unfinished };
+  if (unfinished.length) {
+    match.migrationRunId = { $nin: unfinished };
+    match.bankTrialRunId = { $nin: unfinished };
+  }
   return match;
 }
 

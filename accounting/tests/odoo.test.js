@@ -82,7 +82,9 @@ describe('odoo export', () => {
     await odoo.saveSettings({ companyCurrency: 'LYD' });
     const { rows } = await odoo.createExport({ upTo: '2026-12-31', user });
     expect(rows[0]['line_ids/debit']).toBe(90);
-    expect(rows[0]['line_ids/currency_id']).toBe('');
+    // Odoo 19 wants a currency on every journal item, the company's own included
+    expect(rows[0]['line_ids/currency_id']).toBe('LYD');
+    expect(rows[0]['line_ids/amount_currency']).toBe(90);
     expect(rows[1]['line_ids/credit']).toBe(90);
     expect(rows[1]['line_ids/currency_id']).toBe('USD');
     expect(rows[1]['line_ids/amount_currency']).toBe(-10);

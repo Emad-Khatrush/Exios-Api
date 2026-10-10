@@ -235,6 +235,22 @@ describe('historical migration (scenarios 11 and 12)', () => {
   });
 });
 
+describe('purchase costs taken from the account statements only', () => {
+  test('the purchases typed on orders are not bills; everything else replays as before', async () => {
+    await resetDb();
+    await seedHistory();
+    const run = await migration.startRun({ wait: true, config: { purchaseCostsFromStatements: true, openingCounts: [{ accountId: (await account('110101'))._id, amount: 1000 }] } });
+    const { problems, report } = await MigrationRun.findById(run._id).lean();
+    expect(problems).toEqual([]);
+    expect(report.balanced).toBe(true);
+    // No historical purchase bills (trip costs still come from the trips)
+    expect(await SupplierBill.countDocuments({ idempotencyKey: /^MIG:PURCH:/ })).toBe(0);
+    expect(await SupplierBill.countDocuments({ isHistorical: true })).toBeGreaterThan(0);
+    // The purchase stays on its order, to suggest which order a statement line paid
+    expect((await col('orders').findOne({ 'purchaseItems.0': { $exists: true } })).purchaseItems).toHaveLength(1);
+  });
+});
+
 describe('starting from the counted balances', () => {
   test('closeSuspense folds the historical suspense into the opening balance', async () => {
     await resetDb();

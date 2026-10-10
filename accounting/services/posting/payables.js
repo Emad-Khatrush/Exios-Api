@@ -76,6 +76,8 @@ async function payableAccountFor(vendor) {
 
 // Orders and trips a bill charges: their cost shares are re-checked after it posts or is cancelled
 async function syncBillTargets(bill, { session, user, sync = {} }) {
+  // Internal bulk posting performs one sync per trip after all bills are created.
+  if (sync.defer === true) return;
   const { syncOrder, syncTrip } = require('../claims/sync');
   const orderIds = [...new Set(bill.lines.map((l) => l.orderId).filter(Boolean).map(String))];
   const tripIds = [...new Set(bill.lines.map((l) => l.tripId).filter(Boolean).map(String))];

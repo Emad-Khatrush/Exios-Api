@@ -38,6 +38,7 @@ async function listPurchases(input = {}) {
     originalAmount: Number(input.originalAmount), originalCurrency: input.originalCurrency, description: input.description, day: input.day };
   if (context.amount) assertDirection(context, false);
   const merchant = (await require('./bankMerchants').matcher(bank._id))(context);
+  const paymentChannel = require('./bankMerchants').isPaymentChannel(context, bank) ? 'Alipay' : null;
   const original = originalOf(context, bank.currency, decimals);
   const limit = 1000;
   if (typeof q !== 'string' || q.length > 200) throw fail('نص البحث غير صالح');
@@ -58,37 +59,53 @@ async function listPurchases(input = {}) {
     ...billSearch,
     ...(from || to ? { day } : {}), ...(source === 'direct' ? { lines: { $not: { $elemMatch: { $or: [{ orderId: { $ne: null } }, { tripId: { $ne: null } }] } } } }
       : source === 'order' ? { lines: { $elemMatch: { orderId: { $ne: null } } } } : source === 'trip' ? { lines: { $elemMatch: { tripId: { $ne: null } } } } : {}) })
-    .sort({ day: -1, _id: 1 }).limit(limit + 1).populate('vendorId', 'name').populate('lines.orderId', 'orderId').populate('lines.tripId', 'voyage').lean();
+    .sort({ day: -1, _id: 1 }).limit(limit + 1).populate('vendorId', 'name seedKey').populate('lines.orderId', 'orderId').populate('lines.tripId', 'voyage').lean();
   const keys = bills.map(b => `BILL:${b._id}`);
   const balances = await JournalEntry.aggregate([{ $unwind: '$lines' }, { $match: { 'lines.apKey': { $in: keys } } },
     { $group: { _id: '$lines.apKey', value: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } }]);
   const openByKey = new Map(balances.map(b => [b._id, b.value]));
   const rows = bills.slice(0, limit).map(b => {
-    const merchantMismatch = !!merchant && String(merchant.vendorId) !== String(b.vendorId?._id);
+    // A generic vendor (historical purchases) cannot conflict with the merchant the statement names
+    const genericVendor = require('./bankMatchValidation').GENERIC_VENDORS.includes(b.vendorId?.seedKey);
+    const merchantMismatch = !!merchant && !genericVendor && String(merchant.vendorId) !== String(b.vendorId?._id);
     const orders = b.lines.filter(l => l.orderId).map(l => ({ _id: l.orderId._id, number: l.orderId.orderId, description: l.description }));
     const trips = b.lines.filter(l => l.tripId).map(l => ({ _id: l.tripId._id, number: l.tripId.voyage, description: l.description }));
+    const tripComparison = require('../tripCostMatches').compareTrips(context.description, trips);
     const open = b.status === 'draft' ? null : openByKey.get(`BILL:${b._id}`) || 0;
-    return { _id: `bill:${b._id}`, kind: 'bill', billId: b._id, source: trips.length ? 'trip' : orders.length ? 'order' : 'direct', trips, number: b.number || 'مسودة',
+    return { _id: `bill:${b._id}`, kind: 'bill', billId: b._id, source: trips.length ? 'trip' : orders.length ? 'order' : 'direct', trips, ...tripComparison, number: b.number || 'مسودة',
       day: b.day, amount: amountOf(b), currency: b.currency, vendorName: b.vendorId?.name, description: b.lines.map(l => l.description).join('، '), orders,
-      merchantMismatch, merchantMatch: !!merchant && !merchantMismatch, statementVendorName: merchant?.vendorName,
+      merchantMismatch, merchantMatch: !!merchant && !merchantMismatch && !genericVendor, genericVendor, statementVendorName: merchant?.vendorName, paymentChannel,
+      referenceMatch: !!(context.reference && b.vendorRef && context.reference === b.vendorRef),
       matchProblems: merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : [],
-      status: b.status === 'draft' ? 'draft' : open > 0 ? 'open' : 'paid', openUsd: open === null ? null : open / 100, canMatch: !merchantMismatch && (open === null || open > 0) };
+      status: b.status === 'draft' ? 'draft' : open > 0 ? 'open' : 'paid', openUsd: open === null ? null : open / 100, canMatch: open === null || open > 0 };
   });
   if (line) {
     const paidRows = rows.filter(r => r.status === 'paid');
-    const payments = await SupplierPayment.find({ status: 'posted', fromAccountId: bank._id, 'allocations.billId': { $in: paidRows.map(r => r.billId) } }).lean();
+    const payments = await SupplierPayment.find({ status: 'posted', 'allocations.billId': { $in: paidRows.map(r => r.billId) } })
+      .populate('fromAccountId', 'name currency').lean();
     const available = await require('./bank').unmatchedMovements(bank._id);
-    for (const row of paidRows) row.canMatch = !row.merchantMismatch && payments.some(p => p.allocations.some(a => String(a.billId) === String(row.billId))
-      && available.some(e => String(e._id) === String(p.entryId) && e.amount === line.amount));
+    for (const row of paidRows) {
+      const billPayments = payments.filter(p => p.allocations.some(a => String(a.billId) === String(row.billId)));
+      const bankPayments = billPayments.filter(p => String(p.fromAccountId?._id) === String(bank._id));
+      const eligible = available.filter(e => e.amount === line.amount && bankPayments.some(p => String(p.entryId) === String(e._id)));
+      row.canMatch = eligible.length === 1;
+      row.payments = billPayments.map(p => ({ number: p.number, day: p.day, accountName: p.fromAccountId?.name || (p.fromAdvance ? 'رصيد مقدم لدى المورد' : 'حساب غير محدد'),
+        entryId: p.entryId, sameBank: String(p.fromAccountId?._id) === String(bank._id) }));
+      row.paymentMatchProblem = !billPayments.length ? 'الفاتورة مسددة محاسبيًا، لكن لا توجد دفعة مورد مسجلة لها؛ افتح الفاتورة وراجع القيود.'
+        : !bankPayments.length ? 'السداد مسجل من حساب آخر أو رصيد مقدم؛ لا يمكن خصم مبلغ البنك مرة ثانية. راجع السداد السابق وصححه إذا كان حسابه خطأ.'
+          : eligible.length > 1 ? 'يوجد أكثر من قيد سداد بنفس المبلغ؛ اختر القيد الصحيح من مطابقة القيود.'
+            : !eligible.length ? 'سداد هذا البنك غير متاح بنفس مبلغ الكشف: قد يكون مربوطًا بكشف سابق أو مختلف المبلغ. راجع قيد السداد قبل الربط.' : null;
+    }
   }
   for (const row of rows.filter(item => item.status === 'paid' && item.currency === original.currency && Math.abs(item.amount - original.amount) <= 0.0005)) {
     const candidate = await require('./historicalBankSettlement').inspect(bills.find(bill => String(bill._id) === String(row.billId)), bank, context);
     if (candidate) {
       row.historicalSettlement = candidate.display;
-      row.canMatch = !row.merchantMismatch;
+      row.canMatch = true;
       row.status = 'historical_settlement';
     }
   }
+  for (const row of rows) if (!row.canMatch && row.paymentMatchProblem) row.matchProblems.push(row.paymentMatchProblem);
   let truncated = bills.length > limit;
   if (source !== 'direct' && source !== 'trip' && input.settlementOnly !== 'true' && !(input.proposalOnly === true && input.suggestedBillId)) {
     const dates = { ...(from && { $gte: dayStart(from) }), ...(to && { $lt: dayStart(addDays(to, 1)) }) };
@@ -117,14 +134,20 @@ async function listPurchases(input = {}) {
         matchProblems: recorded ? ['البند مسجل في فواتير موردين؛ اختر الفاتورة الأصلية من القائمة لتجنب تكرار التكلفة'] : !itemDay ? ['بند المشتريات بلا تاريخ؛ افتح الطلبية وأكمل تاريخ الشراء قبل الربط'] : linked ? ['البند مربوط بكشف آخر'] : [] });
     }
   }
+  const rank = (a, b) => Number(!!b.canMatch) - Number(!!a.canMatch)
+    || Number(a.currency !== original.currency) - Number(b.currency !== original.currency)
+    || Number(Math.abs(a.amount - original.amount) > 0.0005) - Number(Math.abs(b.amount - original.amount) > 0.0005)
+    || Number(!!a.tripConflict) - Number(!!b.tripConflict)
+    || Number(!!b.tripMatch) - Number(!!a.tripMatch)
+    || Number(!!a.merchantMismatch) - Number(!!b.merchantMismatch)
+    || Number(!!b.referenceMatch) - Number(!!a.referenceMatch)
+    || Number(!!b.merchantMatch) - Number(!!a.merchantMatch)
+    || (context.day ? distance(a.day, context.day) - distance(b.day, context.day) : 0)
+    || b.day.localeCompare(a.day) || a._id.localeCompare(b._id);
   const filtered = rows.filter(r => (input.settlementOnly !== 'true' || !!r.historicalSettlement) && (source === 'all' || r.source === source) && (status !== 'open' || r.canMatch)
     && (!search || search.test([r.number, r.vendorName, r.description, ...r.orders.map(o => o.number), ...(r.trips || []).map(trip => trip.number)].join(' '))
       || (r.trips || []).some(trip => searchedTripIds.some(id => String(id) === String(trip._id)))))
-    .sort((a, b) => {
-      const preferred = row => (input.suggestedBillId && String(row.billId) === String(input.suggestedBillId))
-        || (input.suggestedItemId && String(row.itemId) === String(input.suggestedItemId));
-      return Number(!!preferred(b)) - Number(!!preferred(a)) || b.day.localeCompare(a.day) || a._id.localeCompare(b._id);
-    });
+    .sort(rank);
   const page = Math.max(1, Number.parseInt(input.page, 10) || 1);
   const pageSize = 30;
   let proposal = null;
@@ -132,7 +155,10 @@ async function listPurchases(input = {}) {
   if (input.proposalOnly !== true && input.includeProposal !== 'false' && (input.suggestedBillId || input.suggestedItemId)) {
     const suggested = rows.find(row => (input.suggestedBillId && String(row.billId) === String(input.suggestedBillId))
       || (input.suggestedItemId && String(row.itemId) === String(input.suggestedItemId)));
-    proposal = suggested || await suggestedPurchase(input);
+    const suitable = rows.filter(row => row.canMatch && !row.merchantMismatch && !row.tripConflict && row.currency === original.currency
+      && Math.abs(row.amount - original.amount) <= 0.0005 && distance(row.day, context.day) <= 7
+      && (input.settlementOnly !== 'true' || !!row.historicalSettlement)).sort(rank);
+    proposal = suitable[0] || suggested || await suggestedPurchase(input);
     if (!proposal) proposalUnavailable = 'الاقتراح السابق لم يعد متاحًا؛ قد تكون الفاتورة ملغاة أو بند المشتريات محذوفًا. اختر البديل من القائمة.';
   }
   return { results: filtered.slice((page - 1) * pageSize, page * pageSize), total: filtered.length, page, pageSize, truncated,
@@ -175,7 +201,11 @@ async function matchPurchase(lineId, input, { session, req }) {
     if (!mongoose.isValidObjectId(input.billId)) throw fail('اختر الفاتورة');
     const bill = await SupplierBill.findById(input.billId).session(session).lean();
     if (!bill || !['draft', 'posted'].includes(bill.status) || bill.isCreditNote) throw fail('الفاتورة غير متاحة');
-    await assertMerchant(line, bank, bill.vendorId, session);
+    const tripIds = bill.lines.filter(l => l.tripId).map(l => l.tripId);
+    const billTrips = tripIds.length ? await Inventory.find({ _id: { $in: tripIds } }).select('voyage').session(session || null).lean() : [];
+    const tripComparison = require('../tripCostMatches').compareTrips(line.description, billTrips);
+    if (tripComparison.tripConflict && input.confirmTripDifference !== true) throw fail('رقم الرحلة في الكشف يختلف عن رحلة التكلفة؛ راجع الرحلتين وأكد الاختلاف قبل الربط. لا تسجل تكلفة ثانية.');
+    await assertMerchant(line, bank, bill.vendorId, session, { confirmed: input.confirmMerchant === true, req });
     validateChoice(line, bank, { day: bill.day, amount: amountOf(bill), currency: bill.currency }, input.confirmDifference === true);
     if (input.historicalSettlement === true) return require('./historicalBankSettlement').settle(line, bank, bill, input, { session, req });
     const { count } = await getConfig();
@@ -245,7 +275,8 @@ async function matchPurchase(lineId, input, { session, req }) {
     { currency: item.currency || 'USD', lines: { $elemMatch: { orderId: order._id, amount: Number(item.unitPrice) } } } ] }).session(session).lean();
   if (recorded) return matchPurchase(lineId, { ...input, kind: 'bill', billId: recorded._id }, { session, req });
   if (line.historicalPurchase) throw fail('هذا السطر تكلفة تاريخية؛ سجّل الفاتورة الأصلية أولاً ثم اربطها لمنع تكرار التكلفة');
-  const result = await services.linkGroup([line._id], { orderId: order._id, itemId: item._id, confirmDifference: input.confirmDifference === true }, { session, req });
+  const result = await services.linkGroup([line._id], { orderId: order._id, itemId: item._id, confirmDifference: input.confirmDifference === true,
+    duplicateDecision: input.duplicateDecision, duplicateReason: input.duplicateReason, duplicateFingerprint: input.duplicateFingerprint }, { session, req });
   await BankStatementLine.updateOne({ _id: line._id }, { $set: { matchedOriginalAmount: Number(item.unitPrice), matchedOriginalCurrency: item.currency || 'USD', matchDifferenceConfirmed: !!input.confirmDifference, purchaseReviewPending: false } }, { session });
   return result;
 }

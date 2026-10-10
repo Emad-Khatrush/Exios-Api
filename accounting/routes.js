@@ -89,6 +89,9 @@ router.post('/migration/runs', P.setup, migration.start);
 router.get('/migration/runs/:runId', P.setup, migration.get);
 router.post('/migration/runs/:runId/discard', P.setup, migration.discard);
 router.post('/migration/runs/:runId/commit', P.setup, migration.commit);
+router.post('/migration/runs/:runId/bank-trial', P.setup, migration.enableBankTrial);
+// Only bank requests may participate in an explicitly enabled QA trial.
+router.use('/bank', require('./services/migration/bankTrial').requestScope);
 
 router.get('/entries/event-types', ANY, entries.eventTypes);
 router.route('/entries').get(can('entries', 'entries_view'), entries.list).post(P.entries, entries.createManual);
@@ -121,7 +124,7 @@ router.post('/review/tasks', P.closing, handle(async (req, res) => res.json(awai
 router.post('/review/orders/:id/complete', P.purchases, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.certifyCost(req.params.id, req.body, { session, req })))));
 router.post('/review/trips/:id/complete', P.purchases, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.certifyTrip(req.params.id, req.body, { session, req })))));
 router.post('/review/bank/complete', P.treasury, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.certifyBank(req.body, { session, req })))));
-router.get('/review/status', P.reports, handle(async (req, res) => res.json(await accountingReview.approvalStatus(req.query))));
+router.get('/review/status', P.reports, statements.reviewStatus);
 router.post('/review/month/approve', P.closing, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.approveMonth(req.body.month, { session, req })))));
 // Review items the accountant accepted leave the daily list; the mark can be taken back
 const exceptionsService = () => require('./services/reports/exceptions');
@@ -213,6 +216,14 @@ router.get('/employees', can('payroll', 'purchases', 'treasury'), documents.list
 // One employee's custody or loan movements (?kind=custody|loan)
 router.get('/employees/:id/movements', can('payroll', 'purchases', 'treasury'), handle(async (req, res) => res.json(await require('./services/custody').movements(req.params.id, req.query.kind === 'loan' ? 'loan' : 'custody'))));
 router.get('/trips', ANY, documents.listTrips);
+// Under /bank so trial snapshots and rollback cover the entire settlement.
+router.get('/bank/trip-cost-settlements/options', P.purchases, handle(async (req, res) => res.json(await require('./services/tripCostSettlement').options(req.query))));
+router.post('/bank/trip-cost-settlements/preview', P.purchases, handle(async (req, res) => res.json((await require('./services/tripCostSettlement').preview(req.body)).output)));
+router.post('/bank/trip-cost-settlements/match-preview', P.purchases, P.treasury, handle(async (req, res) => res.json(await require('./services/tripCostSettlement').matchPreview(req.body))));
+router.post('/bank/trip-cost-settlements/match', P.purchases, P.treasury, handle(async (req, res) => res.json(await reviewTx(session => require('./services/tripCostSettlement').matchExisting(req.body, { session, req })))));
+router.post('/bank/trip-cost-settlements', P.purchases, P.treasury, handle(async (req, res) => res.json(await reviewTx(session => require('./services/tripCostSettlement').apply(req.body, { session, req })))));
+router.get('/bank/trip-cost-settlements', P.purchases, handle(async (req, res) => res.json({ results: await require('./models/TripCostSettlement').find({}).sort({ createdAt: -1 }).limit(100).lean() })));
+router.post('/bank/trip-cost-settlements/:id/cancel', P.purchases, P.treasury, P.cancel, handle(async (req, res) => res.json(await reviewTx(session => require('./services/tripCostSettlement').cancel(req.params.id, { session, req, reason: req.body.reason })))));
 router.get('/balances/:id', can('treasury', 'payments', 'purchases', 'payroll', 'reports'), documents.accountBalance);
 
 router.get('/bank/lines', P.treasury, documents.listBankLines);
@@ -227,6 +238,7 @@ router.post('/bank/historical-purchases/settle', P.treasury, P.setup, handle(asy
 router.get('/bank/refunds', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankRefund').list(req.query))));
 router.post('/bank/lines/:id/refund-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankRefund').match(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/purchase-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankPurchaseReview').matchPurchase(req.params.id, req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/exact-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankExactMatch').match(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/classify', P.treasury, documents.classifyBankRows);
 router.route('/bank/rules').get(P.treasury, documents.listBankRules).post(P.treasury, documents.saveBankRule);
 router.delete('/bank/rules/:id', P.treasury, documents.deleteBankRule);
@@ -242,6 +254,23 @@ router.post('/bank/lines/:id/cancel-entry', P.treasury, P.cancel, documents.canc
 router.post('/bank/lines/:id/ignore', P.treasury, documents.ignoreBankLine(true));
 router.post('/bank/lines/:id/unignore', P.treasury, documents.ignoreBankLine(false));
 router.delete('/bank/lines/:id', P.treasury, documents.deleteBankLine);
+// A partner's current account (Wasl): its incoming lines proposed against the partner's wallet deposits by amount
+router.get('/bank/partner-deposits', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/partnerDeposits').suggestions(req.query.accountId))));
+router.get('/bank/lines/:id/partner-deposit-options', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/partnerDeposits').options(req.params.id))));
+router.post('/bank/lines/:id/cover', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/bank').coverBeforeCount(req.params.id, req.body || {}, { session, req })))));
+// Yuan bought from a broker arriving in Alipay: matched to a recorded purchase, or recorded from the lines
+router.get('/bank/coverage', can('treasury', 'reports'), handle(async (req, res) => res.json(await require('./services/posting/bank').coverage(req.query))));
+router.get('/bank/yuan-lines', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/yuanLines').suggestions(req.query.accountId))));
+router.post('/bank/yuan-lines', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/yuanLines').record(req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/yuan-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/yuanLines').matchExisting(req.params.id, req.body || {}, { session, req })))));
+router.get('/bank/partner-transfers', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/partnerTransfers').suggestions(req.query.accountId))));
+router.get('/bank/lines/:id/partner-transfer-options', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/partnerTransfers').options(req.params.id, req.query))));
+router.post('/bank/lines/:id/partner-transfers', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/partnerTransfers').apply(req.params.id, req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/partner-deposit', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/partnerDeposits').apply(req.params.id, req.body || {}, { session, req })))));
+// Lines nobody can explain yet: parked on a clearing account, decided by the owner after their wait
+router.get('/bank/unidentified', can('treasury', 'reports'), handle(async (req, res) => res.json(await require('./services/posting/unidentified').list(req.query))));
+router.post('/bank/lines/:id/park', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/unidentified').park(req.params.id, req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/unidentified-decision', ownerOnly, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/unidentified').decide(req.params.id, req.body || {}, { session, req })))));
 
 router.get('/live', P.setup, live.status);
 router.get('/live/events', P.setup, live.list);

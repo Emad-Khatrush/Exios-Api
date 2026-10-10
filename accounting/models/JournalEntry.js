@@ -70,6 +70,7 @@ const journalEntrySchema = new Schema({
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   isHistorical: { type: Boolean, default: false },
   migrationRunId: String,
+  bankTrialRunId: String,
   // Assumptions made while posting (derived rate, fallback date, missing office...)
   fallbacks: [String],
   exportedToOdooAt: Date,

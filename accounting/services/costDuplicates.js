@@ -15,19 +15,24 @@ async function candidates(input, { session, excludeId } = {}) {
   if (input.isCreditNote || input.isHistorical || input.migrationRunId || !isDay(input.day) || !mongoose.isValidObjectId(input.vendorId)) return [];
   const orders = [...new Set((input.lines || []).map(l => id(l.orderId)).filter(Boolean))];
   const total = amount(input), reference = ref(input.vendorRef);
-  const vendor = await Vendor.findById(input.vendorId).select('_id').session(session || null).lean();
+  const vendor = await Vendor.findById(input.vendorId).select('_id seedKey').session(session || null).lean();
   if (!vendor || total <= 0) return [];
   const bills = await SupplierBill.find({ $or: [{ vendorId: vendor._id }, ...(orders.length ? [{ 'lines.orderId': { $in: orders } }] : [])], isCreditNote: { $ne: true }, status: { $in: ['draft', 'posted'] },
     ...(excludeId && { _id: { $ne: excludeId } }),
     ...(reference ? {} : { currency: input.currency, day: { $gte: addDays(input.day, -7), $lte: addDays(input.day, 7) } }),
   }).session(session || null).lean();
   const rows = [];
+  // Quick expenses and costs paid on the spot share one generic vendor ("مصروفات نقدية"): the same
+  // small amount twice in a week (fuel, hospitality, a purchase paid in cash) is normal, so for it
+  // only an invoice number or the same order makes two bills alike
+  const generic = vendor.seedKey === 'cash_expenses' || !!input.isQuickExpense;
   for (const bill of bills) {
     const sameVendor = id(bill.vendorId) === id(vendor);
+    const alikeVendor = sameVendor && !generic && !bill.isQuickExpense;
     const sameRef = sameVendor && invoiceReference(input) && invoiceReference(bill) && !!reference && ref(bill.vendorRef) === reference;
     const sameAmount = bill.currency === input.currency && Math.abs(amount(bill) - total) < 0.0005;
     const sameOrder = bill.lines.some(l => orders.includes(id(l.orderId)));
-    if (!sameRef && !(sameAmount && (sameVendor || sameOrder) && Math.abs(new Date(bill.day) - new Date(input.day)) <= 7 * 86400000)) continue;
+    if (!sameRef && !(sameAmount && (alikeVendor || sameOrder) && Math.abs(new Date(bill.day) - new Date(input.day)) <= 7 * 86400000)) continue;
     rows.push({ key: `bill:${bill._id}`, billId: bill._id, status: bill.status, number: bill.number || 'مسودة', day: bill.day, amount: amount(bill), currency: bill.currency,
       strength: sameRef ? 'reference' : sameOrder ? 'order' : 'similar',
       reason: sameRef ? 'رقم فاتورة المورد نفسه' : sameOrder ? 'نفس الطلبية والمبلغ والعملة وتاريخ قريب' : 'نفس المورد والمبلغ والعملة وتاريخ قريب',
@@ -59,7 +64,9 @@ async function assertNoDuplicate(input, { session, excludeId } = {}) {
   const fingerprint = hash(rows.map(r => [r.key, r.fingerprint]).sort());
   if (input.duplicateDecision === 'independent' && String(input.duplicateReason || '').trim().length >= 10 && input.duplicateFingerprint === fingerprint
       && !rows.some(r => r.strength === 'reference')) return;
-  throw fail(`توجد تكلفة محتملة مسجلة سابقاً (${rows.map(r => r.number).join('، ')}). راجع الموجود واربطه بدلاً من تسجيل تكلفة ثانية؛ أو أكد أنها عملية مستقلة مع السبب. رقم فاتورة المورد المكرر لا يُسمح بتجاوزه.`);
+  const error = fail(`توجد تكلفة محتملة مسجلة سابقاً (${rows.map(r => r.number).join('، ')}). راجع الموجود واربطه بدلاً من تسجيل تكلفة ثانية؛ أو أكد أنها عملية مستقلة مع السبب. رقم فاتورة المورد المكرر لا يُسمح بتجاوزه.`);
+  error.costDuplicatePreview = { results: rows, fingerprint, canConfirmIndependent: !rows.some(r => r.strength === 'reference') };
+  throw error;
 }
 async function preview(input, options) {
   const results = await candidates(input, options);

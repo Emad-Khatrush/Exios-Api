@@ -20,17 +20,20 @@ async function candidatesFor(line, bank, { session, vendorName } = {}) {
   return eligible.filter(b => Math.abs((b.total ?? b.lines.reduce((sum, item) => sum + Number(item.amount), 0)) - original.amount) < 0.0005)
     .map(b => {
       const vendor = clean(b.vendorId?.name);
-      const identified = !!(b.vendorRef && line.reference && b.vendorRef === line.reference)
+      const referenceMatch = !!(b.vendorRef && line.reference && b.vendorRef === line.reference);
+      const identified = referenceMatch
         || !!(vendor && (vendor === name || (vendor.length >= 3 && description.includes(vendor))
           || (bank.cashKind === 'current' && vendor.length >= 3 && clean(bank.name).includes(vendor))));
       const dayDifference = Math.abs((Date.parse(line.day) - Date.parse(b.day)) / 86400000);
-      return { ...b, identified, dayDifference, matchReasons: ['المبلغ الأصلي مطابق', 'العملة الأصلية مطابقة',
+      return { ...b, identified, referenceMatch, dayDifference, matchReasons: ['المبلغ الأصلي مطابق', 'العملة الأصلية مطابقة',
         dayDifference === 0 ? 'نفس تاريخ العملية' : `فرق التاريخ ${dayDifference} أيام`,
         ...(identified ? ['اسم المورد أو مرجع العملية مطابق'] : [])] };
-    }).sort((a, b) => Number(b.identified) - Number(a.identified) || a.dayDifference - b.dayDifference);
+    }).sort((a, b) => Number(b.referenceMatch) - Number(a.referenceMatch) || Number(b.identified) - Number(a.identified)
+      || a.dayDifference - b.dayDifference || String(a._id).localeCompare(String(b._id)));
 }
 
 const brief = bill => ({ _id: bill._id, number: bill.number || 'مسودة', day: bill.day, currency: bill.currency,
+  vendorId: bill.vendorId?._id || bill.vendorId,
   amount: bill.total ?? bill.lines.reduce((s, l) => s + Number(l.amount), 0), vendorName: bill.vendorId?.name, status: bill.status,
   isHistorical: !!bill.isHistorical, openUsd: bill.openUsd === null ? null : bill.openUsd / 100,
   matchReasons: bill.matchReasons, dayDifference: bill.dayDifference,

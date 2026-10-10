@@ -221,6 +221,12 @@ async function cancelDocument(modelName, id, context) {
   if (!doc) throw new ErrorHandler(404, 'المستند غير موجود');
   if (doc.status === 'draft') throw fail('المسودة تُحذف ولا تُلغى');
   if (doc.status === 'canceled') throw fail('المستند مُلغى مسبقاً');
+  if (['AccountingSupplierBill', 'AccountingSupplierPayment'].includes(modelName)) {
+    const key = modelName === 'AccountingSupplierBill' ? 'bills.billId' : 'bills.paymentId';
+    const settlement = await require('../models/TripCostSettlement').findOne({ status: 'posted', [key]: doc._id }).select('_id').session(session);
+    if (settlement && String(context.tripCostSettlementId || '') !== String(settlement._id))
+      throw fail('هذا المستند ضمن تسوية تكاليف جماعية؛ ألغِ التسوية كاملة من تكاليف الرحلات');
+  }
   // A document of a closed period is cancelled by the owner only (spec 19.12)
   if (!context.cascaded) await assertOwnerIfLocked(req?.user, doc.day, { session });
   if (rule.check) await rule.check(doc, context);

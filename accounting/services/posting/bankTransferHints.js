@@ -23,6 +23,24 @@ function describe(line, bank, accounts) {
   const find = wanted => accounts.find(a => a.isActive !== false && !a.isGroup && (a.seedKey === wanted || a.code === wanted));
   const result = (kind, counter, reason) => ({ source: kind, account: counter || null, reason,
     requiresConfirmation: !counter || kind === 'funder_settlement', semanticTransfer: true });
+  if (code === '110201' && bank.currency === 'USD' && outgoing) {
+    // Arabic RTL extraction may print "1414" as "4 ... Com 141" and glue Com
+    // to the preceding Arabic word. Commission recognition must come before cash.
+    if (/\bcom\b/i.test(String(line.description || ''))) {
+      return { source: 'bank_fee', account: find('530400') || null, office: 'turkey',
+        vendorName: bank.name, vendorType: 'service', requiresConfirmation: true,
+        reason: 'عمولة المتحدة للسحب أو التحويل، وليست مبلغ الكاش المستلم ولا تكلفة مشتريات جديدة.' };
+    }
+    const arabic = String(line.description || '').normalize('NFKC')
+      .replace(/[\u064b-\u065f\u0670\u0640\u200e\u200f]/g, '')
+      .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    if (/(?:^| )1414(?: |$)/.test(arabic) && /(?:^| )بيده(?: |$)/.test(arabic)
+      && /(?:^| )(?:كا+ش|ك)(?: |$)/.test(arabic)) {
+      return result('cash_withdrawal', find('110107'),
+        'استلام دولار كاش من المتحدة بيد عماد؛ تحويل إلى خزينة مكتب تركيا بالدولار، وليس مصروف خدمات أو مشتريات. عمولة السحب تُسجل منفصلة.');
+    }
+  }
   if (!['110202', '110203', '110204', '110205', '250100', '250200'].includes(code)) return null;
   if (code === '110203' && outgoing && text.startsWith('fon alis')) {
     // RBV identifies this fund; another fund must not be mixed into its balance.

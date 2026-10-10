@@ -44,6 +44,8 @@ const balanceSchema = new mongoose.Schema({
     type: String,
     enum: ['invoice', 'receivedGoods', 'general'],
   },
+  // Missing on existing debts: retain their original funding treatment.
+  accountingKind: { type: String, enum: ['service_sale'] },
   status: {
     type: String,
     enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost'],

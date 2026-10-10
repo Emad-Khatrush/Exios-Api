@@ -50,7 +50,9 @@ async function createCashJournal(account, session) {
 module.exports.list = handle(async (req, res) => {
   const from = req.query.from ? toDay(req.query.from) : undefined;
   const to = req.query.to ? toDay(req.query.to) : undefined;
-  const accounts = await chartWithTotals({ from, to });
+  const accounts = req.query.referenceOnly === 'true'
+    ? await Account.find({}).sort({ code: 1 }).lean()
+    : await chartWithTotals({ from, to });
   res.json({ results: accounts });
 });
 

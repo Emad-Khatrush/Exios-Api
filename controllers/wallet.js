@@ -306,7 +306,24 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
       accountId,
       actionType
     }], { session });
-    await emitAccountingEvent('statement', userStatement._id, {}, req.user, { session });
+    const event = await emitAccountingEvent('statement', userStatement._id, {}, req.user, { session });
+    // A deposit into a partner's current account is money held for the company,
+    // not cash received in the office. Post it now so an existing statement row
+    // can match it immediately; shipping deductions keep their usual workflow.
+    if (accountId && ['cash', 'bank'].includes(actionType)) {
+      const { settings, accountsById } = await require('../accounting/services/config').getConfig();
+      const source = accountsById.get(String(accountId));
+      if (source?.cashKind === 'current' && settings.liveEnabled
+        && !(await require('../accounting/services/posting/common').isBeforeCashCount(require('../accounting/services/dates').toDay(createdAt || new Date())))) {
+        if (!event) throw new ErrorHandler(500, 'تعذر حفظ حدث الإيداع');
+        const result = await require('../accounting/services/posting/operations').postStatement(userStatement._id, { session, user: req.user });
+        event.status = result?.skipped ? 'skipped' : 'done';
+        event.result = result;
+        event.processedAt = new Date();
+        await event.save({ session });
+        await require('../accounting/services/posting/bank').autoMatch(accountId, { session, req });
+      }
+    }
     return userStatement;
     });
 
@@ -356,7 +373,8 @@ module.exports.getUserStatement = async (req, res, next) => {
     const { id } = req.params;
     const { currency } = req.query;
 
-    const userStatement = await UserStatement.find({ user: new ObjectId(id), currency }).sort({ _id: -1 }).populate('user');
+    // With the account the money went to (a partner's current account such as Wasl), shown instead of the office
+    const userStatement = await UserStatement.find({ user: new ObjectId(id), currency }).sort({ _id: -1 }).populate('user').populate('accountId', 'code name');
     if (!userStatement) return next(new ErrorHandler(404, errorMessages.WALLET_NOT_FOUND));
 
     res.status(200).json({
@@ -440,7 +458,7 @@ const protectedStatement = (statement) => {
   return null;
 };
 // The fields the journal entry is made from: changing only the text does not re-post it
-const POSTED_STATEMENT_FIELDS = ['createdAt', 'amount', 'office', 'actionType'];
+const POSTED_STATEMENT_FIELDS = ['createdAt', 'amount', 'office', 'actionType', 'accountId'];
 
 module.exports.deleteStatement = async (req, res, next) => {
   try {
@@ -537,6 +555,17 @@ module.exports.updateStatement = async (req, res, next) => {
         if (!isSame) changes[field] = value;
       });
 
+      // Where the money went: a box of the office (no account) or a chosen account, such as a
+      // partner's current account (Wasl), checked like a new deposit
+      if (req.body.accountId !== undefined) {
+        const next = req.body.accountId ? String((await moneyAccount(req.body.accountId, { currency: statement.currency, what: 'الحساب' }))._id) : null;
+        if (String(statement.accountId || '') !== String(next || '')) changes.accountId = next;
+      }
+      const accountAfter = 'accountId' in changes ? changes.accountId : statement.accountId;
+      if (accountAfter && !['cash', 'bank'].includes(changes.actionType ?? statement.actionType)) {
+        throw new ErrorHandler(400, 'A deposit into an account is cash or bank. Change the action type first.');
+      }
+
       if (!Object.keys(changes).length) {
         return statement;
       }
@@ -555,7 +584,7 @@ module.exports.updateStatement = async (req, res, next) => {
         if ((current?.balance || 0) + (Number(changes.amount) - Number(statement.amount)) < -0.001) throw new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.');
       }
       if (changes.createdAt) await assertOpenPeriod(req.user, changes.createdAt, { session });
-      if (('office' in changes || 'actionType' in changes) && !statement.accountId) {
+      if (('office' in changes || 'actionType' in changes || 'accountId' in changes) && !accountAfter) {
         await assertDepositPlace(changes.office ?? statement.office, statement.currency, changes.actionType ?? statement.actionType);
       }
 
@@ -587,7 +616,22 @@ module.exports.updateStatement = async (req, res, next) => {
       );
 
       // Re-posted (old entry reversed, new one posted) only when something it is made from changed
-      if (postedChanged) await emitAccountingEvent('statementUpdated', statement._id, {}, req.user, { session });
+      const event = postedChanged ? await emitAccountingEvent('statementUpdated', statement._id, {}, req.user, { session }) : null;
+      // Moved to a partner's current account (Wasl): re-posted now, like a new deposit there, so the
+      // partner's statement line already imported matches it at once
+      if (event && 'accountId' in changes && changes.accountId) {
+        const { settings, accountsById } = await require('../accounting/services/config').getConfig();
+        const target = accountsById.get(String(changes.accountId));
+        if (target?.cashKind === 'current' && settings.liveEnabled
+          && !(await require('../accounting/services/posting/common').isBeforeCashCount(require('../accounting/services/dates').toDay(statement.createdAt)))) {
+          const result = await require('../accounting/services/posting/operations').repostStatement(statement._id, { session, user: req.user });
+          event.status = result?.skipped ? 'skipped' : 'done';
+          event.result = result;
+          event.processedAt = new Date();
+          await event.save({ session });
+          await require('../accounting/services/posting/bank').autoMatch(changes.accountId, { session, req });
+        }
+      }
       const updated = await UserStatement.findById(statement._id).session(session).populate('user');
       return updated;
     });

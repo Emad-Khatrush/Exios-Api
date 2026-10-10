@@ -12,7 +12,8 @@ const errorHandler = (err, req, res, next) => {
   }
   res.status(error.statusCode || 500).json({
     success: false,
-    message: error.message || 'server-error'
+    message: error.message || 'server-error',
+    ...(err.costDuplicatePreview && { costDuplicatePreview: err.costDuplicatePreview })
   })
 }
 

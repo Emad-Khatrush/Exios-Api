@@ -233,10 +233,11 @@ test('concurrent nettings cannot exceed the open customer claim across separate 
   const customerId = (await mongoose.connection.collection('users').insertOne({ firstName: 'Client', lastName: 'Claim' })).insertedId;
   const vendor = await newVendor('service', 'Partner');
   const expense = await account('530800');
-  const createBill = () => tx((session) => payables.createBill({
-    vendorId: vendor._id, day: '2026-03-01', currency: 'USD', lines: [{ description: 'Service', amount: 1000, target: 'expense', accountId: expense._id, office: 'tripoli' }],
+  // Two separate bills, more than a week apart (the same vendor, amount and week would be one cost twice)
+  const createBill = (day) => tx((session) => payables.createBill({
+    vendorId: vendor._id, day, currency: 'USD', lines: [{ description: 'Service', amount: 1000, target: 'expense', accountId: expense._id, office: 'tripoli' }],
   }, { session, req }));
-  const bills = await Promise.all([createBill(), createBill()]);
+  const bills = await Promise.all([createBill('2026-03-01'), createBill('2026-03-12')]);
   const arKey = `NETTING-CLAIM-${oid()}`;
   await post({
     eventType: 'TEST_NETTING_CLAIM', eventKey: `TEST:${arKey}`, date: '2026-03-01',
@@ -512,10 +513,13 @@ test('a card line is linked to the purchase cost typed on its order; the bank pa
   expect(table[1]).toMatchObject({ source: 'rule', account: { code: '510400' }, vendorName: 'Alibaba' });
   expect(table[2]).toMatchObject({ source: 'rule', account: { code: '110204' }, vendorName: null });
 
-  const result = await tx((session) => bank.importLines(card._id, rows.map((row, index) => ({
-    ...row, counterAccountId: table[index].account._id, link: table[index].link || undefined, vendorName: table[index].vendorName || undefined,
+  // The order suggestion is not posted on import: it is reviewed and approved as a purchase match
+  const result = await tx((session) => bank.importLines(card._id, rows.map((row, index) => (index === 0 ? row : {
+    ...row, counterAccountId: table[index].account._id, vendorName: table[index].vendorName || undefined,
   })), { session, req }));
-  expect(result).toMatchObject({ count: 3, posted: 3, notPosted: [] });
+  expect(result).toMatchObject({ count: 3, posted: 2, notPosted: [] });
+  const suggested = await BankStatementLine.findOne({ description: /107.73/ });
+  await tx((session) => require('../services/posting/bankPurchaseReview').matchPurchase(suggested._id, { kind: 'order_item', orderId, itemId }, { session, req }));
 
   // Purchases are a bill in dollars (the dollars the line says were paid) and its payment in lira
   // at the rate of that payment; the transfer moved lira

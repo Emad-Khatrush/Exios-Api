@@ -10,6 +10,17 @@ const { ensureMerchantSetup } = require('../seed/merchantSetup');
 const req = { user: { _id: oid(), roles: { isAdmin: true } } };
 beforeAll(startDb); afterAll(stopDb); beforeEach(async () => { await resetDb(); });
 
+test('Alipay in a partner remittance is a channel but an explicit shop still identifies the real merchant', async () => {
+  const source = await account('110401');
+  await Vendor.create({ name: 'حواله عبر Alipay', type: 'supplier', bankAliases: ['Alipay'] });
+  const identify = await merchants.matcher(source._id);
+  expect(identify({ description: 'حواله عبر Alipay بقيمة ¥9,925 تم الحساب بسعر صرف 6.56' })).toBeNull();
+  expect(identify({ description: 'حواله عبر Alipay للمورد Alibaba.com' })).toMatchObject({ vendorName: 'Alibaba' });
+  expect(merchants.isPaymentChannel({ description: 'حواله عبر Alipay للمورد Alibaba.com' }, source)).toBe(false);
+  const regularBank = await account('110204');
+  expect(merchants.isPaymentChannel({ description: 'حواله عبر Alipay بقيمة 9925' }, regularBank)).toBe(false);
+});
+
 test('seed catalogue is idempotent, adopts existing suppliers, and keeps learned aliases', async () => {
   const vendor = await Vendor.findOne({ name: 'Alibaba' });
   await Vendor.updateOne({ _id: vendor._id }, { $unset: { seedKey: 1 }, $addToSet: { bankAliases: 'alibaba custom' } });

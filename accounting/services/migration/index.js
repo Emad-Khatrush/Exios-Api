@@ -19,7 +19,7 @@ const { buildReport } = require('./report');
 const { markCovered } = require('../events');
 const { backfillTripLinks } = require('../tripLinks');
 
-const ACTIVE = ['running', 'review', 'committing'];
+const ACTIVE = ['running', 'review', 'committing', 'discarding'];
 const fail = (message) => new ErrorHandler(400, message);
 
 async function setSettings(values) {
@@ -65,41 +65,41 @@ async function startRun({ user, config = {}, wait = false } = {}) {
 }
 
 // Counters go back to the highest number still used, so discarding leaves no gap
-async function rebuildCounters() {
-  const journals = await Journal.find({}).lean();
+async function rebuildCounters(session = null) {
+  const journals = await Journal.find({}).session(session).lean();
   for (const journal of journals) {
-    await Counter.deleteMany({ _id: new RegExp(`^JE:${journal.code}(:|$)`) });
+    await Counter.deleteMany({ _id: new RegExp(`^JE:${journal.code}(:|$)`) }).session(session);
     const rows = await JournalEntry.aggregate([
       { $match: { journalId: journal._id } },
       { $group: { _id: { $substr: ['$day', 0, 4] }, numbers: { $push: '$number' } } },
-    ]);
+    ]).session(session);
     for (const row of rows) {
       const max = Math.max(...row.numbers.map((n) => Number(String(n).split('/').pop()) || 0));
       const key = journal.sequenceResetYearly ? `JE:${journal.code}:${row._id}` : `JE:${journal.code}`;
-      const existing = await Counter.findById(key);
-      if (!existing || existing.seq < max) await Counter.updateOne({ _id: key }, { $set: { seq: max } }, { upsert: true });
+      const existing = await Counter.findById(key).session(session);
+      if (!existing || existing.seq < max) await Counter.updateOne({ _id: key }, { $set: { seq: max } }, { upsert: true, session });
     }
   }
   // Vouchers of entries that no longer exist go with them
   const orphaned = await Voucher.aggregate([
     { $lookup: { from: JournalEntry.collection.name, localField: 'entryId', foreignField: '_id', as: 'entry' } }, { $match: { entry: { $size: 0 } } }, { $project: { _id: 1 } },
-  ]);
-  if (orphaned.length) await Voucher.deleteMany({ _id: { $in: orphaned.map((v) => v._id) } });
+  ]).session(session);
+  if (orphaned.length) await Voucher.deleteMany({ _id: { $in: orphaned.map((v) => v._id) } }).session(session);
   // Every document numbered by nextDocNumber: one left out would restart at 1 and collide with its
   // own existing numbers ('القيمة موجودة مسبقاً')
   const numbered = [Voucher, docs.SupplierBill, docs.SupplierPayment, docs.SupplierReceipt, docs.TreasuryTransfer, docs.CashCount, docs.FixedAsset, docs.PrepaidExpense, docs.SalaryPayment, docs.EquityTransaction, docs.Netting, docs.YuanPurchase, docs.CustomerRefund, docs.ClaimWriteOff];
   // Document numbers look like BILL/2026/0007
   const highest = new Map();
   for (const Model of numbered) {
-    const numbers = await Model.distinct('number', { number: { $type: 'string' } });
+    const numbers = await Model.distinct('number', { number: { $type: 'string' } }).session(session);
     numbers.forEach((number) => {
       const [prefix, year, seq] = String(number).split('/');
       const key = `DOC:${prefix}:${year}`;
       highest.set(key, Math.max(highest.get(key) || 0, Number(seq) || 0));
     });
   }
-  await Counter.deleteMany({ _id: /^DOC:/ });
-  if (highest.size) await Counter.insertMany([...highest].map(([_id, seq]) => ({ _id, seq })));
+  await Counter.deleteMany({ _id: /^DOC:/ }).session(session);
+  if (highest.size) await Counter.insertMany([...highest].map(([_id, seq]) => ({ _id, seq })), { session });
 }
 
 async function discardRun(runId, { user } = {}) {
@@ -107,20 +107,53 @@ async function discardRun(runId, { user } = {}) {
   if (!run) throw new ErrorHandler(404, 'التشغيل غير موجود');
   const interrupted = run.status === 'running' && !inProcess.has(runId);
   if (!['review', 'failed'].includes(run.status) && !interrupted) throw fail('لا يمكن إلغاء هذا التشغيل في حالته الحالية');
-  const [entries] = await Promise.all([
-    JournalEntry.deleteMany({ migrationRunId: runId }),
-    docs.SupplierBill.deleteMany({ migrationRunId: runId }),
-    docs.SupplierPayment.deleteMany({ migrationRunId: runId }),
-    CurrencyRate.deleteMany({ migrationRunId: runId, source: 'derived' }),
-  ]);
-  await rebuildCounters();
-  // With the books empty again no rate is in use, so wrong rates can be corrected before the next run
-  if (!(await JournalEntry.exists({}))) await CurrencyRate.updateMany({ isUsed: true }, { $set: { isUsed: false } });
-  await setSettings({ migrationGuardDay: null });
-  run.status = 'discarded';
-  run.message = `أُلغي بواسطة ${user?.firstName || 'المدير'}؛ حُذف ${entries.deletedCount} قيداً`;
-  await run.save();
-  return run;
+  const result = await require('../transaction').runInTransaction(async session => {
+    const locked = await MigrationRun.findOneAndUpdate({ runId, status: run.status },
+      { $set: { status: 'discarding' }, $inc: { bankTrialVersion: 1 } }, { new: true, session });
+    if (!locked) throw fail('تغيرت حالة التشغيل؛ حدّث الصفحة قبل الإلغاء.');
+    const trialEntries = await JournalEntry.countDocuments({ bankTrialRunId: runId }).session(session);
+    const restored = await require('./bankTrial').rollback(runId, session);
+    const entryIds = await JournalEntry.distinct('_id', { migrationRunId: runId }).session(session);
+    const billIds = await docs.SupplierBill.distinct('_id', { migrationRunId: runId }).session(session);
+    const paymentIds = await docs.SupplierPayment.distinct('_id', { migrationRunId: runId }).session(session);
+    // Also clean matches made before the trial was enabled: imported rows survive,
+    // but references to historical entries/documents about to be deleted cannot survive.
+    const affected = await docs.BankStatementLine.find({ $or: [
+      { matchedEntryIds: { $in: entryIds } }, { entryId: { $in: entryIds } },
+      { billId: { $in: billIds } }, { paymentId: { $in: paymentIds } },
+      { historicalSettlementPaymentId: { $in: paymentIds } },
+    ] }).session(session);
+    const entrySet = new Set(entryIds.map(String));
+    const billSet = new Set(billIds.map(String));
+    const paymentSet = new Set(paymentIds.map(String));
+    for (const line of affected) {
+      line.matchedEntryIds = line.matchedEntryIds.filter(id => !entrySet.has(String(id)));
+      if (entrySet.has(String(line.entryId))) line.entryId = undefined;
+      if (billSet.has(String(line.billId))) line.billId = undefined;
+      if (paymentSet.has(String(line.paymentId))) line.paymentId = undefined;
+      if (paymentSet.has(String(line.historicalSettlementPaymentId))) {
+        line.historicalSettlementPaymentId = undefined;
+        line.historicalSettlementUsd = undefined;
+      }
+      if (!line.entryId && !line.matchedEntryIds.length && line.lineStatus !== 'ignored') line.lineStatus = 'unmatched';
+      await line.save({ session });
+    }
+    const entries = await JournalEntry.deleteMany({ migrationRunId: runId }).session(session);
+    await docs.SupplierPayment.deleteMany({ migrationRunId: runId }).session(session);
+    await docs.SupplierBill.deleteMany({ migrationRunId: runId }).session(session);
+    await CurrencyRate.deleteMany({ migrationRunId: runId, source: 'derived' }).session(session);
+    await rebuildCounters(session);
+    if (!(await JournalEntry.exists({}).session(session)))
+      await CurrencyRate.updateMany({ isUsed: true }, { $set: { isUsed: false } }, { session });
+    await AccountingSettings.updateOne({ key: 'main' }, { $set: { migrationGuardDay: null } }, { session });
+    locked.status = 'discarded';
+    locked.bankTrialEnabled = false;
+    locked.message = `أُلغي بواسطة ${user?.firstName || 'المدير'}؛ حُذف ${entries.deletedCount} قيداً تاريخياً و${trialEntries} قيد تجربة، واستُعيدت ${restored} تغييرات. سطور الكشف محفوظة للمراجعة.`;
+    await locked.save({ session });
+    return locked;
+  });
+  invalidateConfig();
+  return result;
 }
 
 // Commit: live posting switches on first (new operations are queued from this instant), then the
@@ -169,6 +202,7 @@ async function commitRun(runId, { user } = {}) {
   const run = await MigrationRun.findOne({ runId });
   if (!run) throw new ErrorHandler(404, 'التشغيل غير موجود');
   if (run.status !== 'review') throw fail('يُعتمد التشغيل بعد انتهائه ومراجعة تقريره فقط');
+  const wasBankTrial = run.bankTrialEnabled;
   run.status = 'committing';
   run.countAt = run.cutoff;
   await run.save();
@@ -183,16 +217,21 @@ async function commitRun(runId, { user } = {}) {
     const catchUp = await replay(run, { since });
     const numbering = await renumberJournals();
     run.status = 'committed';
+    run.bankTrialEnabled = false;
     run.committedAt = new Date();
     run.message = `اعتُمد؛ أُضيفت ${catchUp.events} عملية حدثت أثناء المراجعة`;
     run.report = { ...(run.report || {}), catchUp: { events: catchUp.events, walletDifferences: catchUp.walletDifferences.length, coveredEvents: covered }, renumbered: numbering.changed, committedBy: user?._id };
     await run.save();
+    // Successful approval keeps all trial effects. Undo images are no longer needed.
+    await require('mongoose').connection.db.collection(require('./bankTrial').LOG).deleteMany({ runId })
+      .catch(error => console.error('[accounting] committed trial undo cleanup failed:', error.message));
     // The count day of this run now applies to new entries (config.count)
     invalidateConfig();
     return run;
   } catch (error) {
     run.cutoff = since;
     run.status = 'review';
+    run.bankTrialEnabled = wasBankTrial;
     run.message = `تعذّر الاعتماد: ${error.message}`;
     await run.save();
     await setSettings({ liveEnabled: false, migrationDate: null, cutoffAt: null, migrationGuardDay: toDay(run.cutoff) });

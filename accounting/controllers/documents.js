@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { JournalEntry, Account } = require('../models');
+const { JournalEntry, Account, MigrationRun } = require('../models');
 const docs = require('../models/documents');
 const User = require('../../models/user');
 const Order = require('../../models/order');
@@ -444,12 +444,16 @@ module.exports.listBankLines = handle(async (req, res) => {
     .populate('historicalSettlementPaymentId', 'number day').lean();
   const movements = await bank.unmatchedMovements(req.query.accountId);
   const balance = await getBalance(req.query.accountId);
-  const lastWithBalance = await docs.BankStatementLine.findOne({ accountId: req.query.accountId, balanceAfter: { $ne: null } }).sort({ day: -1, createdAt: -1 }).lean();
-  res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements, bookBalance: balance, statementBalance: lastWithBalance?.balanceAfter ?? null });
+  const statement = await require('../services/posting/statementClosingBalance').statementClosingBalance(req.query.accountId);
+  const bookAtStatement = statement.day ? await getBalance(req.query.accountId, { upToDay: statement.day }) : null;
+  const trial = process.env.EXIOS_QA === '1' ? await MigrationRun.findOne({ status: 'review', bankTrialEnabled: true }).select('runId').lean() : null;
+  res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements, bookBalance: balance,
+    statementBalance: statement.balance, statementBalanceDay: statement.day, statementBalanceStatus: statement.status,
+    bookBalanceAtStatement: bookAtStatement, bankTrialRunId: trial?.runId || null });
 });
 
 module.exports.importBankLines = handle(async (req, res) => {
-  res.json(await bank.importStatement(req.body.accountId, req.body.rows, { req }));
+  res.json(await bank.importStatement(req.body.accountId, req.body.rows, { req, matchingSettings: req.body.matchingSettings }));
 });
 module.exports.bankLineDetails = handle(async (req, res) => {
   res.json(await require('../services/posting/bankLineDetails').details(req.params.id));
@@ -459,7 +463,7 @@ module.exports.editBankLine = handle(async (req, res) => {
   res.json(await inTx(session => bank.editLine(req.params.id, req.body || {}, { session, req })));
 });
 module.exports.autoMatchBank = handle(async (req, res) => {
-  res.json(await inTx((session) => bank.autoMatch(req.body.accountId, { session, req })));
+  res.json(await inTx((session) => bank.autoMatch(req.body.accountId, { session, req, matchingSettings: req.body.matchingSettings })));
 });
 module.exports.matchBankLine = handle(async (req, res) => {
   res.json(await inTx((session) => bank.manualMatch(req.params.id, req.body.entryIds || [], { session, req })));
@@ -473,13 +477,13 @@ module.exports.cancelBankLineEntry = handle(async (req, res) => {
 // The account each unmatched line most likely belongs to, and the lines that may already be in the books
 module.exports.bankSuggestions = handle(async (req, res) => {
   if (!isObjectId(req.query.accountId)) throw badRequest('اختر الحساب');
-  res.json(await bank.suggestions(req.query.accountId));
+  res.json(await bank.suggestions(req.query.accountId, { matchingSettings: req.query.matchingSettings }));
 });
 
 // The table before importing: each row's status and the account it would go to (nothing saved)
 module.exports.classifyBankRows = handle(async (req, res) => {
   if (!isObjectId(req.body?.accountId)) throw badRequest('اختر الحساب');
-  res.json({ results: await bank.classifyRows(req.body.accountId, req.body.rows) });
+  res.json({ results: await bank.classifyRows(req.body.accountId, req.body.rows, req.body.matchingSettings) });
 });
 
 module.exports.listBankRules = handle(async (req, res) => res.json({ results: await bank.listRules(isObjectId(req.query.accountId) ? req.query.accountId : undefined) }));
@@ -536,9 +540,20 @@ module.exports.saveExpenseType = handle(async (req, res) => {
 module.exports.listTrips = handle(async (req, res) => {
   const query = { inventoryType: 'inventoryGoods' };
   if (req.query.status) query.status = req.query.status;
+  if (req.query.shippingType) query.shippingType = req.query.shippingType;
+  if (req.query.country) query.shippedCountry = req.query.country;
+  if (req.query.office) query.inventoryPlace = req.query.office;
+  if (req.query.seaLoadType) {
+    query.shippingType = 'sea';
+    query.seaLoadType = req.query.seaLoadType === 'unknown' ? null : req.query.seaLoadType;
+  }
+  if (req.query.arrival === 'arrived') query.arrivalDate = { $ne: null };
+  if (req.query.arrival === 'not_arrived') query.arrivalDate = null;
   if (req.query.search) query.voyage = new RegExp(escapeRegex(req.query.search), 'i');
-  const limit = Math.min(Number(req.query.limit) || 50, 200);
-  const trips = await Inventory.find(query).select('voyage shippingType shippedCountry inventoryPlace status arrivalDate createdAt').sort({ createdAt: -1 }).limit(limit).lean();
+  const limit = Math.max(1, Math.min(Math.trunc(Number(req.query.limit)) || 50, 200));
+  const page = Math.max(1, Math.trunc(Number(req.query.page)) || 1);
+  // Cost filters apply before pagination, including older trips outside the first page.
+  const trips = await Inventory.find(query).select('voyage shippingType seaLoadType shippedCountry inventoryPlace status arrivalDate createdAt orders.paymentList._id').sort({ createdAt: -1, _id: -1 }).lean();
   const wip = await resolveAccount('trip_cost_wip');
   const { settings } = await getConfig();
   const costRoles = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic'].map((role) => settings.accountRoles?.[role]).filter(Boolean).map(oid);
@@ -556,11 +571,30 @@ module.exports.listTrips = handle(async (req, res) => {
     },
   ]);
   const costs = new Map(rows.map((row) => [String(row._id), row]));
+  let results = trips.map((trip) => {
+    const cost = costs.get(String(trip._id)) || { inProgress: 0, recognized: 0 };
+    return { ...trip, costInProgress: cost.inProgress, costRecognized: cost.recognized, totalCost: cost.inProgress + cost.recognized };
+  });
+  if (req.query.cost === 'with_cost') results = results.filter(t => t.totalCost !== 0);
+  if (req.query.cost === 'without_cost') results = results.filter(t => t.totalCost === 0);
+  if (req.query.cost === 'in_progress') results = results.filter(t => t.costInProgress !== 0);
+  const pageTrips = results.slice((page - 1) * limit, page * limit);
+  const packageIds = [...new Set(pageTrips.flatMap(t => (t.orders || []).map(o => String(o?.paymentList?._id || '')).filter(isObjectId)))].map(oid);
+  // Read current package weights from orders; embedded copies on the trip can be stale.
+  const weights = packageIds.length ? await Order.aggregate([
+    { $match: { 'paymentList._id': { $in: packageIds } } },
+    { $unwind: '$paymentList' },
+    { $match: { 'paymentList._id': { $in: packageIds } } },
+    { $project: { _id: 0, id: '$paymentList._id', weight: '$paymentList.deliveredPackages.weight.total', unit: '$paymentList.deliveredPackages.weight.measureUnit' } },
+  ]) : [];
+  const byPackage = new Map(weights.map(p => [String(p.id), p]));
   res.json({
-    results: trips.map((trip) => {
-      const cost = costs.get(String(trip._id)) || { inProgress: 0, recognized: 0 };
-      return { ...trip, costInProgress: cost.inProgress, costRecognized: cost.recognized, totalCost: cost.inProgress + cost.recognized };
+    results: pageTrips.map(({ orders, ...trip }) => {
+      const packages = [...new Set((orders || []).map(o => String(o?.paymentList?._id || '')))].map(id => byPackage.get(id)).filter(Boolean);
+      const sum = unit => packages.filter(p => p.unit === unit).reduce((total, p) => total + (Number(p.weight) || 0), 0);
+      return { ...trip, totalKG: sum('KG'), totalCBM: sum('CBM') };
     }),
+    total: results.length, page, limit,
   });
 });
 

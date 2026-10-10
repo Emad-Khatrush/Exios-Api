@@ -58,6 +58,8 @@ const inventorySchema = new Schema({
     required: true,
     enum: ['air', 'sea', 'domestic'],
   },
+  // Explicit classification; old trips stay unknown rather than guessing from names.
+  seaLoadType: { type: String, enum: ['FCL', 'LCL', null], default: null },
   isCaclulationDone: {
     type: Boolean,
     default: false

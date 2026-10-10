@@ -385,7 +385,9 @@ test('G. an Alipay transfer order: the yuan are sent in one step at the Alipay a
   await tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 6500, day: '2026-02-03' }, { session, req }));
   expect(await balanceOf('130200')).toBe(98485); // 6500 / 6.6
   expect((await alipay.remittanceStatus(orderId)).suggestedCny).toBe(0);
-  await expect(tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 500, day: '2026-02-03' }, { session, req }))).rejects.toThrow('يوان فقط');
+  // Sending more than the recorded yuan is allowed (a top-up may not be entered yet): the box goes below zero
+  await tx((session) => alipay.sendRemittance(orderId, { accountId: box._id, cny: 500, day: '2026-02-03' }, { session, req }));
+  expect((await require('../services/carrying').getBalance(box._id)).foreign).toBe(-40000);
 });
 
 test('concurrent Alipay remittances cannot spend the same yuan balance twice', async () => {

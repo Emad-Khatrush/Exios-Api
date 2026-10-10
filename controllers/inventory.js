@@ -362,7 +362,8 @@ module.exports.getFlights = async (req, res, next) => {
 
 module.exports.createInventory = async (req, res, next) => {
   try {
-    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, note, costPrice, odoReferenceCode } = req.body;
+    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, seaLoadType, note, costPrice, odoReferenceCode } = req.body;
+    if (seaLoadType && !['FCL', 'LCL'].includes(seaLoadType)) throw new ErrorHandler(400, 'Invalid sea load type');
     const attachments = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
@@ -397,6 +398,7 @@ module.exports.createInventory = async (req, res, next) => {
         voyageCurrency,
         inventoryType,
         shippingType,
+        seaLoadType: shippingType === 'sea' ? seaLoadType || null : null,
         note,
         costPrice,
         odoReferenceCode: odoCode
@@ -947,6 +949,9 @@ module.exports.updateInventory = async (req, res, next) => {
       const currentInventory = await Inventory.findById(id).session(session);
       if (!currentInventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
       const update = { ...req.body };
+      if (update.seaLoadType && !['FCL', 'LCL'].includes(update.seaLoadType)) throw new ErrorHandler(400, 'Invalid sea load type');
+      if ((update.shippingType || currentInventory.shippingType) !== 'sea') update.seaLoadType = null;
+      else if (update.seaLoadType === '') update.seaLoadType = null;
       // Package membership uses the dedicated add/remove operations.
       if (update.orders !== undefined) throw new ErrorHandler(400, 'Use package add/remove actions to change trip packages');
 

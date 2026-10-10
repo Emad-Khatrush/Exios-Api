@@ -17,7 +17,8 @@ describe('accounting setup (scenario 24)', () => {
   test('creates everything on an empty database, ready to post', async () => {
     const report = await runSetup();
     expect(report.created.length).toBeGreaterThan(50);
-    expect(await Account.countDocuments()).toBe(ACCOUNTS.length);
+    // Every default account once (the bank funding setup adds its investment, loan and funder accounts beside them)
+    expect(await Account.countDocuments({ seedKey: { $in: ACCOUNTS.map((a) => a.code) } })).toBe(ACCOUNTS.length);
     expect(await Currency.countDocuments()).toBe(CURRENCIES.length);
     expect(await AccountingOffice.countDocuments()).toBe(OFFICES.length);
 
@@ -33,6 +34,7 @@ describe('accounting setup (scenario 24)', () => {
 
   test('running it again creates nothing and keeps manual edits', async () => {
     await runSetup();
+    const accounts = await Account.countDocuments();
     await Account.updateOne({ code: '530200' }, { $set: { name: 'إيجار المكاتب' } });
     await Account.updateOne({ code: '110101' }, { $set: { code: '110199' } });
 
@@ -40,7 +42,7 @@ describe('accounting setup (scenario 24)', () => {
     expect(second.created).toEqual([]);
     expect((await Account.findOne({ seedKey: '530200' })).name).toBe('إيجار المكاتب');
     expect(await Account.exists({ code: '110101' })).toBeNull();
-    expect(await Account.countDocuments()).toBe(ACCOUNTS.length);
+    expect(await Account.countDocuments()).toBe(accounts);
   });
 
   test('adds cash boxes for office/currency pairs found in deposits, and maps the bank alias', async () => {

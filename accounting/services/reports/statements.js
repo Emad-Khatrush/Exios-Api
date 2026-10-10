@@ -13,7 +13,7 @@ const dayRange = ({ from, to }) => (from || to ? { day: { ...(from && { $gte: fr
 const SECTION_TITLES = {
   revenue: 'الإيرادات', cost: 'تكلفة الإيرادات', expenses: 'المصروفات التشغيلية', depreciation: 'الإهلاك', fx: 'فروقات العملة',
 };
-const COST_ROLES = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices'];
+const COST_ROLES = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices', 'cost_services'];
 const FX_ROLES = ['fx_gain_loss', 'rounding'];
 const DEPRECIATION_ROLES = ['depreciation_expense', 'asset_disposal'];
 
@@ -55,7 +55,7 @@ const COLUMN_EXPR = {
 // comparison, yearly comparison, profit by office). Year-closing entries are left out, so a
 // closed year still shows its result.
 async function incomeStatement({ from, to, office, columns } = {}) {
-  const { accountsById, offices } = await getConfig();
+  const { accountsById, offices, settings } = await getConfig();
   const sectionOf = await sectionResolver();
   const accountIds = [...accountsById.values()].filter((a) => !a.isGroup && sectionOf(a)).map((a) => a._id);
   const lineMatch = { 'lines.accountId': { $in: accountIds }, ...(office && { 'lines.office': office }) };
@@ -92,6 +92,10 @@ async function incomeStatement({ from, to, office, columns } = {}) {
     values: Object.fromEntries(columnList.map(({ key }) => [key, compute((name) => sections[name].values[key])])),
     total: compute((name) => sections[name].total),
   });
+  const serviceAmount = role => rows.filter(row => String(row._id.accountId) === String(settings.accountRoles?.[role]))
+    .reduce((sum, row) => sum + (role === 'revenue_services' ? -row.net : row.net), 0);
+  const serviceRevenue = serviceAmount('revenue_services');
+  const serviceCosts = serviceAmount('cost_services');
   return {
     from: from || null, to: to || null, office: office || null, columns: columnList, sections: list,
     summary: {
@@ -100,6 +104,7 @@ async function incomeStatement({ from, to, office, columns } = {}) {
       operatingProfit: line('الربح التشغيلي', (v) => v('revenue') - v('cost') - v('expenses') - v('depreciation')),
       netProfit: line('صافي الربح', (v) => v('revenue') - v('cost') - v('expenses') - v('depreciation') - v('fx')),
     },
+    services: { revenue: serviceRevenue, costs: serviceCosts, net: serviceRevenue - serviceCosts },
   };
 }
 

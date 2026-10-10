@@ -200,7 +200,9 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
   let date = isDay(inputDate) ? dayStart(day) : new Date(inputDate);
   const { lockDate, migrationGuardDay } = config.settings;
   // A migration dry run is waiting for review: the historical period belongs to it
-  if (migrationGuardDay && !input.migrationRunId && day <= migrationGuardDay) {
+  const trial = require('./migration/bankTrial').context();
+  const bankTrial = process.env.EXIOS_QA === '1' && trial?.session === session && trial?.runId;
+  if (migrationGuardDay && !input.migrationRunId && !bankTrial && day <= migrationGuardDay) {
     throw new ErrorHandler(400, `الفترة حتى ${migrationGuardDay} محجوزة للترحيل التاريخي قيد المراجعة. اعتمده أو ألغِه أولاً.`);
   }
   // 'allow' is for the year-closing entry only, which belongs on the last day of a locked year
@@ -239,6 +241,7 @@ async function postEntry(input, { session, user, onLocked = 'shift' } = {}) {
     createdBy: user?._id,
     isHistorical: !!input.isHistorical,
     migrationRunId: input.migrationRunId,
+    bankTrialRunId: bankTrial || undefined,
     fallbacks: input.fallbacks,
   }], { session });
 

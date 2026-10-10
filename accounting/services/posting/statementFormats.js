@@ -155,7 +155,9 @@ const almutaheda = {
   name: 'المتحدة - كشف حساب عميل',
   detect: (text) => /AL\s*MUTAHEDA/i.test(text) && /Pre Balance/i.test(text),
   parse(text) {
-    const pattern = new RegExp(`^(${US_AMOUNT})(${US_AMOUNT})(${US_AMOUNT})(\\d{4}/\\d{2}/\\d{2})(.*)$`);
+    // A customer's running balance can become negative after a withdrawal. Its sign
+    // must not cause the withdrawal (or the following commission) to disappear.
+    const pattern = new RegExp(`^(-?${US_AMOUNT})\\s*(${US_AMOUNT})\\s*(${US_AMOUNT})\\s*(\\d{4}/\\d{2}/\\d{2})(.*)$`);
     const rows = [];
     for (const raw of text.split(/\r?\n/)) {
       const match = raw.trim().match(pattern);

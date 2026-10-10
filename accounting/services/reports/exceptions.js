@@ -411,6 +411,13 @@ const CHECKS = {
     return result('abandonedGoods', 'info', `بضائع متروكة: وصلت ولم تُستلم منذ أكثر من ${abandonAfterDays} يوماً`, 'تواصل مع العميل. ما لن يُستلم يُعلن متروكاً من صفحة الطلب ← المحاسبة (للمدير والمالك)، ثم يُباع.', items);
   },
 
+  // Bank lines parked as unidentified past their waiting period: the owner decides where they go
+  async unidentifiedOverdue() {
+    const { results } = await require('../posting/unidentified').list({ state: 'open' });
+    const items = results.filter((r) => r.overdue).map((r) => ({ label: `${r.day} · ${r.description || ''}`, usd: Math.round((r.usd || 0) * 100), note: `${r.bank?.name || ''} · مستحق منذ ${r.dueDay}`, url: '/accounting/unidentified' }));
+    return result('unidentifiedOverdue', 'warn', 'حركات بنك قيد التحديد تجاوزت مدة الانتظار', 'ابحث مرة أخيرة عن الطلبية أو الرحلة أو صاحب المال؛ وإلا يقرر المالك تصنيفها من «حركات قيد التحديد» بسبب مكتوب.', items);
+  },
+
   // 30. Yuan paid to a broker and not in Alipay after a week
   async yuanPending() {
     const { YuanPurchase } = require('../../models/documents');

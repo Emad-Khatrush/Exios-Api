@@ -11,7 +11,7 @@ async function post(line, { session, req }) {
   const bank = await Account.findById(line.accountId).session(session).lean();
   const pending = await Account.findOne({ $or: [{ seedKey: '219100' }, { code: '219100' }] }).session(session).lean();
   if (!bank?.isCash || !pending?.isActive || pending.isGroup || pending.type !== 'liability') throw fail('راجع حساب استردادات الموردين قيد التحديد في إعداد الحسابات');
-  const rates = new RateBook(session);
+  const rates = new RateBook(session, { nearest: true });
   const usd = currencyOf(bank) === 'USD' ? line.amount : Number(line.settlementUsd) > 0 ? Math.round(line.settlementUsd * 100)
     : line.originalCurrency === 'USD' && Number(line.originalAmount) > 0 ? Math.round(line.originalAmount * 100) : await rates.toUsd(line.amount, currencyOf(bank), line.day);
   const entry = await postEntry({ eventType: 'REFUND', eventKey: `PENDING_REFUND:${line._id}:${line.postingAttempt || 0}`, date: line.day,

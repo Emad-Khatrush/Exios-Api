@@ -91,6 +91,10 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   volumetricFactor: { type: Number, default: 167 },
   // A package that arrived and was not collected for this many days is listed as abandoned
   abandonAfterDays: { type: Number, default: 365 },
+  // A bank line parked as unidentified waits this long for the owner's final decision:
+  // money out 90 days, money in (possibly a customer's) a year
+  unidentifiedOutDays: { type: Number, default: 90 },
+  unidentifiedInDays: { type: Number, default: 365 },
   timezone: { type: String, default: 'Africa/Tripoli' },
   // Live posting of the system's own operations (deposits, orders, deliveries...). Off until the
   // historical migration is committed, so history and live never overlap.
@@ -145,7 +149,9 @@ const AccountingEvent = mongoose.model('AccountingEvent', accountingEventSchema)
 // One run of the historical migration (spec 6-أ): dry run, report, then commit or discard
 const MigrationRun = mongoose.model('AccountingMigrationRun', new Schema({
   runId: { type: String, required: true, unique: true },
-  status: { type: String, enum: ['running', 'review', 'failed', 'discarded', 'committing', 'committed'], default: 'running' },
+  status: { type: String, enum: ['running', 'review', 'failed', 'discarding', 'discarded', 'committing', 'committed'], default: 'running' },
+  bankTrialEnabled: { type: Boolean, default: false },
+  bankTrialVersion: { type: Number, default: 0 },
   // Everything that happened up to this moment is replayed; commit catches up what came after
   cutoff: { type: Date, required: true },
   // The moment the opening counts stand for when they were taken on the day of the run: the dry
@@ -161,6 +167,8 @@ const MigrationRun = mongoose.model('AccountingMigrationRun', new Schema({
     countDay: String,
     // Fold what history leaves in suspense into the opening balance (start from the counts)
     closeSuspense: { type: Boolean, default: false },
+    // Purchase costs from the account statements only: purchases typed on orders are not bills
+    purchaseCostsFromStatements: { type: Boolean, default: false },
   },
   progress: { phase: String, done: Number, total: Number },
   report: Schema.Types.Mixed,

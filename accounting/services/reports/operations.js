@@ -47,16 +47,17 @@ async function netBy(field, accountIds, extraMatch = {}) {
 // A domestic trip: its cost, its packages, the extra cost per KG, and the transport fees charged.
 const COST_CATEGORIES = ['shipping', 'customs', 'clearance', 'transport', 'other'];
 
-async function tripProfitability({ status, search, shippingType } = {}) {
+async function tripProfitability({ status, search, shippingType, tripIds: requestedTripIds } = {}) {
   const roles = await roleIds([
     'trip_cost_wip', 'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'deferred_shipping_revenue',
     'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other', 'cost_purchase_invoices',
   ]);
   const query = { inventoryType: 'inventoryGoods' };
+  if (Array.isArray(requestedTripIds)) query._id = { $in: requestedTripIds.map(oid) };
   if (status) query.status = status;
   if (shippingType) query.shippingType = shippingType;
   if (search) query.voyage = new RegExp(escapeRegex(search), 'i');
-  const trips = await Inventory.find(query).select('voyage shippingType status inventoryPlace arrivalDate createdAt').sort({ createdAt: -1 }).limit(1000).lean();
+  const trips = await Inventory.find(query).select('voyage shippingType status inventoryPlace arrivalDate createdAt').sort({ createdAt: -1 }).limit(Array.isArray(requestedTripIds) ? 0 : 1000).lean();
 
   // The packages of each trip, from their trip links. Packages of cancelled orders do not count.
   const tripIds = trips.map((t) => t._id);
@@ -82,11 +83,13 @@ async function tripProfitability({ status, search, shippingType } = {}) {
   const costIds = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices'].map((r) => roles[r]);
   const revenueIds = ['revenue_shipping_air', 'revenue_shipping_sea', 'revenue_shipping_domestic', 'revenue_other'].map((r) => roles[r]);
   const allTripIds = [...new Set([...tripIds.map(String), ...domesticIds])];
+  const tripScope = { 'lines.tripId': { $in: allTripIds.map(oid) } };
+  const packageIds = orders.flatMap((order) => (order.paymentList || []).map((pkg) => pkg._id).filter(Boolean));
   const [byTrip, byPackage, feesByTrip, bills] = await Promise.all([
-    netBy('tripId', idsOf({ wip: roles.trip_cost_wip, ...Object.fromEntries(costIds.map((id, i) => [i, id])) })),
+    netBy('tripId', idsOf({ wip: roles.trip_cost_wip, ...Object.fromEntries(costIds.map((id, i) => [i, id])) }), tripScope),
     // A package's shipping (its transport fee is the domestic trip's, below)
-    netBy('packageId', idsOf({ deferred: roles.deferred_shipping_revenue, ...Object.fromEntries(revenueIds.map((id, i) => [i, id])) }), { 'lines.arKey': { $not: /:DOM$/ } }),
-    netBy('tripId', idsOf({ a: roles.revenue_shipping_domestic }), { 'lines.arKey': /:DOM$/ }),
+    netBy('packageId', idsOf({ deferred: roles.deferred_shipping_revenue, ...Object.fromEntries(revenueIds.map((id, i) => [i, id])) }), { 'lines.packageId': { $in: packageIds }, 'lines.arKey': { $not: /:DOM$/ } }),
+    netBy('tripId', idsOf({ a: roles.revenue_shipping_domestic }), { ...tripScope, 'lines.arKey': /:DOM$/ }),
     SupplierBill.find({ status: 'posted', 'lines.tripId': { $in: allTripIds.map(oid) } }).select('lines.tripId lines.usd lines.costCategory isCreditNote').lean(),
   ]);
   const categories = new Map();

@@ -10,13 +10,13 @@ const { fail, currencyOf, lockPostingAccounts, valueOut, moneyLine, addFxLine } 
 async function inspect(bill, bank, line, { session } = {}) {
   const { count, currencies } = await getConfig();
   if (!count || !count.accountIds.has(String(bank._id)) || !line?.day || line.amount >= 0
-    || bill.status !== 'posted' || bill.isCreditNote || bill.day > count.day
+    || bill.status !== 'posted' || bill.isCreditNote
     || line.day < count.day || (line.day === count.day && count.endOfDay)) return null;
   const suspense = await resolveAccount('migration_suspense');
   const payments = await SupplierPayment.find({ status: 'posted', 'allocations.billId': bill._id }).session(session || null).lean();
   if (payments.length !== 1) return null;
   const payment = payments[0];
-  if (!payment.isHistorical || payment.day > count.day || String(payment.fromAccountId) !== String(suspense._id)
+  if (!payment.isHistorical || String(payment.fromAccountId) !== String(suspense._id)
     || payment.allocations.length !== 1 || payment.advanceUsd || payment.costDifferenceUsd || !payment.entryId) return null;
   const original = originalOf(line, currencyOf(bank), currencies.get(currencyOf(bank))?.decimals ?? 2);
   const total = bill.total ?? bill.lines.reduce((sum, item) => sum + Number(item.amount), 0);

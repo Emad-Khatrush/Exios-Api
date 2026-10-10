@@ -17,6 +17,12 @@ const userStatementSchema = new Schema({
   total: { type: Number, required: true },
   // Exchange rate used when an LYD payment was made
   rate: Number,
+  // Customer debt currency and conversion agreed at payment, independent of supplier FX.
+  serviceDebtSettlement: {
+    debtCurrency: String,
+    paymentCurrency: String,
+    paymentPerDebtUnit: Number,
+  },
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },

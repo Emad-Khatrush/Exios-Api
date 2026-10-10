@@ -121,8 +121,12 @@ function buildTimeline(sources, config, vendors) {
     // A purchase cost is posted and left unpaid (owner's request 2026-10-04): the accountant records
     // how it was really paid (a Turkish bank in lira…) from the supplier payments screen. Only a cost
     // the mapping file ties to a box is paid from it.
+    // With purchase costs taken from the account statements (owner's choice 2026-10-09), the typed
+    // purchases are not bills: they stay on the order to suggest which order a statement line paid.
+    // A purchase the mapping file ties to a cash box is still posted: no statement shows cash.
     (order.purchaseItems || []).filter((item) => Number(item.unitPrice) > 0).forEach((item) => {
       const paidFrom = costAccount('order', [order._id, order.orderId]);
+      if (config.purchaseCostsFromStatements && !paidFrom) return;
       add(item.date || order.createdAt, 'bill', 'purchaseItem', item._id, (ctx) => payables.createBill({
         vendorId: vendors.historical_supplier, day: toDay(item.date || order.createdAt), currency: item.currency || 'USD',
         isHistorical: true, migrationRunId: ctx.migrationRunId, idempotencyKey: `MIG:PURCH:${item._id}`,

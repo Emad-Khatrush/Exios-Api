@@ -16,11 +16,28 @@ const period = (query) => {
 };
 
 const reviewedResponse = async (res, result, query = {}) => {
+  if (query.deferReview === 'true') {
+    return res.json({ ...result, reviewStatus: { status: 'pending', period: { from: query.from, to: query.to || query.asOf } } });
+  }
   let reviewStatus;
   try { reviewStatus = await require('../services/accountingReview').approvalStatus({ from: query.from, to: query.to || query.asOf }); }
   catch (error) { reviewStatus = { status: 'provisional', checkUnavailable: true, message: 'تعذّر التحقق من اكتمال المراجعة' }; }
   res.json({ ...result, reviewStatus });
 };
+// Share only concurrent checks. Completed results are never cached: postings must remain visible.
+const reviewRequests = new Map();
+module.exports.reviewStatus = handle(async (req, res) => {
+  const input = { from: req.query.from, to: req.query.to || req.query.asOf };
+  period(input);
+  const key = JSON.stringify(input);
+  let request = reviewRequests.get(key);
+  if (!request) {
+    request = require('../services/accountingReview').approvalStatus(input);
+    reviewRequests.set(key, request);
+    request.then(() => reviewRequests.delete(key), () => reviewRequests.delete(key));
+  }
+  res.json(await request);
+});
 module.exports.incomeStatement = handle(async (req, res) => {
   const columns = ['month', 'year', 'office'].includes(req.query.columns) ? req.query.columns : undefined;
   await reviewedResponse(res, await statements.incomeStatement({ ...period(req.query), office: req.query.office || undefined, columns }), req.query);

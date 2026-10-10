@@ -87,6 +87,7 @@ async function createManualEntry({ date, description, lines, idempotencyKey, inL
   for (const rateId of usedRates) await markRateUsed(rateId, session);
   // A claim settled by hand may now be fully paid: its revenue is recognised like any payment
   for (const orderId of claimOrders) await require('./claims/sync').syncOrder(orderId, { session, user: req?.user, date });
+  await require('./claims/serviceDebt').syncServiceDebts(built.map(l => l.arKey).filter(Boolean), { session, user: req?.user, date });
   await logAudit({ req, action: 'entry.manual', model: 'AccountingJournalEntry', docId: entry._id, after: entry }, session);
   return entry;
 }
@@ -111,6 +112,7 @@ async function cancelManualEntry(entryId, { reason, session, req }) {
   const receivable = await resolveAccount('customer_receivable');
   const orders = new Set(entry.lines.filter((l) => l.arKey && l.orderId && String(l.accountId) === String(receivable._id)).map((l) => String(l.orderId)));
   for (const orderId of orders) await require('./claims/sync').syncOrder(orderId, { session, user: req?.user });
+  await require('./claims/serviceDebt').syncServiceDebts(entry.lines.map(l => l.arKey).filter(Boolean), { session, user: req?.user });
   await logAudit({ req, action: 'entry.cancel', model: 'AccountingJournalEntry', docId: entry._id, after: { reason, reversalId: reversal._id } }, session);
   return reversal;
 }

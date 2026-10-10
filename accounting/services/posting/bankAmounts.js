@@ -39,7 +39,7 @@ async function paymentValue(line, bank, input, session) {
   const original = originalOf(line, currency, decimals);
   let usd = dollarsOf(line, original, input);
   if (currency === 'USD') usd = paid;
-  const rates = new RateBook(session);
+  const rates = new RateBook(session, { nearest: true });
   const directCross = !usd && original.currency !== currency && original.currency !== 'USD';
   const valuationSource = directCross ? 'direct_cross' : usd ? 'statement' : 'account_value';
   // No USD quote is fabricated for a direct SAR/TRY (or other) purchase. USD remains only

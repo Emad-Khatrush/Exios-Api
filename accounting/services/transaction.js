@@ -13,8 +13,11 @@ async function runInTransaction(fn) {
     await session.withTransaction(async () => {
       const valuation = require('./posting/alipayValuation');
       valuation.reset(session); // withTransaction can retry the callback after an aborted attempt.
-      result = await fn(session);
-      await valuation.flush(session);
+      result = await require('./migration/bankTrial').transact(session, async () => {
+        const value = await fn(session);
+        await valuation.flush(session);
+        return value;
+      });
     });
     return result;
   } catch (error) {
