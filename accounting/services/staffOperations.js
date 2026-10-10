@@ -143,6 +143,7 @@ async function addCost(target, targetId, input, req) {
     await assertOpenPeriod(req.user, day, { session });
     return createBill({
     vendorId, day, currency, rate, idempotencyKey: input.idempotencyKey || undefined,
+    duplicateDecision: input.duplicateDecision, duplicateReason: input.duplicateReason, duplicateFingerprint: input.duplicateFingerprint,
     paidImmediatelyFrom: payFrom?._id, note: input.note, enteredFrom: target,
     lines: [{
       description: String(input.description || '').trim() || label, amount, target, [target === 'trip' ? 'tripId' : 'orderId']: targetId,

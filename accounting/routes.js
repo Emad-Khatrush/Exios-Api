@@ -230,6 +230,8 @@ router.post('/bank/trip-cost-settlements/:id/cancel', P.purchases, P.treasury, P
 router.get('/balances/:id', can('treasury', 'payments', 'purchases', 'payroll', 'reports'), documents.accountBalance);
 
 router.get('/bank/lines', P.treasury, documents.listBankLines);
+router.get('/bank/duplicate-settlement', P.treasury, P.payments, P.purchases, handle(async (req, res) => res.json(await require('./services/posting/bankDuplicateSettlement').preview(req.query.accountId))));
+router.post('/bank/duplicate-settlement', P.treasury, P.payments, P.purchases, P.cancel, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankDuplicateSettlement').apply(req.body || {}, { session, req })))));
 router.get('/bank/lines/:id', P.treasury, documents.bankLineDetails);
 router.patch('/bank/lines/:id', P.treasury, documents.editBankLine);
 router.get('/bank/suggestions', P.treasury, documents.bankSuggestions);

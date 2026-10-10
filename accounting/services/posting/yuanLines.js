@@ -1,15 +1,14 @@
 // Yuan bought from a broker (AlQFILA...) arrives in Alipay as an incoming line. It is a yuan
 // purchase: dollars (or another currency) out of the account that paid the broker, yuan into
-// Alipay at that rate. A line is matched to a purchase already recorded (same yuan ±1, a week
+// Alipay at that rate. A line is matched to a purchase already recorded (exact yuan, a week
 // around), or the purchase is recorded from the line, one line or many at once, and matched by
 // its Alipay transaction number. Never revenue; nothing posted without the person's approval.
 const { BankStatementLine, YuanPurchase } = require('../../models/documents');
-const { Account } = require('../../models');
+const { Account, JournalEntry } = require('../../models');
 const { addDays } = require('../dates');
 const { logAudit } = require('../audit');
 const { fail } = require('./common');
 
-const YUAN = 100;
 const alipayAccount = async (accountId, session) => {
   const account = await Account.findById(accountId).session(session || null).lean();
   return account?.isCash && account.currency === 'CNY' ? account : null;
@@ -36,15 +35,32 @@ async function suggestions(accountId, { session, lineIds } = {}) {
   const days = lines.map((x) => x.line.day).sort();
   const purchases = await YuanPurchase.find({ status: 'posted', arrived: true, toAccountId: account._id,
     arrivedDay: { $gte: addDays(days[0], -7), $lte: addDays(days[days.length - 1], 7) } }).populate('vendorId', 'name').session(session || null).lean();
+  // Deferred purchases keep the funding entry in entryId. Only the arrival
+  // entry contains the wallet movement that can be matched to its statement.
+  const entries = await JournalEntry.find({ 'source.model': 'AccountingYuanPurchase', 'source.id': { $in: purchases.map(p => p._id) },
+    status: 'posted', reversalOf: null, lines: { $elemMatch: { accountId: account._id, amountCurrency: { $gt: 0 } } } })
+    .select('_id source lines bankMatchedAccounts').session(session || null).lean();
+  const byPurchase = new Map();
+  for (const entry of entries) {
+    if ((entry.bankMatchedAccounts || []).some(id => String(id) === String(account._id))) continue;
+    const amount = entry.lines.filter(l => String(l.accountId) === String(account._id)).reduce((sum, l) => sum + Number(l.amountCurrency || 0), 0);
+    const key = String(entry.source.id);
+    const available = byPurchase.get(key) || [];
+    available.push({ entryId: entry._id, amount });
+    byPurchase.set(key, available);
+  }
   // A purchase whose entry a statement line already took is not offered again
-  const taken = new Set((await BankStatementLine.find({ accountId: account._id, $or: [{ entryId: { $in: purchases.map((p) => p.entryId) } }, { matchedEntryIds: { $in: purchases.map((p) => p.entryId) } }] })
+  const taken = new Set((await BankStatementLine.find({ accountId: account._id, lineStatus: { $in: ['matched', 'created_entry'] }, $or: [{ entryId: { $in: entries.map(e => e._id) } }, { matchedEntryIds: { $in: entries.map(e => e._id) } }] })
     .select('entryId matchedEntryIds').session(session || null).lean()).flatMap((l) => [l.entryId, ...(l.matchedEntryIds || [])].filter(Boolean).map(String)));
   const { count } = await require('../config').getConfig();
   const result = {};
   for (const { line, broker: found } of lines) {
-    const existing = purchases.filter((p) => !taken.has(String(p.entryId)) && Math.abs(Math.round(p.cnyReceived * 100) - line.amount) <= YUAN
+    const existing = purchases.filter((p) => Math.round(p.cnyReceived * 100) === line.amount
       && Math.abs(Date.parse(p.arrivedDay) - Date.parse(line.day)) <= 7 * 86400000)
-      .map((p) => ({ _id: p._id, number: p.number, day: p.arrivedDay, cny: p.cnyReceived, usd: p.usd / 100, rate: p.rate, broker: p.vendorId?.name, entryId: p.entryId }));
+      .flatMap(p => {
+        const movements = (byPurchase.get(String(p._id)) || []).filter(e => e.amount === line.amount && !taken.has(String(e.entryId)));
+        return movements.length === 1 ? [{ _id: p._id, number: p.number, day: p.arrivedDay, cny: p.cnyReceived, usd: p.usd / 100, rate: p.rate, broker: p.vendorId?.name, entryId: movements[0].entryId }] : [];
+      }).sort((a, b) => Math.abs(Date.parse(a.day) - Date.parse(line.day)) - Math.abs(Date.parse(b.day) - Date.parse(line.day)));
     result[line._id] = { broker: found, cny: line.amount / 100, existing,
       beforeCount: !!count && (line.day < count.day || (line.day === count.day && count.endOfDay)) };
   }

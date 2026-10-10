@@ -862,13 +862,15 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
     line.billId = undefined;
   } else if (line.receiptId) {
     await require('../cancel').cancelDocument('AccountingSupplierReceipt', line.receiptId, { session, req, reason, fromBankLineId: line._id });
-    if (line.refundCreditCreated && line.creditNoteId) await require('../cancel').cancelDocument('AccountingSupplierBill', line.creditNoteId, { session, req, reason });
+    if (line.refundCreditCreated && line.creditNoteId) await require('../cancel').cancelDocument('AccountingSupplierBill', line.creditNoteId, { session, req, reason, fromBankLineId: line._id });
     line.receiptId = undefined; line.creditNoteId = undefined; line.billId = undefined;
   } else if (line.paymentId) {
     const { cancelDocument } = require('../cancel');
-    await cancelDocument('AccountingSupplierPayment', line.paymentId, { session, req, reason });
+    // This caller owns resetting the line below. Cancellation hooks must not
+    // save a second copy of it and invalidate this document's version.
+    await cancelDocument('AccountingSupplierPayment', line.paymentId, { session, req, reason, fromBankLineId: line._id });
     // Several lines paying one purchase (a grouped link): the bill goes with the last of them
-    if (willCancelBill) await cancelDocument('AccountingSupplierBill', line.billId, { session, req, reason });
+    if (willCancelBill) await cancelDocument('AccountingSupplierBill', line.billId, { session, req, reason, fromBankLineId: line._id });
     line.paymentId = undefined;
     line.billId = undefined;
     line.customerRefundId = undefined;
@@ -938,7 +940,7 @@ async function setIgnored(lineId, ignored, { session, req }) {
   await line.save({ session });
   // The payments it made for a partner's Alipay transfers go with it: the bills are unpaid again
   for (const paymentId of groupPayments) {
-    await require('../cancel').cancelDocument('AccountingSupplierPayment', paymentId, { session, req, reason: 'فك مطابقة حوالات الشريك' });
+    await require('../cancel').cancelDocument('AccountingSupplierPayment', paymentId, { session, req, reason: 'فك مطابقة حوالات الشريك', fromBankLineId: line._id });
   }
   if (groupPayments.length) { line.postingAttempt = (line.postingAttempt || 0) + 1; await line.save({ session }); }
   await logAudit({ req, action: ignored ? 'bank.ignore' : 'bank.unmatch', model: 'AccountingBankStatementLine', docId: line._id, after: { reason: req?.body?.reason } }, session);

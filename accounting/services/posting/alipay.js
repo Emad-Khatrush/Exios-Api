@@ -71,7 +71,7 @@ async function createYuanPurchase(input, { session, req }) {
 
   const label = `شراء يوان ${doc.number} من ${broker.name}`;
   const debit = arrived
-    ? moneyLine(to, 'debit', await toCurrencyMinor(cny, 'CNY'), usd, { label })
+    ? moneyLine(to, 'debit', await toCurrencyMinor(cny, 'CNY'), usd, { label, rate: doc.rate })
     : { accountId: (await resolveAccount('yuan_in_transit'))._id, debit: usd, vendorId: broker._id, label: `${label} (بانتظار الوصول)` };
   const entry = await postEntry({
     eventType: 'YUAN_PURCHASE', eventKey: `YUAN_PURCHASE:${doc._id}`, date: input.day, description: label,
@@ -112,7 +112,7 @@ async function completeYuanPurchase(id, input, { session, req }) {
     eventType: 'YUAN_ARRIVAL', eventKey: `YUAN_ARRIVAL:${doc._id}`, date: day, description: label,
     source: { model: 'AccountingYuanPurchase', id: doc._id },
     lines: [
-      moneyLine(to, 'debit', await toCurrencyMinor(cny, 'CNY'), doc.usd, { label }),
+      moneyLine(to, 'debit', await toCurrencyMinor(cny, 'CNY'), doc.usd, { label, rate: Math.round((cny / (doc.usd / 100)) * 10000) / 10000 }),
       { accountId: (await resolveAccount('yuan_in_transit'))._id, credit: doc.usd, vendorId: doc.vendorId, label },
     ],
   }, { session, user: req?.user });

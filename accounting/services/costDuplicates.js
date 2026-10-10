@@ -47,6 +47,7 @@ async function candidates(input, { session, excludeId } = {}) {
       // An explicitly attached legacy item belongs to this invoice, rather than being another cost.
       if ((input.lines || []).some(l => id(l.purchaseItemId) === id(item))) continue;
       rows.push({ key: `item:${item._id}`, orderId: order._id, itemId: item._id, number: order.orderId, day, amount: item.unitPrice,
+        description: item.description || '',
         currency: item.currency || 'USD', strength: 'order', reason: 'مشتريات مسجلة بالفعل داخل الطلبية',
         fingerprint: hash(item), url: `/invoice/${order._id}/edit` });
     }
