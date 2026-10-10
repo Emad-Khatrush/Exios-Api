@@ -49,12 +49,27 @@ const RULES = {
   AccountingSupplierPayment: {
     Model: docs.SupplierPayment,
     async check(payment, { session }) {
+      if (await docs.YuanPurchase.exists({ fundedFromPaymentId: payment._id, status: ACTIVE }).session(session))
+        throw fail('الدفعة مرتبطة بشحن Alipay؛ ألغِ عملية شراء اليوان المرتبطة أولاً ثم ألغِ الدفعة');
       if (await docs.BankStatementLine.exists({ historicalSettlementPaymentId: payment._id, lineStatus: 'created_entry' }).session(session))
         throw fail('هذا السداد التاريخي تمت تسويته مع البنك؛ ألغِ التسوية من سطر الكشف أولاً');
     },
     // A payment that changed its bills' cost: their orders and trips take the change back
     async after(payment, context) {
       await require('./posting/alipayReconciliation').releaseDocumentMatches('AccountingSupplierPayment', payment._id, context);
+      if (payment.batchTrial) {
+        const linked = await docs.BankStatementLine.find({ lineStatus: { $in: ['matched', 'created_entry'] },
+          $or: [{ paymentId: payment._id }, { entryId: payment.entryId }, { matchedEntryIds: payment.entryId }] }).session(context.session);
+        for (const line of linked) {
+          if (String(line._id) === String(context.fromBankLineId || '')) continue;
+          const ids = [line.entryId, ...(line.matchedEntryIds || [])].filter(Boolean);
+          await JournalEntry.updateMany({ _id: { $in: ids } }, { $pull: { bankMatchedAccounts: line.accountId } }, { session: context.session });
+          line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...ids.map(String)])];
+          line.lineStatus = 'unmatched'; line.entryId = undefined; line.matchedEntryIds = []; line.paymentId = undefined;
+          line.postingAttempt = (line.postingAttempt || 0) + 1;
+          await line.save({ session: context.session });
+        }
+      }
       if (!payment.costDifferenceUsd) return;
       const { syncBillTargets } = require('./posting/payables');
       for (const allocation of payment.allocations) {

@@ -127,6 +127,7 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
 }));
 
 const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycle({
+  batchTrial: Boolean,
   historicalSettlementVersion: { type: Number, default: 0 },
   // Automatic remittance valuation; original bill/payment and payable allocations stay intact.
   alipayValuationUsd: Number,
@@ -184,6 +185,8 @@ const ClaimWriteOff = mongoose.model('AccountingClaimWriteOff', withLifecycle({
 // currency), received in yuan; its rate is yuan / dollar. Until the yuan arrives the dollars wait
 // on "yuan in transit" against the broker.
 const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
+  // The cash left once in this supplier payment; this document reclassifies its excess.
+  fundedFromPaymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment', index: true },
   vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
   day: { type: String, required: true },
   fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },

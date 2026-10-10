@@ -91,9 +91,15 @@ async function completeYuanPurchase(id, input, { session, req }) {
   const doc = await YuanPurchase.findById(id).session(session);
   if (!doc || doc.status !== 'posted') throw fail('العملية غير موجودة أو ملغاة');
   if (doc.arrived) throw fail('اليوان وصل مسبقاً');
+  if (doc.fundedFromPaymentId) {
+    require('./batchPaymentTrial').assertTrial();
+    const payment = await require('../../models/documents').SupplierPayment.findById(doc.fundedFromPaymentId).session(session);
+    if (!payment || payment.status !== 'posted') throw fail('الدفعة الأصلية غير متاحة؛ راجعها قبل تأكيد الوصول');
+  }
   const day = input.day || today();
   if (!isDay(day)) throw fail('التاريخ غير صالح');
   notFuture(day);
+  if (doc.fundedFromPaymentId && day < doc.day) throw fail('تاريخ الوصول يجب ألا يسبق تاريخ الدفع');
   const cny = Number(input.cnyReceived || doc.cnyExpected);
   if (!(cny > 0)) throw fail('الكمية الواصلة مطلوبة');
   const to = await alipayAccount(input.toAccountId || doc.toAccountId);
@@ -135,7 +141,7 @@ async function dashboard({ from, to, accountId } = {}) {
   const accountScope = accountId ? { toAccountId: accountId } : {};
   const range = from || to ? { day: { ...(from && { $gte: from }), ...(to && { $lte: to }) } } : {};
   const purchases = await YuanPurchase.find({ status: 'posted', ...range, ...accountScope }).sort({ day: -1 })
-    .populate('vendorId', 'name').populate('fromAccountId', 'code name currency').populate('toAccountId', 'code name').lean();
+    .populate('vendorId', 'name').populate('fromAccountId', 'code name currency').populate('toAccountId', 'code name').populate('fundedFromPaymentId', 'number').lean();
   const brokers = new Map();
   purchases.filter((p) => p.arrived).forEach((p) => {
     const key = String(p.vendorId?._id || '');

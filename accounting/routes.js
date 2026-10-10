@@ -186,6 +186,9 @@ router.route('/bills/:id').get(can('purchases', 'payments'), documents.getBill).
 router.post('/bills/:id/post', P.purchases, documents.postDraftBill);
 
 // Each kind of document belongs to one kind of work
+router.post('/payments/batch-trial', P.payments, (req, res, next) => req.body?.excessPurpose === 'alipay' ? P.treasury(req, res, next) : next(),
+  handle(async (req, res) => res.status(201).json(await require('./services/transaction').runInTransaction((session) =>
+    require('./services/posting/batchPaymentTrial').createBatchPayment(req.body || {}, { session, req })))));
 const DOCUMENT_KINDS = { payments: 'payments', receipts: 'payments', 'yuan-purchases': 'treasury', 'customer-refunds': 'treasury', 'write-offs': 'entries', transfers: 'treasury', 'cash-counts': 'treasury', salaries: 'payroll', equity: 'assets', nettings: 'assets' };
 Object.entries(DOCUMENT_KINDS).forEach(([kind, permission]) => {
   router.route(`/${kind}`).get(can(permission), documents.listDocuments(kind)).post(can(permission), documents.createDocument(kind));

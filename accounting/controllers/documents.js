@@ -151,14 +151,25 @@ async function openBillsFor(vendorId) {
   const result = [];
   for (const bill of bills) {
     const open = await payables.apBalance(payables.billKey(bill._id));
-    if (open !== 0) result.push({ _id: bill._id, number: bill.number, day: bill.day, currency: bill.currency, total: bill.total, totalUsd: bill.totalUsd, open, vendorRef: bill.vendorRef });
+    if (open !== 0) result.push({ _id: bill._id, number: bill.number, day: bill.day, currency: bill.currency, total: bill.total, totalUsd: bill.totalUsd, open, vendorRef: bill.vendorRef,
+      orderOnly: !!bill.lines.length && bill.lines.every(line => line.target === 'order' && line.orderId),
+      orderIds: [...new Set(bill.lines.filter(line => line.orderId).map(line => String(line.orderId)))] });
   }
   return result;
 }
 
 module.exports.vendorOpenBills = handle(async (req, res) => {
   if (!isObjectId(req.params.id)) throw badRequest('المورد غير صالح');
-  res.json({ results: await openBillsFor(oid(req.params.id)), advance: -(await payables.apBalance(payables.advanceKey(req.params.id))) });
+  let results = await openBillsFor(oid(req.params.id));
+  if (req.query.batchTrial === 'true') {
+    require('../services/posting/batchPaymentTrial').assertTrial();
+    results = results.filter(row => row.orderOnly && row.open > 0);
+    const orders = await require('../../models/order').find({ _id: { $in: results.flatMap(row => row.orderIds) } })
+      .select('orderId customerInfo.fullName').lean();
+    const names = new Map(orders.map(order => [String(order._id), { _id: order._id, number: order.orderId, customer: order.customerInfo?.fullName }]));
+    results = results.map(row => ({ ...row, orders: row.orderIds.map(id => names.get(id)).filter(Boolean) }));
+  }
+  res.json({ results, advance: -(await payables.apBalance(payables.advanceKey(req.params.id))) });
 });
 
 // ---- Bills ----
