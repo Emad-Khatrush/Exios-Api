@@ -92,6 +92,10 @@ let qrCodeData = null;
 let client; // whatsapp-web.js Client instance
 let isWhatsAppReady = false;
 let isInitializingWhatsApp = false; // guards against overlapping initialize() calls
+// The Chrome buildpack installs the latest Chrome on every build, and newer
+// versions crash at startup in --single-process mode. After one failed launch,
+// retry in normal multi-process mode instead of failing forever.
+let whatsappSingleProcess = true;
 
 const app = express();
 
@@ -262,8 +266,7 @@ async function initializeWhatsAppClient() {
         args: [
           // Run browser, renderer, GPU and utility work in one process instead
           // of 5-8, removing per-process overhead (biggest single saving).
-          "--single-process",
-          "--no-zygote",
+          ...(whatsappSingleProcess ? ["--single-process", "--no-zygote"] : []),
           "--renderer-process-limit=1",
           "--disable-site-isolation-trials",
           // Chrome's reduced-memory mode (smaller caches, lower-res buffers).
@@ -402,6 +405,10 @@ async function initializeWhatsAppClient() {
   } catch (error) {
     console.error('Failed to initialize WhatsApp client:', error);
     isInitializingWhatsApp = false;
+    if (whatsappSingleProcess && /Failed to launch the browser process/.test(error && error.message)) {
+      whatsappSingleProcess = false;
+      console.log('Chrome failed to start in --single-process mode; retrying WhatsApp in multi-process mode.');
+    }
     setTimeout(initializeWhatsAppClient, 10000);
   }
 }
