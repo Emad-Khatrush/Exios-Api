@@ -10,6 +10,14 @@
 auth_info_baileys
 # testing
 /coverage
+*.test.*
+*.spec.*
+__tests__/
+
+# Local QA artifacts
+/backups/qa-*/
+/build-qa/
+/build-local-review/
 
 # production
 /build

@@ -346,6 +346,7 @@ const orderSchema = new Schema({
 
 // Date ranges read by the sales goals dashboard (sales by invoice date, packages by arrival date)
 orderSchema.index({ createdAt: 1 });
+orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ 'paymentList.deliveredPackages.arrivedAt': 1 });
 
 module.exports = mongoose.model("Order", orderSchema);

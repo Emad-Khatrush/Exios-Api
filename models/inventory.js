@@ -95,6 +95,7 @@ const inventorySchema = new Schema({
 })
 
 // Create compound indexes
+inventorySchema.index({ 'orders.paymentList._id': 1, inventoryType: 1 });
 inventorySchema.index(
   { inventoryType: 1, status: 1, shippingType: 1, createdAt: -1 },
   { name: 'compound_inventory_index' }

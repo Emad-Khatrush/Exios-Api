@@ -1,6 +1,20 @@
 if (process.env.NODE_ENV !== "production") {
   require('dotenv').config();
 }
+// Optional override for environments whose default resolver rejects Atlas SRV queries.
+const mongoDnsServers = (process.env.MONGO_DNS_SERVERS || '')
+  .split(',').map(server => server.trim()).filter(Boolean);
+if (mongoDnsServers.length > 0) {
+  require('node:dns').setServers(mongoDnsServers);
+}
+// Keep certificate verification enabled while trusting the local system CA store.
+if (process.env.MONGO_USE_SYSTEM_CA === 'true') {
+  const tls = require('node:tls');
+  tls.setDefaultCACertificates([
+    ...tls.getCACertificates('default'),
+    ...tls.getCACertificates('system'),
+  ]);
+}
 const express = require('express');
 const mongoose = require('mongoose');
 const morgan = require('morgan');
@@ -13,7 +27,11 @@ const os = require('os');
 const qrcode = require('qrcode-terminal');
 
 process.env.PUPPETEER_CACHE_DIR =
-  process.env.PUPPETEER_CACHE_DIR || '/app/.cache/puppeteer';
+  process.env.PUPPETEER_CACHE_DIR || (
+    process.platform === 'win32' || process.env.NODE_ENV !== 'production'
+      ? path.join(os.homedir(), '.cache', 'puppeteer')
+      : '/app/.cache/puppeteer'
+  );
 
 // DB Collections
 const Users = require('./models/user');
@@ -89,6 +107,9 @@ const connectionUrl = process.env.MONGO_URL_2 || process.env.MONGO_URL || 'mongo
 mongoose.connect(connectionUrl, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+}).catch(error => {
+  console.error('MongoDB startup connection failed:', error.code || error.name);
+  process.exit(1);
 });
 
 app.use(bodyParser.json());

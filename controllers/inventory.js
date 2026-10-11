@@ -12,6 +12,44 @@ const WarehouseCheck = require("../models/warehouseCheck");
 
 const { ObjectId } = mongodb;
 
+module.exports.downloadFlightReport = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { customerId } = req.query;
+    if (!ObjectId.isValid(id) || (customerId && (typeof customerId !== 'string' || !ObjectId.isValid(customerId)))) {
+      return next(new ErrorHandler(400, 'Invalid flight or customer ID'));
+    }
+    const inventory = await Inventory.findById(id)
+      .select('voyage shippingType seaType shippedCountry inventoryPlace status arrivalDate inventoryFinishedDate createdAt odoReferenceCode note costPrice voyageAmount voyageCurrency isCaclulationDone expenses orders.paymentList._id')
+      .lean();
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    const ids = [...new Set((inventory.orders || []).flatMap(order => {
+      const packages = Array.isArray(order.paymentList) ? order.paymentList : [order.paymentList];
+      return packages.map(pkg => pkg?._id).filter(Boolean).map(String);
+    }))].filter(ObjectId.isValid).map(value => new ObjectId(value));
+    const match = { 'paymentList._id': { $in: ids } };
+    if (customerId) match.user = new ObjectId(customerId);
+    let orders = ids.length ? await Orders.aggregate([
+      { $match: match },
+      { $unwind: '$paymentList' },
+      { $match: { 'paymentList._id': { $in: ids } } },
+      { $sort: { orderId: 1, 'paymentList._id': 1 } },
+      { $project: { orderId: 1, customerInfo: 1, user: 1, shipment: 1, paymentList: 1 } },
+    ]) : [];
+    orders = await Orders.populate(orders, { path: 'user', select: 'customerId firstName lastName phone' });
+    const { buildFlightReport } = require('../utils/flightReport');
+    const pdf = await buildFlightReport(inventory, orders, { customerOnly: !!customerId });
+    const filename = String(inventory.voyage || id).replace(/[^a-zA-Z0-9_-]/g, '_');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Exios-flight-${filename}.pdf"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.status(200).send(pdf);
+  } catch (error) {
+    console.error('Flight PDF generation failed:', { flightId: req.params.id, message: error.message });
+    return next(new ErrorHandler(500, 'Could not generate the flight PDF'));
+  }
+};
+
 module.exports.getInventory = async (req, res, next) => {
   try {
     const { limit, skip, searchValue, searchType } = req.query;
