@@ -12,7 +12,7 @@ const WarehouseCheck = require("../models/warehouseCheck");
 
 const { ObjectId } = mongodb;
 
-module.exports.downloadFlightReport = async (req, res, next) => {
+module.exports.getFlightReport =async (req, res, next) => {
   try {
     const { id } = req.params;
     const { customerId } = req.query;
@@ -37,16 +37,15 @@ module.exports.downloadFlightReport = async (req, res, next) => {
       { $project: { orderId: 1, customerInfo: 1, user: 1, shipment: 1, paymentList: 1 } },
     ]) : [];
     orders = await Orders.populate(orders, { path: 'user', select: 'customerId firstName lastName phone' });
-    const { buildFlightReport } = require('../utils/flightReport');
-    const pdf = await buildFlightReport(inventory, orders, { customerOnly: !!customerId });
-    const filename = String(inventory.voyage || id).replace(/[^a-zA-Z0-9_-]/g, '_');
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="Exios-flight-${filename}.pdf"`);
+    delete inventory.orders;
+    // The customer report never shows the flight's costs, so don't send them.
+    if (customerId) ['costPrice', 'voyageAmount', 'voyageCurrency', 'expenses'].forEach(key => delete inventory[key]);
+    // The admin panel renders this data and prints it to PDF in the browser.
     res.setHeader('Cache-Control', 'private, no-store');
-    res.status(200).send(pdf);
+    res.status(200).json({ inventory, orders });
   } catch (error) {
-    console.error('Flight PDF generation failed:', { flightId: req.params.id, message: error.message });
-    return next(new ErrorHandler(500, 'Could not generate the flight PDF'));
+    console.error('Flight report failed:', { flightId: req.params.id, message: error.message });
+    return next(new ErrorHandler(500, 'Could not load the flight report'));
   }
 };
 
