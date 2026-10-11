@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const puppeteer = require('puppeteer');
+const { reportBrowserOptions } = require('./reportBrowser');
 
 const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const amount = value => number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -93,10 +94,7 @@ const renderFlightReportHtml = (inventory, orders, { customerOnly = false } = {}
 };
 
 const buildFlightReport = async (inventory, orders, options = {}) => {
-  const productionChrome = '/app/.chrome-for-testing/chrome-linux64/chrome';
-  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
-    || (process.env.NODE_ENV === 'production' && fs.existsSync(productionChrome) ? productionChrome : undefined);
-  const browser = await puppeteer.launch({ headless: true, executablePath, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const browser = await puppeteer.launch(reportBrowserOptions());
   try {
     const page = await browser.newPage();
     await page.setContent(renderFlightReportHtml(inventory, orders, options), { waitUntil: 'load' });

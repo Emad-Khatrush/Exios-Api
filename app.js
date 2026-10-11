@@ -27,11 +27,7 @@ const os = require('os');
 const qrcode = require('qrcode-terminal');
 
 process.env.PUPPETEER_CACHE_DIR =
-  process.env.PUPPETEER_CACHE_DIR || (
-    process.platform === 'win32' || process.env.NODE_ENV !== 'production'
-      ? path.join(os.homedir(), '.cache', 'puppeteer')
-      : '/app/.cache/puppeteer'
-  );
+  require('./.puppeteerrc.cjs').cacheDirectory;
 
 // DB Collections
 const Users = require('./models/user');
