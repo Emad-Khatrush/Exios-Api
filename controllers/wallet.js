@@ -467,6 +467,7 @@ module.exports.deleteStatement = async (req, res, next) => {
 
       const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session).populate('createdBy', 'firstName lastName');
       if (!statement) throw new ErrorHandler(404, 'Statement not found');
+      if (statement.linkedCustomerRefundId || statement.linkedBankRefundLineId) throw new ErrorHandler(400, 'هذه الحركة مرتبطة باسترداد مورد؛ فك الربط قبل حذفها');
       // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
       if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
       const locked = protectedStatement(statement);
@@ -530,6 +531,7 @@ module.exports.updateStatement = async (req, res, next) => {
 
       const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session);
       if (!statement) throw new ErrorHandler(404, 'Statement not found');
+      if (statement.linkedCustomerRefundId || statement.linkedBankRefundLineId) throw new ErrorHandler(400, 'هذه الحركة مرتبطة باسترداد مورد؛ فك الربط قبل تعديلها');
       // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
       if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
 

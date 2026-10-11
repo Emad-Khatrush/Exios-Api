@@ -3,7 +3,7 @@ const { originalOf } = require('./bankAmounts');
 const { addDays } = require('../dates');
 const clean = value => String(value || '').toLocaleLowerCase('tr').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/ı/g, 'i').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
-async function candidatesFor(line, bank, { session, vendorName } = {}) {
+async function candidatesFor(line, bank, { session, vendorName, counterAccountId } = {}) {
   if (line.amount >= 0) return [];
   const original = originalOf(line, bank.currency || 'USD');
   const bills = await SupplierBill.find({ status: { $in: ['draft', 'posted'] }, isCreditNote: { $ne: true }, currency: original.currency,
@@ -13,6 +13,7 @@ async function candidatesFor(line, bank, { session, vendorName } = {}) {
   const eligible = [];
   const { apBalance, billKey } = require('./payables');
   for (const bill of bills) {
+    if (counterAccountId && !bill.lines.every(l => l.target === 'expense' && String(l.accountId) === String(counterAccountId))) continue;
     bill.openUsd = bill.status === 'posted' ? await apBalance(billKey(bill._id), session) : null;
     if (bill.status === 'posted' && bill.openUsd <= 0) continue;
     eligible.push(bill);
@@ -33,6 +34,8 @@ async function candidatesFor(line, bank, { session, vendorName } = {}) {
 }
 
 const brief = bill => ({ _id: bill._id, number: bill.number || 'مسودة', day: bill.day, currency: bill.currency,
+  expenseAccountIds: [...new Set(bill.lines.filter(l => l.target === 'expense' && l.accountId).map(l => String(l.accountId)))],
+  hasNonExpenseTargets: bill.lines.some(l => l.target !== 'expense'),
   vendorId: bill.vendorId?._id || bill.vendorId,
   amount: bill.total ?? bill.lines.reduce((s, l) => s + Number(l.amount), 0), vendorName: bill.vendorId?.name, status: bill.status,
   isHistorical: !!bill.isHistorical, openUsd: bill.openUsd === null ? null : bill.openUsd / 100,
@@ -49,7 +52,7 @@ async function selectBill(line, bank, input, session) {
     validateChoice(line, bank, { day: bill.day, amount: amountOf(bill), currency: bill.currency }, input.confirmDifference === true);
     return bill;
   }
-  const candidates = await candidatesFor(line, bank, { session, vendorName: input.vendorName });
+  const candidates = await candidatesFor(line, bank, { session, vendorName: input.vendorName, counterAccountId: input.expenseCounterAccountId });
   if (input.billId) {
     const selected = candidates.find(b => String(b._id) === String(input.billId));
     if (!selected) throw new Error('الفاتورة المختارة لا تطابق مبلغ العملية بعملتها الأصلية وتاريخها');

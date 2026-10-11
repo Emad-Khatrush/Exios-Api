@@ -204,6 +204,10 @@ const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
 
 // Money a supplier gave back on a purchase, part of it added to the customer's wallet (spec 19.6)
 const CustomerRefund = mongoose.model('AccountingCustomerRefund', withLifecycle({
+  legacyWalletStatementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
+  legacyWalletEntryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
+  legacyWalletUsd: Number,
+  legacyWalletKind: String,
   fundedFromPendingBankLineId: { type: Schema.Types.ObjectId, ref: 'AccountingBankStatementLine' },
   bankValuationBeforeUsd: Number,
   bankValuationEntryIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' }],
@@ -312,6 +316,16 @@ const Netting = mongoose.model('AccountingNetting', withLifecycle({
 }));
 
 const bankLineSchema = new Schema({
+  descriptionTranslation: {
+    text: String,
+    original: String,
+    sourceHash: String,
+    sourceLanguage: String,
+    targetLanguage: String,
+    provider: String,
+    translatedAt: Date,
+    translatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  },
   accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
   day: { type: String, required: true },
   description: String,
@@ -386,6 +400,9 @@ const bankLineSchema = new Schema({
   movementKind: { type: String, enum: ['purchase', 'purchase_refund', 'card_payment'] },
   receiptId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierReceipt' },
   customerRefundId: { type: Schema.Types.ObjectId, ref: 'AccountingCustomerRefund' },
+  legacyWalletStatementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
+  legacyWalletEntryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
+  legacyWalletUsd: Number,
   creditNoteId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
   refundCreditCreated: Boolean,
   settlementUsd: Number,

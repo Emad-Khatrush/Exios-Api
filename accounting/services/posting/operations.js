@@ -383,6 +383,9 @@ async function postStatement(statementId, options = {}) {
 // A statement edited after posting (E21): its entries are reversed and it is posted again
 async function repostStatement(statementId, options = {}) {
   const { session } = options;
+  if (await UserStatement.exists({ _id: statementId, linkedBankRefundLineId: { $ne: null } }).session(session)) throw fail('فك ربط حركة المحفظة بكشف البنك قبل تعديلها');
+  if (await require('../../models/documents').CustomerRefund.exists({ legacyWalletStatementId: statementId, status: 'posted' }).session(session))
+    throw fail('هذه الحركة مرتبطة باسترداد مورد؛ ألغِ الربط من الريفاند قبل تعديلها');
   const statement = await UserStatement.findById(statementId).session(session).lean();
   const reversals = await reverseSourceEntries('UserStatement', statementId, { session, user: options.user, reason: 'تعديل العملية' });
   if (!statement) return { reversed: reversals.length };
@@ -411,6 +414,9 @@ async function repostStatement(statementId, options = {}) {
 
 // A statement deleted from the customer's cashflow: its entries are reversed
 async function reverseStatement(statementId, options = {}) {
+  if (await UserStatement.exists({ _id: statementId, linkedBankRefundLineId: { $ne: null } }).session(options.session)) throw fail('فك ربط حركة المحفظة بكشف البنك قبل حذفها');
+  if (await require('../../models/documents').CustomerRefund.exists({ legacyWalletStatementId: statementId, status: 'posted' }).session(options.session))
+    throw fail('هذه الحركة مرتبطة باسترداد مورد؛ ألغِ الربط من الريفاند قبل حذفها');
   const reversals = await reverseSourceEntries('UserStatement', statementId, { ...options, reason: options.reason || 'حذف العملية من كشف العميل' });
   const keys = reversals.flatMap((r) => r.lines.map((l) => l.arKey).filter(Boolean));
   for (const orderId of ordersOf(keys)) await syncOrder(orderId, options);

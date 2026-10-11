@@ -18,6 +18,7 @@ const { replay } = require('./replay');
 const { buildReport } = require('./report');
 const { markCovered } = require('../events');
 const { backfillTripLinks } = require('../tripLinks');
+const { getAccount, toCurrencyMinor, RateBook } = require('../posting/common');
 
 const ACTIVE = ['running', 'review', 'committing', 'discarding'];
 const fail = (message) => new ErrorHandler(400, message);
@@ -54,6 +55,20 @@ async function startRun({ user, config = {}, wait = false } = {}) {
   if (settings?.migrationDate) throw fail('الترحيل التاريخي اعتُمد مسبقاً؛ لا يمكن تشغيله مرة أخرى.');
   if (await MigrationRun.exists({ status: { $in: ACTIVE } })) throw fail('يوجد تشغيل ترحيل قائم. اعتمده أو ألغِه أولاً.');
   const cutoff = new Date();
+  const countDay = config?.countDay || toDay(cutoff);
+  const openingErrors = [];
+  for (const row of config?.openingCounts || []) {
+    try {
+      const account = await getAccount(row.accountId, 'حساب الجرد');
+      const currency = account.currency || 'USD';
+      const minor = await toCurrencyMinor(Number(row.amount), currency);
+      if (minor && currency !== 'USD') await new RateBook().rate(currency, countDay);
+    } catch (error) {
+      const account = (await require('../config').getConfig()).accountsById.get(String(row.accountId));
+      openingErrors.push(`${account?.code || row.accountId} ${account?.name || ''}: ${error.message}`);
+    }
+  }
+  if (openingErrors.length) throw fail(`لا يمكن بدء الترحيل: صحّح بيانات الجرد وأسعار الصرف بتاريخ ${countDay} أو قبله. ${openingErrors.join('؛ ')}`);
   const run = await MigrationRun.create({
     runId: `MIG-${toDay(cutoff)}-${crypto.randomBytes(3).toString('hex')}`,
     status: 'running', cutoff, config, createdBy: user?._id, startedAt: new Date(),
@@ -202,6 +217,14 @@ async function commitRun(runId, { user } = {}) {
   const run = await MigrationRun.findOne({ runId });
   if (!run) throw new ErrorHandler(404, 'التشغيل غير موجود');
   if (run.status !== 'review') throw fail('يُعتمد التشغيل بعد انتهائه ومراجعة تقريره فقط');
+  if (run.problems?.length) throw fail(`لا يمكن اعتماد الترحيل: توجد ${run.problems.length} عملية تعذّر ترحيلها. ${run.problems.slice(0, 5).map(p => `${p.ref}: ${p.message}`).join('؛ ')}. صحّح الأسباب ثم ألغِ التشغيل وأعده.`);
+  if (!run.report?.balanced) throw fail('لا يمكن اعتماد الترحيل: تقرير الدفاتر مفقود أو غير متوازن');
+  const openings = run.report.openingCash || [];
+  for (const count of run.config?.openingCounts || []) {
+    const row = openings.find(r => String(r.accountId) === String(count.accountId) && !r.uncounted);
+    if (!row || (row.opening && (!row.entryId || !await JournalEntry.exists({ _id: row.entryId, migrationRunId: runId, eventType: 'OPENING_CASH', status: 'posted' }))))
+      throw fail(`لا يمكن اعتماد الترحيل: قيد الجرد للحساب ${row?.code || count.accountId} ${row?.name || ''} لم يُنشأ. صحّح السبب ثم ألغِ التشغيل وأعده.`);
+  }
   const wasBankTrial = run.bankTrialEnabled;
   run.status = 'committing';
   run.countAt = run.cutoff;
@@ -215,6 +238,7 @@ async function commitRun(runId, { user } = {}) {
     // ones (an old statement edited during the review, say) stay in the queue and are posted.
     const covered = await markCovered(since);
     const catchUp = await replay(run, { since });
+    if (run.problems.length) throw fail('تعذّر اعتماد الترحيل: فشلت عمليات أثناء استكمال المراجعة؛ راجع قائمة الأخطاء وصحّحها قبل إعادة التشغيل');
     const numbering = await renumberJournals();
     run.status = 'committed';
     run.bankTrialEnabled = false;

@@ -17,7 +17,7 @@ async function list(input = {}) {
   const stored = input.lineId && mongoose.isValidObjectId(input.lineId) ? await BankStatementLine.findById(input.lineId).lean() : null;
   if (input.lineId && !stored) throw fail('سطر الكشف غير موجود');
   const line = stored || { ...input, amount: Math.round(Number(input.statementAmount ?? input.paid ?? 0) * 10 ** ((await getConfig()).currencies.get(bank.currency)?.decimals ?? 2)) };
-  assertDirection(line, true);
+  assertDirection(line, true, { preview: true });
   if (line?.accountId && String(line.accountId) !== String(bank._id)) throw fail('سطر الكشف من حساب آخر');
   if ((input.from && !isDay(input.from)) || (input.to && !isDay(input.to)) || (input.from && input.to && input.from > input.to)) throw fail('فترة البحث غير صالحة');
   const { currencies } = await getConfig();
@@ -26,10 +26,12 @@ async function list(input = {}) {
   const day = { ...(input.from && { $gte: input.from }), ...(input.to && { $lte: input.to }) };
   // A generic vendor (historical purchases) cannot conflict with the merchant the statement names
   const generic = new Set((await require('../../models/documents').Vendor.find({ seedKey: { $in: require('./bankMatchValidation').GENERIC_VENDORS } }).distinct('_id')).map(String));
-  const bills = await SupplierBill.find({ status: 'posted', isCreditNote: { $ne: true }, ...(Object.keys(day).length ? { day } : {}) })
+  if (input.partnerId && !mongoose.isValidObjectId(input.partnerId)) throw fail('العميل غير صالح');
+  const customerOrders = input.partnerId ? await Order.distinct('_id', { user: input.partnerId }) : null;
+  const bills = await SupplierBill.find({ status: 'posted', isCreditNote: { $ne: true }, ...(customerOrders && { 'lines.orderId': { $in: customerOrders } }), ...(Object.keys(day).length ? { day } : {}) })
     .sort({ day: -1 }).limit(1001).populate('vendorId', 'name').populate('lines.orderId', 'orderId').lean();
   const merchant = (await require('./bankMerchants').matcher(bank._id))(line || {});
-  const refunds = await CustomerRefund.find({ status: 'posted', accountId: bank._id, ...(Object.keys(day).length ? { day } : {}) }).populate('orderId', 'orderId').lean();
+  const refunds = await CustomerRefund.find({ status: 'posted', accountId: bank._id, ...(input.partnerId && { partnerId: input.partnerId }), ...(Object.keys(day).length ? { day } : {}) }).populate('orderId', 'orderId').lean();
   const credits = await SupplierBill.find({ status: 'posted', isCreditNote: true, originalBillId: { $in: bills.map(b => b._id) } }).lean();
   const postedRefunds = await CustomerRefund.find({ status: 'posted', $or: [{ billId: { $in: bills.map(b => b._id) } }, { orderId: { $in: bills.flatMap(b => b.lines.map(l => l.orderId?._id).filter(Boolean)) } }] }).lean();
   const used = new Set((await BankStatementLine.distinct('customerRefundId', { lineStatus: { $in: ['created_entry', 'matched'] } })).filter(Boolean).map(String));
@@ -42,7 +44,7 @@ async function list(input = {}) {
     orders: r.orderId ? [{ _id: r.orderId._id, number: r.orderId.orderId }] : [], status: 'recorded_refund',
     merchantMismatch, merchantMatch: !!merchant && !!originalBill && !merchantMismatch, statementVendorName: merchant?.vendorName,
     matchProblems: merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : [],
-    bankAmount: r.amount, bankCurrency: r.currency, valuationUsd: r.usd / 100, walletUsd: r.walletUsd / 100, canMatch: !used.has(String(r._id)) && (!(line?.amount || input.paid) || Math.round(r.amount * 10 ** decimals) === (line?.amount || Math.round(Number(input.paid) * 10 ** decimals))),
+    bankAmount: r.amount, bankCurrency: r.currency, valuationUsd: r.usd / 100, walletUsd: (r.legacyWalletUsd || r.walletUsd) / 100, legacyWalletStatementId: r.legacyWalletStatementId, canMatch: !used.has(String(r._id)) && (!(line?.amount || input.paid) || Math.round(r.amount * 10 ** decimals) === (line?.amount || Math.round(Number(input.paid) * 10 ** decimals))),
   }; });
   for (const bill of bills.slice(0, 1000)) {
     const refunded = postedRefunds.filter(r => String(r.billId) === String(bill._id));
@@ -72,8 +74,17 @@ async function list(input = {}) {
 }
 
 async function match(id, input, { session, req }) {
-  const line = await BankStatementLine.findById(id).session(session);
+  if (input.kind === 'legacy_wallet_link') return require('./bankWalletRefundLink').link(id, input, { session, req });
+  let line = await BankStatementLine.findById(id).session(session);
   if (!line || line.lineStatus !== 'unmatched' || line.amount <= 0) throw fail('اختر سطر مبلغ مرتجع موجب وغير مطابق');
+  if (line.sourceProvider === 'alipay' && line.walletImpact === 'unknown' && input.confirmWalletImpact === true) {
+    const confirmed = await BankStatementLine.updateOne({ _id: id, lineStatus: 'unmatched', walletImpact: 'unknown' },
+      { $set: { walletImpact: 'confirmed' } }, { session });
+    if (confirmed.modifiedCount !== 1) throw fail('تغيرت حركة الكشف؛ حدّث الصفحة قبل الاعتماد');
+    await logAudit({ req, action: 'bank.confirmWalletReceipt', model: 'AccountingBankStatementLine', docId: id,
+      before: { walletImpact: 'unknown' }, after: { walletImpact: 'confirmed', reason: 'أكد المستخدم وصول الاسترداد إلى رصيد Alipay عند المطابقة' } }, session);
+    line = await BankStatementLine.findById(id).session(session);
+  }
   const bank = await Account.findById(line.accountId).session(session).lean();
   if (require('./bankTransferHints').describe(line, bank, [...(await require('../config').getConfig()).accountsById.values()])?.semanticTransfer)
     throw fail('هذه حركة تحويل أو إيداع؛ ليست استرداد مشتريات');
@@ -85,6 +96,9 @@ async function match(id, input, { session, req }) {
   if (input.kind === 'existing_refund') {
     const refund = mongoose.isValidObjectId(input.refundId) && await CustomerRefund.findById(input.refundId).session(session).lean();
     if (!refund || refund.status !== 'posted' || String(refund.accountId) !== String(bank._id) || Math.round(refund.amount * 10 ** decimals) !== line.amount) throw fail('الريفاند المسجل لا يطابق الحساب والمبلغ في الكشف');
+    if (input.legacyWalletStatementId || input.autoLinkLegacyRefund) {
+      await require('./customerRefund').createCustomerRefund({ ...input, existingRefundId: refund._id, orderId: refund.orderId, day: line.day }, { session, req });
+    }
     if (refund.billId) {
       const originalBill = await SupplierBill.findById(refund.billId).session(session).lean();
       if (originalBill) await assertMerchant(line, bank, originalBill.vendorId, session, { confirmed: input.confirmMerchant === true, req });
@@ -139,6 +153,8 @@ async function match(id, input, { session, req }) {
     if (existing.length) throw fail('يوجد ريفاند مسجل بنفس المبلغ على الطلبية؛ اختره من القائمة لمطابقته دون تكرار');
     const refund = await require('./customerRefund').createCustomerRefund({ orderId: selected.orderId, accountId: bank._id, day: line.day,
       amount, usdValue: usd, walletUsd: Number(input.walletUsd || 0), idempotencyKey: key, note: line.description,
+      legacyWalletStatementId: input.legacyWalletStatementId, confirmLegacyRefund: input.confirmLegacyRefund,
+      autoLinkLegacyRefund: input.autoLinkLegacyRefund, confirmNewWalletRefund: input.confirmNewWalletRefund,
       bankLineId: line._id, billId: bill._id, originalAmount, originalCurrency: bill.currency, billLineId: selected._id }, { session, req });
     Object.assign(line, { lineStatus: 'created_entry', entryId: refund.entryId, customerRefundId: refund._id, billId: bill._id, orderId: selected.orderId,
       originalAmount: line.originalAmount, matchedOriginalAmount: originalAmount, matchedOriginalCurrency: bill.currency,

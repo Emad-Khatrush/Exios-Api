@@ -3,6 +3,8 @@ const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const userStatementSchema = new Schema({
+  linkedCustomerRefundId: { type: Schema.Types.ObjectId, ref: 'AccountingCustomerRefund' },
+  linkedBankRefundLineId: { type: Schema.Types.ObjectId, ref: 'AccountingBankStatementLine' },
   user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   createdBy: {
     type: Schema.Types.ObjectId,

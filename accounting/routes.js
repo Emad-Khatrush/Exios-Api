@@ -233,6 +233,7 @@ router.get('/bank/lines', P.treasury, documents.listBankLines);
 router.get('/bank/duplicate-settlement', P.treasury, P.payments, P.purchases, handle(async (req, res) => res.json(await require('./services/posting/bankDuplicateSettlement').preview(req.query.accountId))));
 router.post('/bank/duplicate-settlement', P.treasury, P.payments, P.purchases, P.cancel, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankDuplicateSettlement').apply(req.body || {}, { session, req })))));
 router.get('/bank/lines/:id', P.treasury, documents.bankLineDetails);
+router.post('/bank/lines/:id/translate', P.treasury, handle(async (req, res) => res.json(await require('./services/statementTranslation').translateLine(req.params.id, req))));
 router.patch('/bank/lines/:id', P.treasury, documents.editBankLine);
 router.get('/bank/suggestions', P.treasury, documents.bankSuggestions);
 router.get('/bank/purchases', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankPurchaseReview').listPurchases(req.query))));
@@ -241,7 +242,10 @@ router.get('/bank/purchase-reconciliation/candidates', P.treasury, handle(async 
 router.get('/bank/historical-purchases', P.treasury, P.setup, handle(async (req, res) => res.json(await require('./services/posting/purchaseReconciliation').historicalRows(req.query))));
 router.post('/bank/historical-purchases/settle', P.treasury, P.setup, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/purchaseReconciliation').settleHistorical(req.body || {}, { session, req })))));
 router.get('/bank/refunds', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankRefund').list(req.query))));
+router.get('/bank/previous-wallet-refunds', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/legacyWalletRefunds').candidates(req.query))));
+router.get('/bank/previous-wallet-refunds/all', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/legacyWalletRefunds').listUnlinked(req.query))));
 router.post('/bank/lines/:id/refund-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankRefund').match(req.params.id, req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/unlink-wallet-refund', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankWalletRefundLink').unlink(req.params.id, { session, req })))));
 router.post('/bank/lines/:id/purchase-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankPurchaseReview').matchPurchase(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/exact-match', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankExactMatch').match(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/classify', P.treasury, documents.classifyBankRows);

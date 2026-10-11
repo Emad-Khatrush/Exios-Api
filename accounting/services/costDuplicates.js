@@ -26,12 +26,15 @@ async function candidates(input, { session, excludeId } = {}) {
   // small amount twice in a week (fuel, hospitality, a purchase paid in cash) is normal, so for it
   // only an invoice number or the same order makes two bills alike
   const generic = vendor.seedKey === 'cash_expenses' || !!input.isQuickExpense;
+  const expenseOnly = input.lines?.length > 0 && input.lines.every(l => l.target === 'expense' && l.accountId);
+  const expenseAccounts = new Set((input.lines || []).map(l => id(l.accountId)).filter(Boolean));
   for (const bill of bills) {
     const sameVendor = id(bill.vendorId) === id(vendor);
     const alikeVendor = sameVendor && !generic && !bill.isQuickExpense;
     const sameRef = sameVendor && invoiceReference(input) && invoiceReference(bill) && !!reference && ref(bill.vendorRef) === reference;
     const sameAmount = bill.currency === input.currency && Math.abs(amount(bill) - total) < 0.0005;
     const sameOrder = bill.lines.some(l => orders.includes(id(l.orderId)));
+    if (!sameRef && expenseOnly && !bill.lines.every(l => l.target === 'expense' && expenseAccounts.has(id(l.accountId)))) continue;
     if (!sameRef && !(sameAmount && (alikeVendor || sameOrder) && Math.abs(new Date(bill.day) - new Date(input.day)) <= 7 * 86400000)) continue;
     rows.push({ key: `bill:${bill._id}`, billId: bill._id, status: bill.status, number: bill.number || 'مسودة', day: bill.day, amount: amount(bill), currency: bill.currency,
       strength: sameRef ? 'reference' : sameOrder ? 'order' : 'similar',

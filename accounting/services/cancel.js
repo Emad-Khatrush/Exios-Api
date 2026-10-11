@@ -119,6 +119,10 @@ const RULES = {
       await require('../../models/userStatement').updateOne({ _id: statement._id }, { $set: { actionType: 'refund' } }, { session });
     },
     async after(refund, context) {
+        if (refund.legacyWalletStatementId) {
+          await require('../../models/userStatement').updateOne({ _id: refund.legacyWalletStatementId, linkedCustomerRefundId: refund._id },
+            { $unset: { linkedCustomerRefundId: 1 } }, { session: context.session });
+        }
       const linked = await docs.BankStatementLine.find({ customerRefundId: refund._id, lineStatus: { $in: ['created_entry', 'matched'] } }).session(context.session);
       for (const line of linked) {
         if (String(line._id) === String(context.fromBankLineId || '')) continue;

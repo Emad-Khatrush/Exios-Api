@@ -311,23 +311,14 @@ async function postOpeningCash(run) {
         // Posted on the count day (owner's decision): before it the box shows exactly what the
         // system recorded, and on that day one entry brings it to the counted amount
         const day = countDay;
-        // A currency first used after history began has no rate that early: its first known rate is used
-        const fallbacks = [];
         // Money taken out of a box in another currency leaves at the box's average rate (spec 2.4),
         // so a box counted at zero is at zero in dollars too; money added comes in at the day's rate
         let usd = currency !== 'USD' && opening < 0 ? valueOutflow(bookedBalance, -opening) : null;
-        try {
-          if (usd === null) usd = await rates.toUsd(Math.abs(opening), currency, day);
-        } catch (error) {
-          const first = await CurrencyRate.findOne({ currency }).sort({ day: 1 }).session(session).lean();
-          if (!first) throw error;
-          usd = await rates.toUsd(Math.abs(opening), currency, day, first.rate);
-          fallbacks.push(`لا يوجد سعر ${currency} في بداية التاريخ؛ استُخدم أول سعر معروف (${first.day})`);
-        }
+        if (usd === null) usd = await rates.toUsd(Math.abs(opening), currency, day);
         const entry = await postEntry({
           eventType: 'OPENING_CASH', eventKey: `OPENING_CASH:${account._id}:${run.runId}`, date: day,
           description: `تسوية جرد ${account.name} بتاريخ ${countDay} (الجرد الفعلي ناقص الحركات المُرحَّلة)`, source: { model: 'AccountingAccount', id: account._id },
-          isHistorical: true, migrationRunId: run.runId, fallbacks: [...rates.fallbacks, ...fallbacks],
+          isHistorical: true, migrationRunId: run.runId, fallbacks: rates.fallbacks,
           lines: [
             moneyLine(account, opening > 0 ? 'debit' : 'credit', Math.abs(opening), usd, { label: 'تسوية جرد: فرق لا تفسّره الحركات المسجلة' }),
             { accountId: (await resolveAccount('opening_balance'))._id, [opening > 0 ? 'credit' : 'debit']: usd, label: account.name },

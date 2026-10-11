@@ -528,6 +528,9 @@ async function createEntryForLine(lineId, input, { session, req }) {
   // Match the original invoice currency before considering creation of another cost.
   const chosenCounter = input.counterAccountId && await Account.findById(input.counterAccountId).session(session).lean();
   const config = await getConfig();
+  const purchaseCost = await resolveAccount('cost_purchase_invoices');
+  const expenseCounterAccountId = chosenCounter?.type === 'expense' && String(chosenCounter._id) !== String(purchaseCost._id)
+    ? chosenCounter._id : undefined;
   if (outOfBank && chosenCounter && !input.billId && !input.target && !input.link
     && config.count?.accountIds.has(String(bank._id))
     && (line.day < config.count.day || (line.day === config.count.day && config.count.endOfDay))
@@ -542,7 +545,7 @@ async function createEntryForLine(lineId, input, { session, req }) {
     throw fail('توجد فاتورة أصلية محتملة؛ راجع المطابقة أو أكد أن هذه عملية جديدة قبل إنشاء تكلفة أخرى');
   }
   const existingBill = !semantic?.semanticTransfer && outOfBank && !input.target && !chosenCounter?.isCash
-    ? await selectBill(line, bank, input, session) : null;
+    ? await selectBill(line, bank, { ...input, expenseCounterAccountId }, session) : null;
   if (existingBill) {
     const payables = require('./payables');
     let bill = await SupplierBill.findById(existingBill._id).session(session);
@@ -578,8 +581,8 @@ async function createEntryForLine(lineId, input, { session, req }) {
     return line;
   }
 
-  const vendorHint = (await bankMerchants.matcher(bank._id, session))(line);
-  if (outOfBank && vendorHint?.bankPurpose === 'yuan_purchase') throw fail('هذه دفعة لشراء اليوان؛ سجّلها من صفحة Alipay ثم طابق قيدها مع الكشف، ولا تنشئ تكلفة مشتريات ثانية');
+  // A counterparty may sell yuan and also receive rent or service payments.
+  // Its identity is a suggestion; the user's chosen account controls classification.
 
   // A line of a partner's current account (Aswaq, a funder...) or a bank that paid for a trip, an
   // order or a customer (spec 19.4): a supplier bill on the trip or order paid from this account,
@@ -800,10 +803,16 @@ async function postAsBill(line, bank, counter, link, input, { session, req }) {
     ? { description, amount: billAmount, target: 'order', orderId: link.orderId, purchaseItemId: link.itemId }
     : { description, amount: billAmount, target: 'expense', accountId: counter._id, office: input.office };
   const duplicateInput = { vendorId: vendor._id, day: line.day, currency: original ? original.currency : 'USD', vendorRef: line.reference || undefined, vendorRefKind: 'bank', lines: [billLine] };
+  const { settings, count } = await getConfig();
+  const historicalExpense = billLine.target === 'expense' && counter?.type === 'expense'
+    && String(counter._id) !== String((await resolveAccount('cost_purchase_invoices'))._id)
+    && !!settings?.cutoffAt && count?.accountIds.has(String(bank._id))
+    && (line.day < count.day || (line.day === count.day && count.endOfDay));
   const duplicatePreview = input.confirmNewBill ? await require('../costDuplicates').preview(duplicateInput, { session }) : null;
   const bill = await payables.createBill({
     vendorId: vendor._id, day: line.day, currency: original ? original.currency : 'USD', ...(original && { rate: original.rate }), vendorRef: line.reference || undefined,
     vendorRefKind: 'bank',
+    ...(historicalExpense && { paidBeforeCount: true }),
     note: `من كشف ${bank.name}، دُفعت ${paid} ${bankCurrency} مقابل ${abroad.amount} ${abroad.currency} بسعر مباشر ${value.crossRate.toFixed(6)} ${bankCurrency}/${abroad.currency}`,
     idempotencyKey: `BANK_LINE_BILL:${line._id}${suffix}`, lines: [billLine],
     duplicateDecision: input.duplicateDecision, duplicateReason: input.duplicateReason, duplicateFingerprint: input.duplicateFingerprint,
@@ -811,6 +820,14 @@ async function postAsBill(line, bank, counter, link, input, { session, req }) {
       duplicateReason: `أكد المستخدم أن حركة الكشف ${line.description} عملية جديدة مستقلة عن الفواتير المقترحة` } : {}),
   }, { session, req });
   await bankMerchants.learn(line, vendor._id, counter?._id, session);
+  if (historicalExpense) {
+    await value.rates.lock();
+    line.historicalCovered = true;
+    if (value.valuationSource === 'statement') line.settlementUsd = usd;
+    line.exchangeRate = rate; line.crossRate = value.crossRate;
+    line.rateBaseCurrency = value.baseCurrency; line.rateQuoteCurrency = value.quoteCurrency; line.valuationUsd = usd;
+    return { bill, payment: { entryId: bill.entryId }, ...value };
+  }
   const payment = await payables.createPayment({
     vendorId: vendor._id, day: line.day, fromAccountId: bank._id, amount: paid, rate,
     allocations: [{ billId: bill._id, amountUsd: bill.totalUsd }],
@@ -864,6 +881,10 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
     await require('../cancel').cancelDocument('AccountingSupplierReceipt', line.receiptId, { session, req, reason, fromBankLineId: line._id });
     if (line.refundCreditCreated && line.creditNoteId) await require('../cancel').cancelDocument('AccountingSupplierBill', line.creditNoteId, { session, req, reason, fromBankLineId: line._id });
     line.receiptId = undefined; line.creditNoteId = undefined; line.billId = undefined;
+  } else if (line.billId && line.billCreatedFromStatement && !line.paymentId
+    && await SupplierBill.exists({ _id: line.billId, paidBeforeCount: true }).session(session)) {
+    await require('../cancel').cancelDocument('AccountingSupplierBill', line.billId, { session, req, reason, fromBankLineId: line._id });
+    line.billId = undefined; line.historicalCovered = false;
   } else if (line.paymentId) {
     const { cancelDocument } = require('../cancel');
     // This caller owns resetting the line below. Cancellation hooks must not
@@ -1119,7 +1140,7 @@ async function guesser(accountId, settings = preferences()) {
     if (transferHint) return { ...transferHint, vendorName: transferHint.vendorName || null, vendorId: transferHint.vendorId || null, office: transferHint.office || sourceBank.office || null };
     const identified = merchant(line);
     if (identified?.bankPurpose === 'yuan_purchase') return { ...identified, account: null, office: null,
-      source: 'yuan', requiresConfirmation: true, reason: 'شراء يوان من AlQFILA؛ سجّل شراء اليوان من صفحة Alipay ثم طابق قيده مع الكشف. ليست تكلفة بضائع.' };
+      source: 'yuan', requiresConfirmation: true, reason: 'لهذا الطرف عمليات متعددة؛ اختر الحساب الذي يخص هذه الحركة. شراء اليوان المسجل يُطابق مع قيده، والمصروف يُسجل على الحساب المختار.' };
     if (identified?.bankPurpose === 'china_services') {
       const serviceAccount = [...merchantAccounts.values()].find(a => a.code === (identified.bankAccountCode || '531700'));
       return { ...identified, account: serviceAccount || null, office: identified.bankOffice || 'china', source: 'service',

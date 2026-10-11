@@ -55,7 +55,6 @@ async function createCustomerRefund(input, { session, req }) {
   if (locked.modifiedCount !== 1) throw fail('الطلب غير متاح لتسجيل الاسترداد');
   // A cancelled order gave the customer everything back already: what the supplier returns only
   // lowers the cost left on the order (settling it), nothing more goes to the wallet
-  if (order.isCanceled && Number(input.walletUsd || 0) > 0) throw fail('الطلب ملغى وأُرجع للعميل كامل المدفوع. ما أعاده المورد يخفض تكلفة الطلب فقط: اجعل المضاف للمحفظة صفراً.');
   if (!order.isPayment) throw fail('الريفاند لفواتير الشراء فقط (مبلغ أعاده المورد على مشتريات الطلب)');
   const to = await getAccount(input.accountId, 'الحساب الذي دخل فيه المال');
   if (!to.isCash) throw fail('اختر الخزينة أو البنك الذي دخل فيه المال');
@@ -73,14 +72,17 @@ async function createCustomerRefund(input, { session, req }) {
   const usd = pendingLine ? Math.round(pendingLine.valuationUsd * 100) : currency === 'USD' ? minor
     : Number(input.usdValue) > 0 ? Math.round(Number(input.usdValue) * 100) : await rates.toUsd(minor, currency, input.day);
   if (!(usd > 0)) throw fail('تعذّر تقييم المبلغ بالدولار؛ أدخل سعر اليوم لهذه العملة');
-  const walletUsd = Math.round(Number(input.walletUsd || 0) * 100);
+  const legacyRefund = await require('./legacyWalletRefunds').select(input, session);
+  const walletUsd = legacyRefund ? 0 : Math.round(Number(input.walletUsd || 0) * 100);
+  if (order.isCanceled && walletUsd > 0) throw fail('الطلب ملغى وأُرجع للعميل كامل المدفوع. ما أعاده المورد يخفض تكلفة الطلب فقط: اجعل المضاف للمحفظة صفراً.');
+  if (!Number.isFinite(walletUsd)) throw fail('المبلغ المضاف للمحفظة غير صالح');
   if (walletUsd < 0) throw fail('المبلغ المضاف للمحفظة غير صالح');
   // The wallet gets back at most what the customer paid on the invoice, less what earlier refunds
   // gave already (order 2770-4993: 70.26$ paid, 143$ refunded, 2026-10-04)
   if (walletUsd > 0) {
     const paid = await paidOnInvoice(order._id, session);
-    const earlier = (await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd').session(session).lean())
-      .reduce((sum, r) => sum + (r.walletUsd || 0), 0);
+    const earlier = (await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd legacyWalletUsd').session(session).lean())
+      .reduce((sum, r) => sum + (r.walletUsd || 0) + (r.legacyWalletUsd || 0), 0);
     const left = Math.max(paid - earlier, 0);
     if (walletUsd > left) {
       const before = earlier ? ` وأُرجع له بالريفاند ${earlier / 100}$` : '';
@@ -125,6 +127,7 @@ async function createCustomerRefund(input, { session, req }) {
     doc.userStatementId = statement._id;
   }
   await doc.save({ session });
+  await require('./legacyWalletRefunds').attach(doc, legacyRefund, { session, req });
   if (pendingLine) {
     pendingLine.pendingRefund = false; pendingLine.customerRefundId = doc._id; pendingLine.orderId = order._id;
     await pendingLine.save({ session });
@@ -142,14 +145,19 @@ async function allocateWallet(input, { session, req }) {
   if (!mongoose.isValidObjectId(input.existingRefundId)) throw fail('اختر الريفاند المسجل');
   const refund = await CustomerRefund.findById(input.existingRefundId).session(session);
   if (!refund || refund.status !== 'posted' || String(refund.orderId) !== String(input.orderId)) throw fail('الريفاند غير متاح لهذه الطلبية');
-  if (refund.walletUsd > 0 || refund.userStatementId) throw fail('أضيف مبلغ العميل لهذا الريفاند مسبقاً');
+  if (refund.walletUsd > 0 || refund.userStatementId || refund.legacyWalletStatementId) throw fail('أضيف مبلغ العميل لهذا الريفاند أو رُبط بحركة سابقة مسبقاً');
   const order = await Order.findById(refund.orderId).session(session).lean();
   if (!order || order.isCanceled || !order.isPayment) throw fail('الطلب غير متاح لإضافة الريفاند للمحفظة');
   await Order.updateOne({ _id: order._id }, { $inc: { customerRefundVersion: 1 } }, { session });
+  const legacyRefund = await require('./legacyWalletRefunds').select({ ...input, day: input.day || refund.day }, session);
+  if (legacyRefund) {
+    await require('./legacyWalletRefunds').attach(refund, legacyRefund, { session, req });
+    return refund;
+  }
   const walletUsd = Math.round(Number(input.walletUsd) * 100);
   if (!(walletUsd > 0) || !Number.isFinite(walletUsd)) throw fail('أدخل المبلغ المراد إضافته لمحفظة العميل');
-  const earlier = await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd').session(session).lean();
-  const left = Math.max(0, await paidOnInvoice(order._id, session) - earlier.reduce((sum, r) => sum + (r.walletUsd || 0), 0));
+  const earlier = await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd legacyWalletUsd').session(session).lean();
+  const left = Math.max(0, await paidOnInvoice(order._id, session) - earlier.reduce((sum, r) => sum + (r.walletUsd || 0) + (r.legacyWalletUsd || 0), 0));
   if (walletUsd > left) throw fail(`أقصى ما يُضاف لمحفظته الآن ${left / 100}$`);
   const day = input.day || refund.day;
   if (!isDay(day) || day < refund.day) throw fail('تاريخ إضافة مبلغ العميل غير صالح');

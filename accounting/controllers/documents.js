@@ -414,7 +414,7 @@ module.exports.listBankLines = handle(async (req, res) => {
   if (linkage && !['unlinked', 'linked', 'order', 'bill', 'refund', 'pending_refund'].includes(linkage)) throw badRequest('فلتر الربط غير صالح');
   const orderLinks = [{ orderId: { $ne: null } }];
   const billLinks = [{ billId: { $ne: null } }];
-  const refundLinks = ['customerRefundId', 'receiptId', 'creditNoteId'].map(field => ({ [field]: { $ne: null } }));
+  const refundLinks = ['customerRefundId', 'receiptId', 'creditNoteId', 'legacyWalletStatementId'].map(field => ({ [field]: { $ne: null } }));
   // A statement matched to an existing payment can carry its link through the journal
   // entry instead of direct billId/orderId fields. Suggestions alone are never links.
   if (linkage && linkage !== 'pending_refund') {
@@ -451,7 +451,8 @@ module.exports.listBankLines = handle(async (req, res) => {
   const lines = await docs.BankStatementLine.find(query).sort({ day: -1, _id: -1 }).limit(500)
     .populate({ path: 'matchedEntryIds', select: 'number day status lines.accountId', populate: { path: 'lines.accountId', select: 'code name' } })
     .populate({ path: 'entryId', select: 'number status lines.accountId', populate: { path: 'lines.accountId', select: 'code name' } })
-    .populate('billId', 'number').populate('orderId', 'orderId').populate('customerRefundId', 'number walletUsd status')
+    .populate('billId', 'number').populate('orderId', 'orderId').populate('customerRefundId', 'number walletUsd legacyWalletUsd legacyWalletStatementId status')
+    .populate({ path: 'legacyWalletStatementId', select: 'amount currency createdAt description user', populate: { path: 'user', select: 'firstName lastName customerId' } })
     .populate('historicalSettlementPaymentId', 'number day').lean();
   const movements = await bank.unmatchedMovements(req.query.accountId);
   const balance = await getBalance(req.query.accountId);
