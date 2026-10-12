@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مساعد Exios المحلي</title>
+<style>
+:root{--ink:#1f2a37;--ink-2:#3d4756;--muted:#5b6675;--faint:#8a94a3;--line:#e7eaf0;--line-strong:#d6dbe3;--surface:#fff;--canvas:#f5f6f8;--soft:#f7f8fa;--accent:#0f766e;--accent-ink:#0b5a54;--accent-soft:#e8f3f1;--danger:#b42318;--danger-soft:#fdecea;--radius:14px;--radius-sm:8px;--ease:cubic-bezier(.16,1,.3,1)}
+*{box-sizing:border-box}
+body{font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;background:var(--canvas);color:var(--ink);margin:0;padding:24px;font-size:14px;-webkit-font-smoothing:antialiased}
+main{max-width:820px;margin:auto}
+h1{font-size:20px;margin:0 0 8px}
+p{line-height:1.7;color:var(--muted);margin:0}
+a{color:var(--accent)}
+button,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:0;border-radius:var(--radius-sm);padding:9px 14px;font-weight:600;background:var(--accent);color:#fff;transition:background-color .15s ease,transform .15s ease}
+button:hover{background:var(--accent-ink)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.45;cursor:default;transform:none}
+button.secondary{background:var(--surface);color:var(--ink);border:1px solid var(--line-strong)}
+button.secondary:hover{background:var(--soft)}
+button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+select{border:1px solid var(--line-strong);border-radius:var(--radius-sm);padding:8px 10px;background:var(--surface);min-width:200px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.intro,.chat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+.intro{margin-bottom:16px}
+.intro small{display:block;margin-top:12px;line-height:1.7;color:var(--muted)}
+.notice{padding:10px 12px;background:var(--accent-soft);color:var(--accent-ink);border-radius:var(--radius-sm);line-height:1.7;margin:12px 0}
+.notice.error{background:var(--danger-soft);color:var(--danger)}
+.notice a{color:inherit;font-weight:600}
+
+/* Chat */
+.chat{display:flex;flex-direction:column;gap:12px}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.toolbar label{font-size:12px;color:var(--muted)}
+#messages{display:flex;flex-direction:column;gap:14px;min-height:240px;max-height:52vh;overflow:auto;padding:4px 2px;scroll-behavior:smooth}
+.message{max-width:88%;white-space:pre-wrap;line-height:1.85;overflow-wrap:anywhere;animation:rise .32s var(--ease) both}
+.message.question{align-self:flex-start;background:var(--accent);color:#fff;padding:10px 14px;border-radius:16px 16px 16px 4px}
+.message.answer{align-self:flex-end;background:var(--soft);border:1px solid var(--line);padding:12px 14px;border-radius:16px 16px 4px 16px;color:var(--ink)}
+.message.answer strong{font-weight:700}
+.message.answer code{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:.9em;padding:1px 5px;border-radius:5px;background:var(--surface);border:1px solid var(--line)}
+.message a.go{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent-ink);font-weight:600;text-decoration:none;border:1px solid transparent;white-space:nowrap;transition:border-color .15s ease}
+.message a.go::after{content:'\2197';font-size:.85em}
+.message a.go:hover{border-color:var(--accent)}
+.message a.go:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.meta{align-self:flex-end;display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:88%;margin-top:-6px;font-size:11.5px;color:var(--faint)}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--muted)}
+.copy{padding:2px 8px;font-size:11.5px;font-weight:600;background:transparent;color:var(--muted);border:1px solid transparent;border-radius:999px}
+.copy:hover{background:var(--surface);border-color:var(--line);color:var(--ink)}
+.typing{align-self:flex-end;display:flex;gap:5px;padding:14px 16px;background:var(--soft);border:1px solid var(--line);border-radius:16px 16px 4px 16px}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:dot 1.2s ease-in-out infinite}
+.typing span:nth-child(2){animation-delay:.15s}.typing span:nth-child(3){animation-delay:.3s}
+.welcome{margin:auto 0;padding:8px 2px}
+.welcome h2{margin:0 0 4px;font-size:17px;font-weight:700;color:var(--ink)}
+.welcome p{font-size:13px}
+.suggestions{display:flex;flex-direction:column;gap:8px;margin-top:16px}
+.suggestions button{display:block;width:100%;text-align:right;padding:10px 12px;background:var(--surface);color:var(--ink-2);border:1px solid var(--line);font-weight:500;line-height:1.6;animation:rise .4s var(--ease) both}
+.suggestions button:nth-child(2){animation-delay:.05s}.suggestions button:nth-child(3){animation-delay:.1s}.suggestions button:nth-child(4){animation-delay:.15s}
+.suggestions button:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
+.composer{display:flex;align-items:flex-end;gap:8px;padding:6px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);transition:border-color .15s ease,box-shadow .15s ease}
+.composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgb(15 118 110 / .14)}
+.composer textarea{flex:1;border:0;outline:0;resize:none;background:transparent;padding:8px;line-height:1.7;min-height:40px;max-height:150px}
+.composer textarea::placeholder{color:var(--faint)}
+#send{display:grid;place-items:center;flex:none;width:40px;height:40px;padding:0;border-radius:10px}
+#send svg{width:18px;height:18px}
+.hint{font-size:11.5px;color:var(--faint);margin:-4px 2px 0}
+#progress{font-size:12px;color:var(--muted)}
+#progress:empty{display:none}
+
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes dot{0%,80%,100%{opacity:.35;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+
+/* Inside the accounting panel: the panel draws the frame and title, the page is only the chat */
+body.chat{padding:0;background:var(--surface);height:100vh;height:100dvh}
+body.chat main{height:100%;max-width:none}
+body.chat .intro{display:none}
+body.chat .chat{height:100%;border:0;border-radius:0;padding:12px 16px 14px}
+body.chat .toolbar{justify-content:space-between}
+body.chat #model{font-size:12px}
+body.chat #clear{padding:5px 10px;font-size:12px;border-color:var(--line)}
+body.chat #models,body.chat #check{display:none}
+body.chat #messages{flex:1;max-height:none;min-height:0}
+body.chat .message{font-size:13.5px}
+body.chat .notice{margin:0;font-size:13px}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}#messages{scroll-behavior:auto}}
+</style></head>
+<body><main>
+<header class="intro"><h1>مساعد المنظومة: تجربة محلية</h1><p>اسأل أين وكيف تنفذ الإجراء، واحصل على شرح من دليل هذه النسخة. المساعد لا يطّلع على بيانات العملاء أو الأرصدة ولا ينفذ عمليات مالية.</p>
+<div id="status" class="notice">جارٍ قراءة حالة الربط…</div>
+<div class="row"><button id="connect">Continue with ChatGPT</button><button id="refresh" class="secondary">تحديث حالة الربط</button><button id="disconnect" class="secondary" hidden>فصل الحساب محليًا</button><a href="https://chatgpt.com" target="_blank" rel="noopener noreferrer">إعدادات استخدام ChatGPT</a></div>
+<small>يستخدم اشتراك الحساب الذي توافق على ربطه. أهلية الاستخدام يحددها OpenAI؛ لا تترتب فوترة API منفصلة من هذه التجربة. فصل الحساب هنا يمسح الدخول المحلي؛ يمكنك إلغاء موافقة التطبيق أيضًا من إعدادات ChatGPT.</small>
+</header>
+<section class="chat">
+<div class="toolbar"><span id="model" class="chip" title="النموذج المعتمد للمساعد">GPT-6-Luna</span><div class="row"><button id="models" class="secondary" disabled>تحميل النماذج</button><button id="check" class="secondary" disabled>التحقق من تشغيل الاشتراك</button><button id="clear" class="secondary" type="button">محادثة جديدة</button></div></div>
+<div id="error" class="notice error" role="alert" hidden></div>
+<div id="messages" aria-live="polite"></div>
+<form id="composer" class="composer"><label for="question" class="sr">سؤالك</label><textarea id="question" rows="1" maxlength="3000" placeholder="اكتب سؤالك عن أي إجراء في المنظومة"></textarea><button id="send" type="submit" disabled aria-label="إرسال السؤال"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button></form>
+<p class="hint">Enter للإرسال، و Shift+Enter لسطر جديد</p>
+<p id="progress" aria-live="polite"></p>
+</section></main><script src="/client.js"></script></body></html>
