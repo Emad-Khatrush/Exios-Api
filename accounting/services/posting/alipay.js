@@ -92,7 +92,6 @@ async function completeYuanPurchase(id, input, { session, req }) {
   if (!doc || doc.status !== 'posted') throw fail('العملية غير موجودة أو ملغاة');
   if (doc.arrived) throw fail('اليوان وصل مسبقاً');
   if (doc.fundedFromPaymentId) {
-    require('./batchPaymentTrial').assertTrial();
     const payment = await require('../../models/documents').SupplierPayment.findById(doc.fundedFromPaymentId).session(session);
     if (!payment || payment.status !== 'posted') throw fail('الدفعة الأصلية غير متاحة؛ راجعها قبل تأكيد الوصول');
   }

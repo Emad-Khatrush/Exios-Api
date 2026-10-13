@@ -249,7 +249,9 @@ async function queue(input = {}, { session } = {}) {
   }
   for (const event of events) add({ key: `event:${event._id}`, category: 'posting', severity: 'error', title: 'عملية محاسبية تنتظر الترحيل أو فشلت',
     description: event.eventType, url: '/accounting/settings?tab=live', snapshot: [event.status, event.lastError] });
-  const checks = await require('./reports/exceptions').runChecks();
+  // The daily work page reads the stored daily run instead of running every check on each load
+  const exceptions = require('./reports/exceptions');
+  const checks = (input.storedChecks && await exceptions.latest()) || await exceptions.runChecks();
   for (const check of checks.results.filter(c => c.severity === 'error' && c.count)) add({ key: `check:${check.key}`, category: 'integrity', severity: 'error',
     title: check.title, description: `${check.count} حالة · ${check.hint || ''}`, url: check.link || '/accounting/exceptions', snapshot: [check.count, check.items] });
   const [suspenseRow] = await JournalEntry.aggregate([
@@ -283,7 +285,7 @@ async function queue(input = {}, { session } = {}) {
 
 async function updateTask(input, { session, req }) {
   await lockPeriod(session);
-  const report = await queue({ from: input.from, to: input.to }, { session });
+  const report = await queue({ from: input.from, to: input.to, storedChecks: input.storedChecks }, { session });
   const item = report.allItems.find(i => i.key === input.key);
   if (!item || item.fingerprint !== input.fingerprint) throw fail('تغيرت بيانات البند؛ حدّث قائمة المراجعة');
   if (!['open', 'deferred', 'independent'].includes(input.state)) throw fail('حالة المراجعة غير صالحة');

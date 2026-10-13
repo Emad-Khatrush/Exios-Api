@@ -162,7 +162,6 @@ module.exports.vendorOpenBills = handle(async (req, res) => {
   if (!isObjectId(req.params.id)) throw badRequest('المورد غير صالح');
   let results = await openBillsFor(oid(req.params.id));
   if (req.query.batchTrial === 'true') {
-    require('../services/posting/batchPaymentTrial').assertTrial();
     results = results.filter(row => row.orderOnly && row.open > 0);
     const orders = await require('../../models/order').find({ _id: { $in: results.flatMap(row => row.orderIds) } })
       .select('orderId customerInfo.fullName').lean();

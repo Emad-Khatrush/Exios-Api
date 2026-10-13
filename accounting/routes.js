@@ -116,6 +116,23 @@ router.get('/customer-invoices', P.reports, statements.customerInvoices);
 router.get('/exceptions', P.reports, statements.exceptions);
 const accountingReview = require('./services/accountingReview');
 const reviewTx = fn => require('./services/transaction').runInTransaction(fn);
+// Daily work: the day's review, the open backlog in one list, cash counts and the daily close reports
+const dailyWork = () => require('./services/dailyWork');
+const DAILY_VIEW = can('reports', 'treasury'), DAILY_WORK = can('treasury', 'closing');
+router.get('/daily-work/today', DAILY_VIEW, handle(async (req, res) => res.json(await dailyWork().today(req.query))));
+router.get('/daily-work/backlog', DAILY_VIEW, handle(async (req, res) => {
+  const { all, ...report } = await dailyWork().backlog(req.query);
+  res.json(report);
+}));
+router.post('/daily-work/run-checks', DAILY_VIEW, handle(async (req, res) => { await exceptionsService().runAndStore(); res.json({ success: true }); }));
+router.post('/daily-work/tallies', DAILY_WORK, handle(async (req, res) => res.json(await reviewTx(session => dailyWork().saveTally(req.body, { session, req })))));
+router.post('/daily-work/tallies/:id/explain', DAILY_WORK, handle(async (req, res) => res.json(await reviewTx(session => dailyWork().explainTally(req.params.id, req.body, { session, req })))));
+router.post('/daily-work/tallies/:id/adopt', P.treasury, handle(async (req, res) => res.json(await reviewTx(session => dailyWork().adoptTally(req.params.id, req.body, { session, req })))));
+router.post('/daily-work/items', DAILY_WORK, handle(async (req, res) => res.json(await reviewTx(session => dailyWork().reviewItem(req.body, { session, req })))));
+router.post('/daily-work/tasks', P.closing, handle(async (req, res) => res.json(await reviewTx(session => accountingReview.updateTask({ ...req.body, storedChecks: true }, { session, req })))));
+router.post('/daily-work/close', DAILY_WORK, handle(async (req, res) => res.json(await dailyWork().closeDay(req.body, { req }))));
+router.get('/daily-work/closes', DAILY_VIEW, handle(async (req, res) => res.json(await dailyWork().listCloses(req.query))));
+router.get('/daily-work/closes/:id', DAILY_VIEW, handle(async (req, res) => res.json(await dailyWork().getClose(req.params.id))));
 router.get('/review', can('reports', 'treasury'), handle(async (req, res) => {
   const { allItems, fingerprint, ...report } = await accountingReview.queue(req.query);
   res.json(report);

@@ -8,18 +8,19 @@ const { getConfig } = require('../config');
 const payables = require('./payables');
 const { fail, getAccount, resolveAccount, nextDocNumber, findExisting } = require('./common');
 
+// Only the duplicate settlement in bank matching is still limited to the trial copies; the batch
+// payment itself is approved for every database
 function assertTrial() {
   const uri = process.env.MONGO_URL_2 || process.env.MONGO_URL || '';
   const localTrial = process.env.EXIOS_LOCAL_ACCOUNTING_TRIAL === '1'
     && /^mongodb:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/(?:exios-prod-copy|exios-september-trial-\d{8})(?:\?|$)/.test(uri);
   const qa = process.env.EXIOS_QA === '1' && new URL(uri).hostname === 'exios-api-qa.ian5mmn.mongodb.net';
   if (!qa && !localTrial) {
-    throw fail('الدفعة المجمعة التجريبية متاحة في نسخة التجربة فقط');
+    throw fail('تسوية التكرار متاحة في نسخة التجربة فقط');
   }
 }
 
 async function createBatchPayment(input, { session, req }) {
-  assertTrial();
   if (!input.idempotencyKey) throw fail('مرجع العملية مطلوب');
   const existing = await findExisting(SupplierPayment, input.idempotencyKey, session);
   if (existing) {
@@ -28,9 +29,9 @@ async function createBatchPayment(input, { session, req }) {
   }
   if (input.day > today()) throw fail('اختر تاريخ الدفع الفعلي');
   const { count } = await getConfig();
-  if (count && input.day <= count.day) throw fail('الدفعة التجريبية تخص العمليات بعد الجرد؛ راجع السداد التاريخي من قسمه');
+  if (count && input.day <= count.day) throw fail('الدفعة المجمعة تخص العمليات بعد الجرد؛ راجع السداد التاريخي من قسمه');
   const from = await getAccount(input.fromAccountId, 'الحساب الدافع');
-  if (!from.isCash || from.currency !== 'USD') throw fail('اختر حساب دفع بالدولار لهذه التجربة');
+  if (!from.isCash || from.currency !== 'USD') throw fail('اختر حساب دفع بالدولار للدفعة المجمعة');
   const allocations = Array.isArray(input.allocations) ? input.allocations : [];
   if (!allocations.length) throw fail('اختر فاتورة مورد واحدة على الأقل');
   if (allocations.some(row => !row || !mongoose.isValidObjectId(row.billId) || !Number.isSafeInteger(row.amountUsd) || row.amountUsd <= 0)
