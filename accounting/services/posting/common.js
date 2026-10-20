@@ -116,7 +116,9 @@ async function addFxLine(lines, office, label = 'فرق صرف') {
   const credit = lines.reduce((sum, line) => sum + (line.credit || 0), 0);
   const difference = debit - credit;
   if (difference === 0) return lines;
-  const fx = await resolveAccount('fx_gain_loss');
+  const config = await require('../config').getConfig();
+  const role = difference > 0 ? 'fx_realized_gain' : 'fx_realized_loss';
+  const fx = await resolveAccount(config.settings?.accountRoles?.[role] ? role : 'fx_gain_loss');
   lines.push({
     accountId: fx._id,
     debit: difference < 0 ? -difference : 0,

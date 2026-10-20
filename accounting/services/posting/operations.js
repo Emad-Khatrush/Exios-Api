@@ -41,6 +41,7 @@ async function resolveClaimKeys(target, session) {
   if (target.arKeys?.length) return target.arKeys;
   if (target.balanceId) {
     const balance = await Balance.findById(target.balanceId).session(session).lean();
+    if (balance?.deliveryClaimKeys?.length) return balance.deliveryClaimKeys;
     if (balance && (!balance.order || balance.debtType === 'general')) return [generalDebtKey(balance._id)];
     if (balance?.order) target = { ...target, orderId: balance.order, category: target.category || balance.debtType };
   }
@@ -172,6 +173,22 @@ async function cashOffice(createdBy, recordOffice, session) {
   return (await officeOfCreator(createdBy, session)) || recordOffice || null;
 }
 
+// Cash withdrawals must have a valid funding account before the wallet is touched.
+async function resolveWithdrawalAccount(user, recordOffice, currency, source, session) {
+  if (!['box', 'custody'].includes(source)) throw fail('اختر مصدر السحب النقدي');
+  if (source === 'custody') {
+    const account = await require('../custody').accountOf('custody', currency);
+    if (!account?.isActive || (account.currency || 'USD') !== currency) throw fail(`لا توجد عهدة متاحة بعملة ${currency}`);
+    return { account, office: recordOffice || await officeOfCreator(user._id, session) };
+  }
+  const office = user.roles?.isAdmin && recordOffice ? recordOffice : await cashOffice(user._id, recordOffice, session);
+  const { offices } = await getConfig();
+  if (!office || !offices.has(office)) throw fail('حدّد مكتب الصرف المرتبط بخزينة قبل السحب');
+  const account = await resolveStaffCashAccount(office, currency, { historical: false });
+  if (!account?.isActive || !account.isCash || (account.currency || 'USD') !== currency) throw fail(`لا توجد خزينة ${currency} مرتبطة بمكتب ${offices.get(office)?.name || office}؛ لم يتم خصم المحفظة. اختر مصدر صرف صحيحًا أو اربط الخزينة أولًا.`);
+  return { account, office };
+}
+
 const DOMESTIC_NOTE = /نقل\s*داخلي|النقل\s*الداخلي|ديلفري|دليفري|delivery/i;
 
 const statementKind = (s) => {
@@ -298,14 +315,23 @@ async function postStatement(statementId, options = {}) {
     lines.push({ accountId: (await resolveAccount(options.target?.revenueRole || 'revenue_other'))._id, credit: usd, office, label: statement.description });
   } else if (kind === 'WITHDRAWAL') {
     await walletOut();
-    const cash = await cashAccount();
-    if (!options.isHistorical && !(await isBeforeCashCount(require('../dates').toDay(day)))) {
+    const fromCustody = statement.withdrawalSource === 'custody';
+    const employeeId = fromCustody ? statement.custodyEmployeeId : null;
+    if (fromCustody && (!employeeId || String(employeeId) !== String(statement.createdBy?._id || statement.createdBy))) throw fail('العهدة يجب أن تكون للموظف الذي سجل السحب');
+    const custody = fromCustody ? require('../custody') : null;
+    const cash = fromCustody ? await custody.accountOf('custody', currency) : await cashAccount();
+    if (!cash || !cash.isActive) throw fail('لا يوجد حساب عهدة متاح بهذه العملة');
+    if (fromCustody || (!options.isHistorical && !(await isBeforeCashCount(require('../dates').toDay(day))))) {
       await lockPostingAccounts([cash], session);
     }
+    if (fromCustody) {
+      const held = await custody.heldMinor(cash, employeeId, session);
+      if (minor > held) throw fail(`رصيد عهدتك ${held / 10 ** await require('./common').decimalsOf(currency)} ${currency} لا يكفي للسحب`);
+    }
     const cashUsd = cash.currency === currency
-      ? await valueOut(cash, minor, { day, docRate: docRate, rates })
+      ? await valueOut(cash, minor, { day, docRate: docRate, rates, ...(fromCustody && { employeeId }) })
       : await rates.toUsd(minor, currency, day, docRate);
-    lines.push(moneyLine(cash, 'credit', minor, cashUsd, { office, label: statement.description }));
+    lines.push(moneyLine(cash, 'credit', minor, cashUsd, { office, label: statement.description, ...(fromCustody && { employeeId: oid(employeeId) }) }));
   } else {
     const recoveryBalance = target.balanceId && await Balance.findById(target.balanceId).select('status sourceBalance').session(session).lean();
     if (recoveryBalance?.status === 'lost' && recoveryBalance.sourceBalance) {
@@ -595,6 +621,7 @@ async function repostPaymentRate(paymentId, options = {}) {
 }
 
 module.exports = {
+  resolveWithdrawalAccount,
   OVERPAID_LABEL, OVERPAID_REVIEW_CENTS,
   repostPaymentRate,
   postStatement, repostStatement, reverseStatement, postCashPayment, reverseCashPayment,

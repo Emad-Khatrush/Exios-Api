@@ -5,7 +5,7 @@ const BANK_SUPPORT_ACCOUNTS = [
   { seedKey: 'investment:albaraka:RBV:TRY', code: '160100', parent: '16', name: 'استثمار صندوق البركة RBV - ليرة', nameEn: 'Albaraka RBV fund - TRY', type: 'asset', cashFlowCategory: 'investing' },
   { seedKey: 'investment:albaraka:katilim:TRY', code: '160200', parent: '16', name: 'استثمار حساب مشاركة البركة - ليرة', nameEn: 'Albaraka participation deposit - TRY', type: 'asset', cashFlowCategory: 'investing' },
   { seedKey: 'cash:turkey:TRY', code: '110109', parent: '1101', name: 'خزينة تركيا - ليرة', nameEn: 'Turkey cash - TRY', type: 'asset', isCash: true, cashKind: 'cash' },
-  { seedKey: 'loan:emad-kaya:TRY', code: '230200', parent: '23', name: 'قرض عماد - EMAD KAYA - ليرة', nameEn: 'EMAD KAYA owner loan - TRY', type: 'liability', cashFlowCategory: 'financing' },
+  { seedKey: 'loan:emad-kaya:TRY', code: '230200', parent: '23', name: 'قرض عماد - EMAD - ليرة', nameEn: 'EMAD owner loan - TRY', type: 'liability', cashFlowCategory: 'financing' },
 ];
 async function ensureSupportAccounts() {
   let investmentGroup = await Account.findOne({ seedKey: 'bank-investments' });

@@ -32,6 +32,9 @@ const payOrderDebts = async ({ orderId, category, amount, currency, rate, create
   const debts = await Balance.find({ order: orderId, balanceType: 'debt', debtType: category, status: { $in: REASSIGNABLE_DEBT_STATUSES }, amount: { $gt: 0 } }).sort({ createdAt: 1 }).session(session);
 
   const applied = [];
+  if (debts.some(debt => debt.deliveryInvoiceId)) {
+    throw new (require('./errorHandler'))(400, 'سدد متبقي فاتورة التسليم من قسم الديون لضمان ربط الدفعة بالطرد الصحيح');
+  }
   // What is left of the payment, in its own currency
   let left = Number(amount);
   for (const debt of debts) {

@@ -10,6 +10,13 @@ const MONTH = /^\d{4}-\d{2}$/;
 const monthEnd = (month) => moment.tz(`${month}-01`, 'YYYY-MM-DD', TZ).endOf('month').format('YYYY-MM-DD');
 const nextMonth = (month) => moment.tz(`${month}-01`, 'YYYY-MM-DD', TZ).add(1, 'month').format('YYYY-MM');
 
+async function accumulatedFor(asset) {
+  const { settings, accountsById } = await require('../config').getConfig();
+  const account = accountsById.get(String(asset.accountId));
+  const role = ({ '150100': 'depreciation_vehicles', '150200': 'depreciation_equipment', '150300': 'depreciation_computers' })[account?.seedKey || account?.code];
+  return resolveAccount(role && settings.accountRoles?.[role] ? role : 'accumulated_depreciation');
+}
+
 // Months from `start` to `end` inclusive
 function monthsBetween(start, end) {
   const months = [];
@@ -36,7 +43,7 @@ async function postDepreciationMonth(asset, month, day, { session, user }) {
   const amount = instalment(depreciable, asset.usefulLifeMonths, asset.depreciationPosted.length, postedSum);
   if (amount <= 0) return null;
 
-  const [expense, accumulated] = await Promise.all([resolveAccount('depreciation_expense'), resolveAccount('accumulated_depreciation')]);
+  const [expense, accumulated] = await Promise.all([resolveAccount('depreciation_expense'), accumulatedFor(asset)]);
   const entry = await postEntry({
     eventType: 'DEPRECIATION',
     eventKey: `DEPRECIATION:${asset._id}:${month}`,
@@ -102,7 +109,16 @@ async function disposeAsset(assetId, input, { session, req }) {
     lines.push(moneyLine(cash, 'debit', minor, proceedsUsd, { label: `ثمن بيع ${asset.name}` }));
     asset.disposal = { toAccountId: cash._id, rate: input.rate };
   }
-  if (accumulated) lines.push({ accountId: accumulatedAccount._id, debit: accumulated, assetId: asset._id, office: asset.office });
+  if (accumulated) {
+    const entries = await require('../../models').JournalEntry.find({ _id: { $in: asset.depreciationPosted.map(p => p.entryId) } }).select('lines').session(session).lean();
+    const byAccount = new Map();
+    for (const entry of entries) for (const line of entry.lines) if (line.credit > 0 && String(line.assetId) === String(asset._id)) {
+      const id = String(line.accountId); byAccount.set(id, (byAccount.get(id) || 0) + line.credit);
+    }
+    const recovered = [...byAccount.values()].reduce((sum, amount) => sum + amount, 0);
+    if (recovered !== accumulated) throw fail('قيود الإهلاك لا تطابق رصيد الأصل؛ راجعها قبل البيع');
+    for (const [accountId, amount] of byAccount) lines.push({ accountId, debit: amount, assetId: asset._id, office: asset.office });
+  }
   lines.push({ accountId: assetAccount._id, credit: asset.cost, assetId: asset._id, office: asset.office });
   const result = proceedsUsd + accumulated - asset.cost;
   if (result !== 0) {

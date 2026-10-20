@@ -14,7 +14,7 @@ const SECTION_TITLES = {
   revenue: 'الإيرادات', cost: 'تكلفة الإيرادات', expenses: 'المصروفات التشغيلية', depreciation: 'الإهلاك', fx: 'فروقات العملة',
 };
 const COST_ROLES = ['cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices', 'cost_services'];
-const FX_ROLES = ['fx_gain_loss', 'rounding'];
+const FX_ROLES = ['fx_gain_loss', 'rounding', 'fx_realized_gain', 'fx_realized_loss', 'fx_unrealized_gain', 'fx_unrealized_loss'];
 const DEPRECIATION_ROLES = ['depreciation_expense', 'asset_disposal'];
 
 // Which part of the income statement an account belongs to. An account added later under the
@@ -36,6 +36,7 @@ async function sectionResolver() {
   const depreciation = groupsOf(DEPRECIATION_ROLES);
   const inSet = (account, set) => set.has(String(account._id)) || (account.parentId && set.has(String(account.parentId)));
   return (account) => {
+    if (inSet(account, fx)) return 'fx';
     if (account.type === 'income') return 'revenue';
     if (account.type !== 'expense') return null;
     if (inSet(account, cost)) return 'cost';
@@ -234,10 +235,10 @@ async function cashMovements({ from, to } = {}) {
 // Realised exchange gains and losses by the kind of operation that produced them, per month
 async function fxReport({ from, to } = {}) {
   const { settings } = await getConfig();
-  const fxId = settings.accountRoles?.fx_gain_loss && oid(settings.accountRoles.fx_gain_loss);
-  if (!fxId) return { byEvent: [], byMonth: [], total: 0 };
+  const fxIds = [...new Set(FX_ROLES.filter(r => r !== 'rounding').map(r => settings.accountRoles?.[r]).filter(Boolean).map(String))].map(oid);
+  if (!fxIds.length) return { byEvent: [], byMonth: [], total: 0 };
   const base = [
-    { $match: { ...dayRange({ from, to }), eventType: { $ne: 'YEAR_CLOSE' }, 'lines.accountId': fxId } }, { $unwind: '$lines' }, { $match: { 'lines.accountId': fxId } },
+    { $match: { ...dayRange({ from, to }), eventType: { $ne: 'YEAR_CLOSE' }, 'lines.accountId': { $in: fxIds } } }, { $unwind: '$lines' }, { $match: { 'lines.accountId': { $in: fxIds } } },
   ];
   // Positive = gain (credit), negative = loss
   const gain = { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } };
@@ -246,7 +247,7 @@ async function fxReport({ from, to } = {}) {
     JournalEntry.aggregate([...base, { $group: { _id: { $substr: ['$day', 0, 7] }, amount: gain, count: { $sum: 1 } } }, { $sort: { _id: 1 } }]),
   ]);
   return {
-    accountId: fxId,
+    accountId: settings.accountRoles?.fx_gain_loss, accountIds: fxIds,
     byEvent: byEvent.map((row) => ({ eventType: row._id, amount: row.amount, count: row.count })),
     byMonth: byMonth.map((row) => ({ month: row._id, amount: row.amount, count: row.count })),
     total: byEvent.reduce((sum, row) => sum + row.amount, 0),

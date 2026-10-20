@@ -85,7 +85,11 @@ async function loadSources(cutoff) {
       isCanceled: !!(canceledAt && canceledAt <= when),
       paymentList: (order.paymentList || []).map((pkg) => {
         const delivery = deliveries.get(String(pkg._id));
-        return { ...pkg, status: { ...(pkg.status || {}), received: !!(delivery && delivery.at <= when) } };
+        const offer = pkg.freeShippingOffer;
+        const beforeOffer = offer?.enabled && new Date(offer.effectiveFrom || offer.appliedAt) > when;
+        return { ...pkg,
+          ...(beforeOffer && { freeShippingOffer: { ...offer, enabled: false }, deliveredPackages: { ...pkg.deliveredPackages, exiosPrice: offer.previousUnitPrice } }),
+          status: { ...(pkg.status || {}), received: !!(delivery && delivery.at <= when) } };
       }),
     };
   };

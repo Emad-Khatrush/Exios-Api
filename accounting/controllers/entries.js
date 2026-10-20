@@ -9,7 +9,7 @@ const Order = require('../../models/order');
 const Inventory = require('../../models/inventory');
 const UserStatement = require('../../models/userStatement');
 const OrderPaymentHistory = require('../../models/orderPaymentHistory');
-const { Vendor } = require('../models/documents');
+const { Vendor, SupplierPayment } = require('../models/documents');
 const { visibleMatch } = require('../services/visibility');
 const { logAudit } = require('../services/audit');
 
@@ -62,6 +62,12 @@ async function entryLinks(entry) {
   if (model === 'Balance') source = { label: 'الديون', url: '/balances' };
   if (model === 'Income' && id) source = { label: 'الإيراد (الشاشة القديمة)', url: `/income/${id}/edit` };
   if (ACCOUNTING_PAGES[model]) source = ACCOUNTING_PAGES[model](id);
+  // A supplier payment can be cancelled from its entry, as from the payments list: not one paid
+  // together with its bill (that one is cancelled with the bill)
+  if (model === 'AccountingSupplierPayment' && id) {
+    const payment = await SupplierPayment.findById(id).select('number status autoFromBillId').lean();
+    if (payment?.status === 'posted' && !payment.autoFromBillId) source.cancel = { model, id, title: `الدفعة ${payment.number}` };
+  }
 
   const [orders, trips, vendors] = await Promise.all([
     Order.find({ _id: { $in: [...new Set(orderIds)] } }).select('orderId isDeleted paymentList._id paymentList.deliveredPackages.trackingNumber').setOptions({ withDeleted: true }).lean(),

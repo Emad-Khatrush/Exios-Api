@@ -65,6 +65,9 @@ async function takeBackRefunds(order, user, amount, refunds, session) {
 
 // Gives every payment of the order back to the wallet; refused once a package was handed over
 async function returnOrderPayments(order, user, { session } = {}) {
+  if ((order.paymentList || []).some(p => p.creditDeliveryInvoiceId && p.status?.received)) {
+    throw new ErrorHandler(400, 'ألغِ فاتورة تسليم الطرود أولًا قبل إلغاء الطلبية');
+  }
   const payments = await OrderPaymentHistory.find({ order: order._id }).sort({ createdAt: 1 }).lean().session(session);
   if (!payments.length) return [];
   const unsupported = payments.find(payment => !['USD', 'LYD'].includes(payment.currency));

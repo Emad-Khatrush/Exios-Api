@@ -2,6 +2,10 @@ const mongoose = require('mongoose');
 const { officeValidator } = require('../utils/offices');
 
 const balanceSchema = new mongoose.Schema({
+  deliveryInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', index: true },
+  deliveryPackageId: mongoose.Schema.Types.ObjectId,
+  deliveryClaimKeys: [String],
+  deliveryCanceledAt: Date,
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order', // Reference to the 'Order' collection
@@ -48,7 +52,7 @@ const balanceSchema = new mongoose.Schema({
   accountingKind: { type: String, enum: ['service_sale'] },
   status: {
     type: String,
-    enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost'],
+    enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost', 'canceled'],
     required: true,
     default: 'open'
   },

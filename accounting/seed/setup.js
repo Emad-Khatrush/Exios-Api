@@ -216,6 +216,8 @@ async function runSetup({ user } = {}) {
   const links = await require('../services/tripLinks').backfillTripLinks();
   if (links.updated) created(`trip links on ${links.updated} package(s)`);
   report.ranBy = user?._id;
+  const expansion = await require('./expandedChartSetup').install({ user });
+  expansion.created.forEach(a => created(`account ${a.code} ${a.name}`));
   return report;
 }
 

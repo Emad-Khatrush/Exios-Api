@@ -16,6 +16,7 @@ const PACKAGE_FEES = [{ field: 'domesticFee', key: domesticFeeKey }, { field: 'c
 // A package's charge in cents: weight x unit price, rounded the way the system bills it at
 // delivery (toFixed(2)), so the claim is exactly what the customer is asked to pay
 const packageChargeCents = (pkg) => {
+  if (pkg?.freeShippingOffer?.enabled) return 0;
   const charge = Number(pkg?.deliveredPackages?.weight?.total || 0) * Number(pkg?.deliveredPackages?.exiosPrice || 0);
   return Math.round(Number(charge.toFixed(2)) * 100);
 };

@@ -18,7 +18,7 @@ const { ObjectId } = mongodb;
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const { limit, skip, searchValue, searchType } = req.query;
+    const { limit, skip, searchValue, searchType, searchMode } = req.query;
 
     // Base query pipeline
     let query = [
@@ -49,29 +49,29 @@ module.exports.getInventory = async (req, res, next) => {
       }
     }
 
-    // Partial search: any part of a voyage, order ID or tracking number matches
-    // (the text index only matched whole words, so half a tracking number found nothing).
+    // Name search matches the voyage; number search matches tracking/order IDs.
     const search = String(searchValue || '').trim();
     if (search) {
       const pattern = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const trackingOnly = searchMode === 'tracking';
       const orderMatch = { $or: [{ orderId: pattern }, { 'paymentList.deliveredPackages.trackingNumber': pattern }] };
       // Packages found on the live orders, since the copies kept on the inventory can be outdated
-      const livePackages = await Orders.aggregate([
+      const livePackages = trackingOnly ? await Orders.aggregate([
         { $match: orderMatch },
         { $unwind: '$paymentList' },
         { $match: orderMatch },
         { $limit: 2000 },
         { $project: { _id: 0, id: '$paymentList._id' } },
-      ]);
+      ]) : [];
       query = [
         {
           $match: {
             inventoryType: 'inventoryGoods',
-            $or: [
-              { voyage: pattern },
+            $or: trackingOnly ? [
               { 'orders.orderId': pattern },
-              { 'orders.paymentList.deliveredPackages.trackingNumber': pattern },
               { 'orders.paymentList._id': { $in: livePackages.map((p) => p.id) } },
+            ] : [
+              { voyage: pattern },
             ],
           }
         },

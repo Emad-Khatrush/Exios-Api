@@ -11,6 +11,7 @@ const User = require('../../../models/user');
 const { getConfig } = require('../config');
 const { today, TZ } = require('../dates');
 const { allocate } = require('../claims/sync');
+const { shippingCollections, sumPackages } = require('./shippingCollections');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -70,7 +71,7 @@ async function tripProfitability({ status, search, shippingType, tripIds: reques
     packagesOf.get(String(tripId)).push(pkg);
   };
   orders.forEach((order) => (order.paymentList || []).forEach((pkg) => {
-    const item = { ...pkg, placedAt: order.placedAt };
+    const item = { ...pkg, orderId: order._id, placedAt: order.placedAt };
     addPackage(pkg.tripId, item);
     addPackage(pkg.domesticTripId, item);
   }));
@@ -85,12 +86,13 @@ async function tripProfitability({ status, search, shippingType, tripIds: reques
   const allTripIds = [...new Set([...tripIds.map(String), ...domesticIds])];
   const tripScope = { 'lines.tripId': { $in: allTripIds.map(oid) } };
   const packageIds = orders.flatMap((order) => (order.paymentList || []).map((pkg) => pkg._id).filter(Boolean));
-  const [byTrip, byPackage, feesByTrip, bills] = await Promise.all([
+  const [byTrip, byPackage, feesByTrip, bills, settlements] = await Promise.all([
     netBy('tripId', idsOf({ wip: roles.trip_cost_wip, ...Object.fromEntries(costIds.map((id, i) => [i, id])) }), tripScope),
     // A package's shipping (its transport fee is the domestic trip's, below)
-    netBy('packageId', idsOf({ deferred: roles.deferred_shipping_revenue, ...Object.fromEntries(revenueIds.map((id, i) => [i, id])) }), { 'lines.packageId': { $in: packageIds }, 'lines.arKey': { $not: /:DOM$/ } }),
+    netBy('packageId', idsOf({ deferred: roles.deferred_shipping_revenue, ...Object.fromEntries(revenueIds.map((id, i) => [i, id])) }), { 'lines.packageId': { $in: packageIds }, 'lines.arKey': { $regex: /^SHP:[^:]+:[^:]+$/ } }),
     netBy('tripId', idsOf({ a: roles.revenue_shipping_domestic }), { ...tripScope, 'lines.arKey': /:DOM$/ }),
     SupplierBill.find({ status: 'posted', 'lines.tripId': { $in: allTripIds.map(oid) } }).select('lines.tripId lines.usd lines.costCategory isCreditNote').lean(),
+    shippingCollections(packageIds),
   ]);
   const categories = new Map();
   bills.forEach((bill) => bill.lines.forEach((line) => {
@@ -137,6 +139,7 @@ async function tripProfitability({ status, search, shippingType, tripIds: reques
       volumetricPackages: packages.filter((p) => p.deliveredPackages?.volumetric?.enabled).length,
     };
     if (!international) {
+      const settlement = sumPackages(settlements, packages, ':DOM');
       // The domestic leg: what it cost, the extra per KG, and the transport fees charged for it
       const feesBilled = packages.filter((p) => String(p.domesticTripId) === String(trip._id))
         .reduce((t, p) => t + Math.round(Number(p.deliveredPackages?.domesticFee?.usd || 0) * 100), 0);
@@ -144,7 +147,7 @@ async function tripProfitability({ status, search, shippingType, tripIds: reques
       return {
         ...base, revenue: feesRecognized, deferred: 0, totalRevenue: feesBilled, profit: feesRecognized - cost, net: feesBilled - totalCost,
         feesBilled, feesRecognized, extraCostPerUnit: perUnit(totalCost, weight), costPerUnit: perUnit(totalCost, weight), revenuePerUnit: null,
-        recognizedPackages: 0, margin: null,
+        recognizedPackages: 0, margin: null, ...settlement,
       };
     }
     let revenue = 0;
@@ -175,6 +178,7 @@ async function tripProfitability({ status, search, shippingType, tripIds: reques
     const officeOwnCosts = allocate(totalCost, officeRows.map((office) => Math.round(Number(office.weight || 0) * 1000)));
     return {
       ...base, recognizedPackages,
+      ...sumPackages(settlements, packages),
       revenue, profit, margin: revenue ? Math.round((profit / revenue) * 1000) / 10 : null,
       deferred, totalRevenue, net: totalRevenue - totalCost,
       // Per KG/CBM: this trip's own cost (shipping, customs...), then with the domestic transport
@@ -196,6 +200,7 @@ async function tripProfitability({ status, search, shippingType, tripIds: reques
     totals: {
       revenue: total('revenue'), cost: total('cost'), profit: total('profit'), deferred: total('deferred'), costInProgress: total('costInProgress'),
       totalRevenue: total('totalRevenue'), totalCost: total('totalCost'), net: total('net'),
+      collected: total('collected'), open: total('open'),
     },
   };
 }

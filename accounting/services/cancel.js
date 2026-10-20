@@ -15,9 +15,33 @@ const ACTIVE = { $ne: 'canceled' };
 
 // What must be cancelled first, and what is cancelled along with the document
 const RULES = {
+  AccountingFinancialOperation: {
+    Model: require('../models/FinancialOperation').Operation,
+    async check(doc, context) {
+      const { session } = context;
+      if (doc.sourceBillId) throw fail('هذه البضاعة من فاتورة مورد؛ ألغِ الفاتورة الأصلية');
+      if (await require('../models/FinancialOperation').Action.exists({ operationId: doc._id, status: 'posted' }).session(session)) throw fail('ألغِ تسويات أو مبيعات هذه العملية أولًا');
+      await require('./financialOperations').checkCashCancellation('AccountingFinancialOperation', doc._id, context);
+    },
+  },
+  AccountingFinancialOperationAction: {
+    Model: require('../models/FinancialOperation').Action,
+    async check(doc, context) {
+      const { session } = context;
+      const operation = await require('../models/FinancialOperation').Operation.findOneAndUpdate({ _id: doc.operationId, status: 'posted' }, { $inc: { postingVersion: 1 } }, { new: true, session });
+      if (!operation) throw fail('العملية الأصلية غير متاحة');
+      await require('./financialOperations').checkCashCancellation('AccountingFinancialOperationAction', doc._id, context);
+    },
+  },
   AccountingSupplierBill: {
     Model: docs.SupplierBill,
     async check(bill, { session }) {
+      if (bill.yuanPurchaseId) throw fail('هذه فاتورة شراء يوان؛ ألغِ الشراء من صفحة Alipay');
+      const lots = await require('../models/FinancialOperation').Operation.find({ sourceBillId: bill._id, status: 'posted' }).select('_id').session(session);
+      for (const lot of lots) {
+        await require('../models/FinancialOperation').Operation.updateOne({ _id: lot._id, status: 'posted' }, { $inc: { postingVersion: 1 } }, { session });
+        if (await require('../models/FinancialOperation').Action.exists({ operationId: lot._id, status: 'posted' }).session(session)) throw fail('بيعت كمية من هذه البضاعة؛ ألغِ مبيعاتها أولًا قبل إلغاء فاتورة الشراء');
+      }
       if (await docs.BankStatementLine.exists({ billId: bill._id, historicalSettlementPaymentId: { $ne: null }, lineStatus: 'created_entry' }).session(session))
         throw fail('الفاتورة لها تسوية سداد تاريخي مع البنك؛ ألغِ التسوية من سطر الكشف أولاً');
       const payments = await docs.SupplierPayment.find({ 'allocations.billId': bill._id, status: ACTIVE, autoFromBillId: { $ne: bill._id } }).session(session);
@@ -34,6 +58,7 @@ const RULES = {
       if (prepaid.some((p) => p.amortizationPosted.length)) throw fail('للمصروف المقدم أقساط مُرحَّلة. ألغِ الجدول أولاً.');
     },
     async cascade(bill, context) {
+      await require('../models/FinancialOperation').Operation.updateMany({ sourceBillId: bill._id, status: 'posted' }, { $set: { status: 'canceled', canceledAt: new Date(), cancelReason: context.reason } }, { session: context.session });
       // The payment made on the spot with the bill goes with it
       const auto = await docs.SupplierPayment.findOne({ autoFromBillId: bill._id, status: ACTIVE }).session(context.session);
       if (auto) await cancelDocument('AccountingSupplierPayment', auto._id, { ...context, cascaded: true, reason: `${context.reason} (مع الفاتورة ${bill.number})` });
@@ -65,7 +90,7 @@ const RULES = {
           const ids = [line.entryId, ...(line.matchedEntryIds || [])].filter(Boolean);
           await JournalEntry.updateMany({ _id: { $in: ids } }, { $pull: { bankMatchedAccounts: line.accountId } }, { session: context.session });
           line.historyEntryIds = [...new Set([...(line.historyEntryIds || []).map(String), ...ids.map(String)])];
-          line.lineStatus = 'unmatched'; line.entryId = undefined; line.matchedEntryIds = []; line.paymentId = undefined;
+          line.lineStatus = 'unmatched'; line.entryId = undefined; line.matchedEntryIds = []; line.paymentId = undefined; line.matchGroupId = undefined;
           line.postingAttempt = (line.postingAttempt || 0) + 1;
           await line.save({ session: context.session });
         }
@@ -96,6 +121,27 @@ const RULES = {
     },
   },
   AccountingYuanPurchase: { Model: docs.YuanPurchase,
+    async check(purchase, { session, confirmNegative }) {
+      if (!purchase.settlementBillId) return;
+      const bill = await docs.SupplierBill.findById(purchase.settlementBillId).session(session);
+      if (!bill || bill.status !== 'posted') throw fail('فاتورة الشراء غير متاحة');
+      await require('./posting/payables').lockBillAllocation(bill, session);
+      if (await docs.SupplierPayment.exists({ 'allocations.billId': bill._id, status: ACTIVE, _id: { $ne: purchase.initialPaymentId || null } }).session(session))
+        throw fail('للشراء دفعات لاحقة؛ ألغِها أولًا قبل إلغاء الشراء');
+      if (await docs.Netting.exists({ billId: bill._id, status: ACTIVE, _id: { $ne: purchase.initialNettingId || null } }).session(session))
+        throw fail('للشراء إضافات محفظة أو مقاصات لاحقة؛ ألغِها أولًا');
+      if (await docs.SupplierBill.exists({ originalBillId: bill._id, status: ACTIVE }).session(session)) throw fail('ألغِ الإشعارات الدائنة أولًا');
+      const netting = purchase.initialNettingId && await docs.Netting.findById(purchase.initialNettingId).session(session);
+      if (netting?.status === 'posted') await RULES.AccountingNetting.check(netting, { session, confirmNegative });
+    },
+    async cascade(purchase, context) {
+      if (!purchase.settlementBillId) return;
+      for (const [model, id] of [['AccountingSupplierPayment', purchase.initialPaymentId], ['AccountingNetting', purchase.initialNettingId]]) {
+        if (id && await RULES[model].Model.exists({ _id: id, status: 'posted' }).session(context.session))
+          await cancelDocument(model, id, { ...context, cascaded: true, reason: `${context.reason} (مع شراء اليوان ${purchase.number})` });
+      }
+      await docs.SupplierBill.updateOne({ _id: purchase.settlementBillId }, { $set: { status: 'canceled', canceledAt: new Date(), canceledBy: context.req?.user?._id, cancelReason: context.reason } }, { session: context.session });
+    },
     async after(purchase, context) {
       await require('./posting/alipayReconciliation').releaseDocumentMatches('AccountingYuanPurchase', purchase._id, context);
     },
@@ -175,13 +221,24 @@ const RULES = {
     },
   },
   AccountingCashCount: { Model: docs.CashCount },
-  AccountingSalaryPayment: { Model: docs.SalaryPayment },
+  AccountingSalaryPayment: {
+    Model: docs.SalaryPayment,
+    async check(doc, { session }) { if (doc.structuredSalary || doc.paymentKind === 'commission') await require('./employees').lock(doc.employeeId, session); },
+    async after(doc, { session }) {
+      await require('../models/Employee').Adjustment.updateMany({ salaryId: doc._id }, { $unset: { salaryId: 1 } }, { session });
+      for (const allocation of doc.commissionAllocations || []) {
+        await require('../models/Employee').Adjustment.updateOne({ _id: allocation.adjustmentId }, { $inc: { paidMinor: -allocation.amountMinor, waivedMinor: -(allocation.waivedMinor || 0) } }, { session });
+      }
+    },
+  },
   AccountingEquityTransaction: {
     Model: docs.EquityTransaction,
     async check(transaction, { session }) {
       if (!['loan_in', 'loan_repayment'].includes(transaction.type)) return;
-      await lockCompanyLoanBalance(session);
+      const account = await require('./roles').resolveAccount(transaction.loanRole || 'loans');
+      await lockCompanyLoanBalance(session, account._id);
       if (transaction.type === 'loan_in') {
+        if (await require('../models/FinancialOperation').Operation.exists({ kind: 'loan_current_portion', fromAccountId: account._id, status: 'posted' }).session(session)) throw fail('توجد تسوية أقساط على هذا الحساب؛ ألغِها قبل إلغاء أصل القرض');
         const repayments = await docs.EquityTransaction.find({
           type: 'loan_repayment', partyName: transaction.partyName, status: ACTIVE,
         }).session(session);
@@ -261,6 +318,8 @@ async function cancelDocument(modelName, id, context) {
   const reversals = await reverseSourceEntries(modelName, doc._id, { session, user: req?.user, reason });
   if (rule.cascade) await rule.cascade(claimed, context);
   if (rule.after) await rule.after(claimed, context);
+  await require('./posting/bankMatchLifecycle').releaseReversedMatches(reversals.map(entry => entry.reversalOf).filter(Boolean),
+    { ...context, canceledModel: modelName, canceledId: doc._id });
   claimed.reversalEntryId = reversals[0]?._id;
   await claimed.save({ session });
   await logAudit({ req, action: 'document.cancel', model: modelName, docId: doc._id, after: { reason, reversals: reversals.map((r) => r._id) } }, session);

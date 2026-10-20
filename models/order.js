@@ -149,6 +149,8 @@ const orderSchema = new Schema({
     type: Number,
     default: 0
   },
+  // Separate from edited notes and payments: they must not restart the stage's age.
+  orderStatusChangedAt: Date,
   isFinished: {
     type: Boolean,
     default: false
@@ -224,6 +226,17 @@ const orderSchema = new Schema({
     total: Number,
   },
   paymentList: [{
+    creditDeliveryInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+    shippingRecognitionFrom: Date,
+    // Set only by the audited free-shipping review, never by ordinary package edits.
+    freeShippingOffer: {
+      enabled: Boolean,
+      reason: String,
+      previousUnitPrice: Number,
+      appliedAt: Date,
+      effectiveFrom: Date,
+      appliedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    },
     link: {
       type: String,
       default: ''
@@ -307,14 +320,16 @@ const orderSchema = new Schema({
         actual: Number
       },
       // Charged by volume (spec v8): CBM typed or worked out from the dimensions (cm); weight.total =
-      // CBM x the factor in force when it was saved
+      // CBM x factor, unless an explicit chargeable-weight adjustment is saved.
       volumetric: {
         enabled: { type: Boolean, default: false },
         cbm: Number,
         length: Number,
         width: Number,
         height: Number,
-        factor: Number
+        factor: Number,
+        calculatedWeight: Number,
+        chargeableWeight: { type: Number, min: 0.01 }
       },
       // Transport to another office, charged on this package beside its shipping (spec v8): added to
       // what the customer owes, revenue 410500 when delivered and paid
@@ -410,6 +425,37 @@ const orderSchema = new Schema({
 
 orderSchema.index({ 'paymentList.tripId': 1 });
 orderSchema.index({ isDeleted: 1 });
+orderSchema.index({ createdAt: -1, _id: -1 });
+orderSchema.index({ isCanceled: 1, unsureOrder: 1, createdAt: -1 });
+orderSchema.index({ 'paymentList.deliveredPackages.trackingNumber': 1 });
+
+orderSchema.pre('save', function trackStageChange() {
+  if (this.isNew) this.orderStatusChangedAt = this.createdAt || new Date();
+  else if (this.isModified('orderStatus')) this.orderStatusChangedAt = new Date();
+});
+orderSchema.pre('findOneAndUpdate', async function trackStageChange() {
+  const update = this.getUpdate();
+  if (!update || Array.isArray(update)) return;
+  const status = update.$set?.orderStatus ?? update.orderStatus;
+  if (status === undefined) return;
+  const fields = update.$set || update;
+  const old = await this.model.findOne(this.getFilter()).select('orderStatus orderStatusChangedAt').session(this.getOptions().session || null).lean();
+  if (!old) return;
+  if (Number(status) !== Number(old.orderStatus)) fields.orderStatusChangedAt = new Date();
+  else if (old.orderStatusChangedAt) fields.orderStatusChangedAt = old.orderStatusChangedAt;
+  else delete fields.orderStatusChangedAt;
+});
+orderSchema.pre('updateMany', function trackBulkStageChange() {
+  const update = this.getUpdate();
+  if (!Array.isArray(update)) return;
+  update.forEach(stage => {
+    if (stage.$set?.orderStatus === undefined) return;
+    stage.$set.orderStatusChangedAt = { $cond: [
+      { $ne: ['$orderStatus', stage.$set.orderStatus] }, '$$NOW',
+      { $ifNull: ['$orderStatusChangedAt', { $ifNull: [{ $max: '$activity.createdAt' }, '$createdAt'] }] },
+    ] };
+  });
+});
 
 // Deleted orders are left out of every query unless it asks for them with { withDeleted: true }
 // or names isDeleted itself

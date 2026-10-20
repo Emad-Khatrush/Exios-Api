@@ -126,7 +126,7 @@ async function addCost(target, targetId, input, req) {
   const day = dayOf(input.day);
   await assertOpenPeriod(user, day);
   const amount = Number(input.amount);
-  if (!(amount > 0)) throw fail('المبلغ يجب أن يكون أكبر من صفر');
+  if (!Number.isFinite(amount) || !(amount > 0)) throw fail('المبلغ يجب أن يكون أكبر من صفر');
   let vendorId = input.vendorId;
   if (!validId(vendorId)) vendorId = (await createVendor({ name: input.vendorName, type: target === 'trip' ? 'carrier' : 'supplier' }))._id;
   let payFrom = input.payFromAccountId ? await moneyAccount(input.payFromAccountId, { what: 'دُفعت من' }) : null;
@@ -216,11 +216,26 @@ async function officeExpenseOptions(user, requestedOffice) {
   };
 }
 
+async function officeExpenseTrips({ search = '', id } = {}) {
+  const query = { inventoryType: 'inventoryGoods' };
+  if (id) {
+    if (!validId(id)) throw fail('الرحلة غير صالحة');
+    query._id = oid(id);
+  } else if (String(search).trim()) {
+    query.voyage = { $regex: String(search).trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+  }
+  return Inventory.find(query).select('voyage shippingType inventoryPlace status').sort({ createdAt: -1 }).limit(50).lean();
+}
+
 const expenseView = (bill) => ({
   _id: bill._id, number: bill.number, day: bill.day, office: bill.office, type: bill.expenseTypeId?.name || '', expenseTypeId: bill.expenseTypeId?._id || bill.expenseTypeId,
   amount: bill.total ?? bill.lines.reduce((sum, line) => sum + line.amount, 0), currency: bill.currency, usd: bill.totalUsd, note: bill.note || '',
   attachments: bill.attachments || [], status: bill.status, createdAt: bill.createdAt,
   paidFrom: bill.employeeId ? 'custody' : 'box',
+  target: bill.lines?.[0]?.target === 'trip' ? 'trip' : 'expense',
+  tripId: bill.lines?.[0]?.tripId?._id || bill.lines?.[0]?.tripId || null,
+  tripName: bill.lines?.[0]?.tripId?.voyage || '',
+  costCategory: bill.lines?.[0]?.costCategory || 'other',
   createdBy: bill.createdBy?._id ? { _id: bill.createdBy._id, name: `${bill.createdBy.firstName || ''} ${bill.createdBy.lastName || ''}`.trim() } : bill.createdBy,
   editable: bill.status === 'posted' && toDay(bill.createdAt) === today(),
   cancelReason: bill.cancelReason, replaces: bill.replaces,
@@ -229,7 +244,7 @@ const expenseView = (bill) => ({
 // What a staff member sees: only their own expenses, no totals
 async function myExpenses(user, { limit = 100 } = {}) {
   const bills = await SupplierBill.find({ officeExpense: true, createdBy: user._id, status: 'posted' })
-    .populate('expenseTypeId', 'name').sort({ day: -1, createdAt: -1 }).limit(Math.min(Number(limit) || 100, 500)).lean();
+    .populate('expenseTypeId', 'name').populate('lines.tripId', 'voyage').sort({ day: -1, createdAt: -1 }).limit(Math.min(Number(limit) || 100, 500)).lean();
   return bills.map(expenseView);
 }
 
@@ -246,6 +261,17 @@ async function buildExpense(input, user, files) {
   const vendor = await Vendor.findOne({ seedKey: 'cash_expenses' }).lean();
   if (!vendor) throw fail('إعداد المحاسبة غير مكتمل (مورد المصروفات النقدية)');
   const note = String(input.note || '').trim();
+  const target = input.target || 'expense';
+  if (!['expense', 'trip'].includes(target)) throw fail('اختر وجهة المصروف');
+  const line = { description: note ? `${type.name} - ${note}` : type.name, amount, target, office };
+  if (target === 'trip') {
+    if (!validId(input.tripId) || !await Inventory.exists({ _id: input.tripId, inventoryType: 'inventoryGoods' })) throw fail('اختر رحلة صحيحة للمصروف');
+    if (input.costCategory && !['shipping', 'customs', 'clearance', 'transport', 'other'].includes(input.costCategory)) throw fail('تصنيف مصروف الرحلة غير صالح');
+    line.tripId = oid(input.tripId);
+    line.costCategory = input.costCategory || 'other';
+  } else {
+    line.accountId = type.accountId;
+  }
   // Paid from the custody the staff member holds (owner's request 2026-10-04), in the custody's own
   // currency: a dinar expense from the dinar custody, valued at what that custody cost
   if (input.payFrom === 'custody') {
@@ -258,7 +284,7 @@ async function buildExpense(input, user, files) {
     return {
       vendorId: vendor._id, day, currency, paidImmediatelyFrom: account._id, employeeId: user._id, isQuickExpense: true, officeExpense: true, office,
       expenseTypeId: type._id, enteredFrom: 'officeExpense', note, attachments: files,
-      lines: [{ description: note ? `${type.name} - ${note}` : type.name, amount, target: 'expense', accountId: type.accountId, office }],
+      lines: [line],
     };
   }
   const box = (await officeBoxes(office)).find((b) => b.currency === currency);
@@ -266,7 +292,7 @@ async function buildExpense(input, user, files) {
   return {
     vendorId: vendor._id, day, currency, paidImmediatelyFrom: box.accountId, isQuickExpense: true, officeExpense: true, office,
     expenseTypeId: type._id, enteredFrom: 'officeExpense', note, attachments: files,
-    lines: [{ description: note ? `${type.name} - ${note}` : type.name, amount, target: 'expense', accountId: type.accountId, office }],
+    lines: [line],
   };
 }
 
@@ -293,6 +319,7 @@ async function updateOfficeExpense(id, input, files, req) {
   const data = await buildExpense({
     office: old.office, day: old.day, expenseTypeId: old.expenseTypeId, amount: old.total, currency: old.currency, note: old.note,
     payFrom: old.employeeId ? 'custody' : undefined,
+    target: old.lines?.[0]?.target || 'expense', tripId: old.lines?.[0]?.tripId, costCategory: old.lines?.[0]?.costCategory,
     // A field sent empty keeps its old value, except the note, which may be cleared
     ...Object.fromEntries(Object.entries(input).filter(([field, value]) => value !== undefined && (value !== '' || field === 'note'))),
   }, req.user, files?.length ? files : old.attachments || []);
@@ -323,7 +350,7 @@ async function reviewOfficeExpenses({ office, createdBy, expenseTypeId, from, to
     if (from) query.day.$gte = from;
     if (to) query.day.$lte = to;
   }
-  const bills = await SupplierBill.find(query).populate('expenseTypeId', 'name').populate('createdBy', 'firstName lastName')
+  const bills = await SupplierBill.find(query).populate('expenseTypeId', 'name').populate('lines.tripId', 'voyage').populate('createdBy', 'firstName lastName')
     .sort({ day: -1, createdAt: -1 }).limit(Math.min(Number(limit) || 300, 2000)).lean();
   const staff = await SupplierBill.distinct('createdBy', { officeExpense: true });
   const people = await User.find({ _id: { $in: staff } }).select('firstName lastName').lean();
@@ -357,6 +384,6 @@ async function setStaffOffice(userId, office) {
 
 module.exports = {
   options, createVendor, tripCosts, orderCosts, addTripCost, addOrderCost, cancelOwnBill,
-  officeExpenseOptions, myExpenses, createOfficeExpense, updateOfficeExpense, deleteOfficeExpense, reviewOfficeExpenses,
+  officeExpenseOptions, officeExpenseTrips, myExpenses, createOfficeExpense, updateOfficeExpense, deleteOfficeExpense, reviewOfficeExpenses,
   staffOffices, setStaffOffice, staffProfile,
 };

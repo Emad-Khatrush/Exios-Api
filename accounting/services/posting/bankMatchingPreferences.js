@@ -12,7 +12,7 @@ function preferences(input) {
   if (input.engines != null && (!Array.isArray(input.engines) || input.engines.some(e => !ENGINES.includes(e)))) throw invalid();
   const proposalDays = input.proposalDays ?? 7, automaticDays = input.automaticDays ?? 3;
   if (![0, 1, 3, 7].includes(proposalDays) || ![0, 1, 3].includes(automaticDays)) throw invalid();
-  return { engines: input.engines ?? ENGINES, proposalDays, automaticDays, requireIdentity: input.requireIdentity === true };
+  return { engines: input.engines ?? ENGINES, proposalDays, automaticDays, requireIdentity: input.requireIdentity === true, strongLedgerOnly: input.strongLedgerOnly === true };
 }
 
 function permittedHint(hint, settings) {

@@ -154,6 +154,9 @@ module.exports.createBalance = async (req, res, next) => {
         if (!order || order.isDeleted || order.isCanceled) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
         await Orders.updateOne({ _id: order._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
         if (!order.user) throw new ErrorHandler(400, errorMessages.USER_NOT_FOUND);
+        if (debtType === 'receivedGoods' && await Balance.exists({ order: order._id, deliveryInvoiceId: { $exists: true }, status: { $ne: 'canceled' } }).session(session)) {
+          throw new ErrorHandler(400, 'متبقي التسليم مسجل بالفعل لكل طرد؛ استخدم ديون فاتورة التسليم بدل إضافة دين مكرر');
+        }
         user = order.user;
 
         if (customerId && String(user.customerId).toLowerCase() !== String(customerId).trim().toLowerCase()) {
@@ -251,6 +254,19 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         throw new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND);
       }
 
+      if (existingBalance.deliveryInvoiceId) {
+        const invoice = await require('../models/invoice').findById(existingBalance.deliveryInvoiceId).session(session);
+        const pkg = invoice?.list?.find(item => String(item.packageId) === String(existingBalance.deliveryPackageId));
+        if (!invoice || invoice.isCanceled || !pkg || pkg.canceledAt || !['open', 'overdue'].includes(existingBalance.status)) throw new ErrorHandler(400, 'فاتورة التسليم أو دين الطرد غير متاح للسداد');
+        if (!Number.isFinite(new Date(createdAt).getTime()) || new Date(createdAt).toISOString().slice(0, 10) < new Date(invoice.createdAt).toISOString().slice(0, 10)) throw new ErrorHandler(400, 'تاريخ السداد لا يمكن أن يسبق تاريخ فاتورة التسليم');
+        invoice.markModified('settlement');
+        await invoice.save({ session });
+        if (currency === 'LYD') {
+          const limits = await require('../accounting/services/walletRate').lydRateLimits(createdAt);
+          if (limits && rateValue < limits.minimum) throw new ErrorHandler(400, 'سعر الصرف أقل من الحد المسموح');
+        }
+      }
+
       if (existingBalance.currency === 'LYD' && currency === 'USD') {
         throw new ErrorHandler(400, errorMessages.BALANCE_CURRENCY_NOT_ACCEPTED);
       }
@@ -284,6 +300,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
       }
 
       const amountInDebtCurrency = currency !== existingBalance.currency ? roundToTwo(Number(amount) / rateValue) : roundToTwo(Number(amount));
+      if (existingBalance.deliveryInvoiceId && !(amountInDebtCurrency > 0)) throw new ErrorHandler(400, 'المبلغ صغير جدًا بعد التحويل؛ راجع المبلغ وسعر الصرف');
       if (amountInDebtCurrency > Number(existingBalance.amount) + 0.000001) {
         throw new ErrorHandler(400, 'Payment exceeds the remaining debt balance');
       }
@@ -322,9 +339,9 @@ module.exports.createPaymentHistory = async (req, res, next) => {
       const previousTotal = Number(lastUserStatement[0]?.total || 0);
       const total = roundToTwo(previousTotal - deduct);
 
-      const debtMessage = (req.body?.debtType || existingBalance?.debtType) === 'invoice'
+      const debtMessage = existingBalance.debtType === 'invoice'
         ? 'فاتورة'
-        : (req.body?.debtType || existingBalance?.debtType) === 'receivedGoods'
+        : existingBalance.debtType === 'receivedGoods'
           ? 'بضاعة مستلمة'
           : 'دين عام';
 
@@ -361,10 +378,21 @@ module.exports.createPaymentHistory = async (req, res, next) => {
           note: `(Wallet was ${roundToTwo(previousTotal)} ${currency})`,
           category: existingBalance.debtType,
           statementId: debtStatement._id,
+          ...(existingBalance.deliveryInvoiceId && {
+            deliveryInvoiceId: existingBalance.deliveryInvoiceId,
+            deliveryPackageId: existingBalance.deliveryPackageId,
+            deliveryDebtId: existingBalance._id,
+            list: [{ id: existingBalance.deliveryPackageId }],
+          }),
         };
         await OrderPaymentHistory.create([data], { session });
       }
       await emitAccountingEvent('statement', debtStatement._id, { target: { balanceId: existingBalance._id } }, req.user, { session });
+      if (existingBalance.deliveryInvoiceId) {
+        const settings = await require('../accounting/services/periodLock').lockPeriod(session);
+        if (settings?.liveEnabled) await require('../accounting/services/posting/operations').postStatement(debtStatement._id, { session, user: req.user, target: { balanceId: existingBalance._id } });
+        await require('../utils/partialDelivery').refresh(existingBalance.deliveryInvoiceId, session);
+      }
 
       return balance;
     });
@@ -608,6 +636,7 @@ module.exports.deleteBalance = async (req, res, next) => {
     await runInTransaction(async (session) => {
       const balance = await Balance.findById(id).session(session).populate('owner', 'customerId');
       if (!balance) throw new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND);
+      if (balance.deliveryInvoiceId) throw new ErrorHandler(400, 'ألغِ دين التسليم من فاتورة التسليم حتى تعكس الدفعات والطرود معًا');
       if (balance.paymentHistory?.length) throw new ErrorHandler(400, errorMessages.BALANCE_HAS_PAYMENTS);
       await assertOpenPeriod(req.user, balance.createdAt, { session });
       const lost = balance.manualClosure?.lostBalance

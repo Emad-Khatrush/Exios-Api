@@ -10,6 +10,7 @@ const ErrorHandler = require('../../../utils/errorHandler');
 const { getConfig } = require('../config');
 const { roleIds, receivables, customerStatement } = require('./operations');
 const { purchaseKey, shipmentKey, customsFeeKey, CLAIM_EVENTS } = require('../claims/keys');
+const { shippingCollections } = require('./shippingCollections');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const notFound = (what) => new ErrorHandler(404, `${what} غير موجود`);
@@ -95,7 +96,7 @@ async function orderSummary(orderId) {
     if (packageId && among(row, SHIP_COST)) claim(shipmentKey(orderId, packageId)).cost += row.net;
     // A free package's share of its trip sits on the purchase cost with its package (decision 110)
     if (among(row, ['cost_purchase_invoices', 'cost_remittance'])) {
-      if (packageId && row._id.tripId) claim(shipmentKey(orderId, packageId)).cost += row.net;
+      if (packageId && row._id.tripId && !order.isPayment) claim(shipmentKey(orderId, packageId)).cost += row.net;
       else purchaseCost += row.net;
     }
     if (packageId && is(row, 'cost_customs')) claim(customsFeeKey(orderId, packageId)).cost += row.net;
@@ -186,16 +187,17 @@ async function tripSummary(tripId) {
   const roles = await roleIds(ROLES);
   const packageIds = (trip.orders || []).map((o) => o?.paymentList?._id).filter(Boolean);
   const international = trip.shippingType !== 'domestic';
+  const settlements = await shippingCollections(packageIds);
   const is = (row, role) => String(row._id.accountId) === roles[role];
   const among = (row, list) => list.some((role) => is(row, role));
 
   const tripMatch = { 'lines.tripId': oid(tripId) };
   const costRows = await ledgerBy(tripMatch, tripMatch, { packageId: '$lines.packageId' });
-  const packageMatch = { 'lines.packageId': { $in: packageIds.map(oid) } };
+  const packageMatch = { 'lines.packageId': { $in: packageIds.map(oid) }, 'lines.arKey': international ? /^SHP:[^:]+:[^:]+$/ : /:DOM$/ };
   const packageRows = packageIds.length ? await ledgerBy(packageMatch, packageMatch, { packageId: '$lines.packageId' }) : [];
 
   const orders = packageIds.length ? await Order.find({ 'paymentList._id': { $in: packageIds.map(oid) } })
-    .select('orderId isCanceled paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.volumetric').lean() : [];
+    .select('orderId isCanceled paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.volumetric paymentList.deliveredPackages.domesticFee').lean() : [];
   const wanted = new Set(packageIds.map(String));
   const packages = new Map();
   orders.forEach((order) => (order.paymentList || []).forEach((pkg) => {
@@ -203,15 +205,16 @@ async function tripSummary(tripId) {
     packages.set(String(pkg._id), {
       packageId: pkg._id, orderId: order._id, orderNumber: order.orderId, isCanceled: !!order.isCanceled, tracking: pkg.deliveredPackages?.trackingNumber, delivered: !!pkg.status?.received,
       // The chargeable weight, and whether it is the volumetric one (spec v8)
-      weight: Number(pkg.deliveredPackages?.weight?.total || 0), volumetric: !!pkg.deliveredPackages?.volumetric?.enabled, actualWeight: pkg.deliveredPackages?.weight?.actual, charge: require('../claims/keys').packageChargeCents(pkg),
+      weight: Number(pkg.deliveredPackages?.weight?.total || 0), volumetric: !!pkg.deliveredPackages?.volumetric?.enabled, actualWeight: pkg.deliveredPackages?.weight?.actual, charge: international ? require('../claims/keys').packageChargeCents(pkg) : Math.round(Number(pkg.deliveredPackages?.domesticFee?.usd || 0) * 100),
       revenue: 0, deferred: 0, open: 0, cost: 0,
+      collected: settlements.get(`SHP:${order._id}:${pkg._id}${international ? '' : ':DOM'}`)?.collected || 0,
     });
   }));
 
   let cost = 0;
   let costInProgress = 0;
   costRows.forEach((row) => {
-    if (among(row, SHIP_COST)) {
+    if (among(row, [...SHIP_COST, 'cost_purchase_invoices'])) {
       cost += row.net;
       const pkg = packages.get(String(row._id.packageId));
       if (pkg) pkg.cost += row.net;
@@ -222,9 +225,9 @@ async function tripSummary(tripId) {
     const pkg = packages.get(String(row._id.packageId));
     if (!pkg) return;
     if (is(row, 'customer_receivable')) pkg.open += row.net;
-    // A domestic leg carries cost only: the revenue belongs to the package's air or sea trip
-    if (international && among(row, SHIP_REVENUE)) pkg.revenue -= row.net;
-    if (international && is(row, 'deferred_shipping_revenue')) pkg.deferred -= row.net;
+    // International shipping and domestic transport use separate claim keys.
+    if (among(row, SHIP_REVENUE)) pkg.revenue -= row.net;
+    if (is(row, 'deferred_shipping_revenue')) pkg.deferred -= row.net;
   });
 
   const list = [...packages.values()].sort((a, b) => String(a.orderNumber).localeCompare(String(b.orderNumber)));
@@ -235,6 +238,7 @@ async function tripSummary(tripId) {
     allocationBase: international ? 'weight' : 'none', international,
     totals: {
       revenue, cost, profit: revenue - cost, margin: revenue ? Math.round(((revenue - cost) / revenue) * 1000) / 10 : null,
+      collected: list.reduce((sum, p) => sum + p.collected, 0), open: list.reduce((sum, p) => sum + Math.max(0, p.open), 0),
       deferred: list.reduce((sum, p) => sum + p.deferred, 0), costInProgress, totalCost: cost + costInProgress,
       packages: list.length, recognizedPackages: list.filter((p) => p.revenue > 0).length,
     },

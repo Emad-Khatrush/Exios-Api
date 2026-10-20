@@ -124,6 +124,10 @@ test('approval retains bank trial results and clears undo images', async () => {
   await trial.enable(runId);
   await scoped(() => bank.importStatement(bankAccount._id, rows(), {}));
   const count = await JournalEntry.countDocuments();
+  await expect(migration.commitRun(runId)).rejects.toThrow('تقرير الدفاتر');
+  const report = await require('../services/reports/statements').balanceSheet({ asOf: '2026-10-09' });
+  expect(report.balanced).toBe(true);
+  await MigrationRun.updateOne({ runId }, { $set: { report: { balanced: report.balanced, openingCash: [] } } });
   await migration.commitRun(runId);
   expect(await JournalEntry.countDocuments()).toBeGreaterThanOrEqual(count);
   expect((await BankStatementLine.findOne()).lineStatus).toBe('created_entry');

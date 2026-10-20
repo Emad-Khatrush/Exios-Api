@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const invoiceSchema = new Schema({
+  partialDelivery: { type: Boolean, default: false },
+  settlement: {
+    paidUSD: Number, paidLYD: Number, paidEquivalentUSD: Number,
+    remainingUSD: Number, writtenOffUSD: Number, paymentStatus: String,
+  },
   customer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User', // Reference to the 'User' collection

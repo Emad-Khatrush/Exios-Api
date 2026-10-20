@@ -30,6 +30,9 @@ const accountSchema = new Schema({
   // Transactional mutex for operations that spend from this account and must recheck its balance.
   postingVersion: { type: Number, default: 0 },
   sortOrder: { type: Number, default: 0 },
+  analysisCategory: String,
+  // Explicit customer wallet used to reconcile a partner current account's deposits.
+  walletCustomerCode: { type: String, trim: true, uppercase: true },
   // Set on accounts created by the setup script, so re-running it recognises them even
   // after their code or name was changed by hand
   seedKey: { type: String, default: undefined },

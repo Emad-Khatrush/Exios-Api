@@ -89,6 +89,7 @@ async function apply(lineId, input, { session, req }) {
   const payables = require('./payables');
   const line = await BankStatementLine.findById(lineId).session(session).lean();
   if (!line || line.lineStatus !== 'unmatched' || line.amount >= 0) throw fail('سطر الكشف غير متاح؛ حدّث الصفحة');
+  require('./bankEvidence').assertReviewed(line);
   const account = await partnerAccount(line.accountId, session);
   if (!account || (account.currency || 'USD') !== 'USD') throw fail('هذا الإجراء لحساب جارٍ بالدولار');
   const ids = [...new Set((input.billIds || []).map(String))];

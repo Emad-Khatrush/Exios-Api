@@ -6,6 +6,7 @@ const { getBalance, valueOutflow } = require('../carrying');
 const { isDay } = require('../dates');
 const { roundHalfAway } = require('../money');
 const { logAudit } = require('../audit');
+const { getConfig } = require('../config');
 const {
   fail, currencyOf, isForeign, getAccount, toCurrencyMinor, decimalsOf, RateBook, valueOut, moneyLine, addFxLine,
   nextDocNumber, findExisting, resolveAccount, lockPostingAccounts, isBeforeCashCount,
@@ -151,7 +152,9 @@ async function createCashCount(input, { session, req }) {
 
   if (difference !== 0) {
     const rates = new RateBook(session);
-    const overShort = await resolveAccount('cash_over_short');
+    const config = await getConfig();
+    const role = difference < 0 ? 'cash_shortage' : 'cash_surplus';
+    const overShort = await resolveAccount(config.settings?.accountRoles?.[role] ? role : 'cash_over_short');
     const office = account.office;
     let usd;
     if (difference < 0) {

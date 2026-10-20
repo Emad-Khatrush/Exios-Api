@@ -1,13 +1,20 @@
 const ErrorHandler = require('./errorHandler');
+const REFERENCE_FIELDS = new Set(['madeBy', 'user', 'deletedBy']);
+const referenceId = value => value == null ? null : String(value._id || value);
 
 // Financial actions have their own routes. The general editor cannot impersonate
 // a cancellation, rewrite audit history, or reassign the owner through a raw ID.
 function guardOrderUpdate(body, saved) {
-  if (Object.keys(body).some(key => key.startsWith('$'))) throw new ErrorHandler(400, 'Update operators are not accepted');
-  for (const key of ['isCanceled', 'isDeleted', 'deletedAt', 'deletedBy', 'cancelation', 'invoiceConfirmed', 'requestedEditDetails', 'editedAmounts', 'accountingMutationVersion', 'madeBy', 'orderId', 'user']) {
+  if (Object.keys(body).some(key => key.startsWith('$') || key.includes('.'))) throw new ErrorHandler(400, 'Update operators and dotted field paths are not accepted');
+  for (const key of ['isCanceled', 'isDeleted', 'deletedAt', 'deletedBy', 'cancelation', 'invoiceConfirmed', 'requestedEditDetails', 'editedAmounts', 'accountingMutationVersion', 'madeBy', 'orderId', 'orderStatusChangedAt', 'user']) {
     if (body[key] === undefined) continue;
     const value = saved[key]?.toObject ? saved[key].toObject() : saved[key];
-    if (JSON.stringify(body[key]) !== JSON.stringify(value)) throw new ErrorHandler(400, `Use the dedicated action to change ${key}`);
+    // Read APIs populate staff/customer references. Sending the same reference
+    // back is harmless; compare IDs rather than an object against an ObjectId.
+    const same = REFERENCE_FIELDS.has(key)
+      ? referenceId(body[key]) === referenceId(value)
+      : JSON.stringify(body[key]) === JSON.stringify(value);
+    if (!same) throw new ErrorHandler(400, `Use the dedicated action to change ${key}`);
     delete body[key];
   }
   for (const key of ['receivedUSD', 'receivedLYD', 'receivedShipmentUSD', 'receivedShipmentLYD']) {

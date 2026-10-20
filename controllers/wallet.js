@@ -155,6 +155,10 @@ module.exports.getLatestStatements = async (req, res, next) => {
 
     // 1. Build dynamic query object based on optional filters
     const query = {};
+    if (req.query.office) {
+      if (typeof req.query.office !== 'string' || req.query.office.length > 100) return res.status(400).json({ message: 'المكتب غير صالح' });
+      query.office = req.query.office === '__unassigned' ? { $in: [null, ''] } : req.query.office;
+    }
     
     // Filter by calculationType (+ or -) if provided
     if (req.query.calculationType) {
@@ -176,7 +180,7 @@ module.exports.getLatestStatements = async (req, res, next) => {
 
     // 2. Fetch paginated records using the constructed query filter
     const statements = await UserStatement.find(query)
-      .sort({ createdAt: -1 }) // Newest first
+      .sort({ createdAt: -1, _id: -1 }) // Stable newest-first order, including equal timestamps
       .skip(skip)
       .limit(limit)
       .populate('user', 'firstName lastName customerId')
@@ -219,11 +223,25 @@ module.exports.getLatestStatements = async (req, res, next) => {
       });
     }
 
+    // Keep office attribution on the operation, never on the employee's current office.
+    // Include offices present in old statements, even if no longer active in settings.
+    let officeOptions;
+    if (req.query.withSummary === 'true') {
+      const [configured, recorded] = await Promise.all([
+        require('../utils/offices').officeList(), UserStatement.distinct('office'),
+      ]);
+      const legacyNames = { tripoli: 'طرابلس', benghazi: 'بنغازي', misurata: 'مصراتة', turkey: 'تركيا', china: 'الصين', bank: 'بنك (تسجيل قديم)', almutahidaTrBank: 'بنك المتحدة (تسجيل قديم)' };
+      const officesByCode = new Map(configured.map(o => [o.code, o.name !== o.code ? o.name : legacyNames[o.code] || o.code]));
+      for (const code of recorded) if (code && !officesByCode.has(code)) officesByCode.set(code, legacyNames[code] || code);
+      officeOptions = [...officesByCode].map(([code, name]) => ({ code, name }));
+    }
+
     // 6. Send response
     res.status(200).json({
       statements,
       hasMore,
       total: totalCount,
+      officeOptions,
       summary
     });
 
@@ -459,6 +477,71 @@ const protectedStatement = (statement) => {
 };
 // The fields the journal entry is made from: changing only the text does not re-post it
 const POSTED_STATEMENT_FIELDS = ['createdAt', 'amount', 'office', 'actionType', 'accountId'];
+const isWithdrawal = statement => statement.calculationType === '-' && (statement.actionType === 'withdrawal' || statement.paymentType === 'withdrawal');
+async function assertEditableWithdrawal(statement, req, session) {
+  if (!req.user.roles?.isAdmin) throw new ErrorHandler(403, 'تعديل وحذف السحب النقدي متاح للأدمن فقط');
+  const locked = protectedStatement(statement);
+  if (locked) throw new ErrorHandler(400, locked);
+  if (await OrderPaymentHistory.exists({ statementId: statement._id }).session(session)) throw new ErrorHandler(400, 'السحب مرتبط بدفعة طلبية؛ صحح الدفعة من مصدرها أولًا');
+  await require('../accounting/services/periodLock').lockPeriod(session);
+}
+async function finishWithdrawalEvents(statementId, event, result, session, req) {
+  const { AccountingEvent, JournalEntry } = require('../accounting/models');
+  const reversed = await JournalEntry.find({ 'source.model': 'UserStatement', 'source.id': statementId, status: 'reversed', reversalOf: null }).select('_id').session(session).lean();
+  await require('../accounting/services/posting/bankMatchLifecycle').releaseReversedMatches(reversed.map(entry => entry._id), { session, req, canceledModel: 'UserStatement', canceledId: statementId, reason: 'تصحيح أو حذف سحب نقدي' });
+  await AccountingEvent.updateMany({ refId: statementId, type: { $in: ['statement', 'statementUpdated', 'statementDeleted'] }, status: { $in: ['pending', 'failed'] }, ...(event && { _id: { $ne: event._id } }) },
+    { $set: { status: 'skipped', processedAt: new Date(), result: { reason: 'Superseded by synchronous admin withdrawal correction' } }, $unset: { lastError: 1 } }, { session });
+  if (event) { event.status = 'done'; event.result = result; event.processedAt = new Date(); event.lastError = undefined; await event.save({ session }); }
+}
+async function updateWithdrawal(statement, body, req, session) {
+  await assertEditableWithdrawal(statement, req, session);
+  if (body.actionType !== undefined && body.actionType !== 'withdrawal') throw new ErrorHandler(400, 'لا يمكن تحويل السحب النقدي إلى نوع آخر');
+  if (body.currency !== undefined && body.currency !== statement.currency) throw new ErrorHandler(400, 'عملة السحب لا تتغير؛ احذف العملية وأنشئها بالعملة الصحيحة');
+  await assertOpenPeriod(req.user, statement.createdAt, { session });
+  const day = body.createdAt === undefined ? statement.createdAt : new Date(body.createdAt);
+  if (!day || isNaN(new Date(day).getTime())) throw new ErrorHandler(400, 'اختر تاريخًا صحيحًا');
+  await assertOpenPeriod(req.user, day, { session });
+  const amount = body.amount === undefined ? statement.amount : roundToTwo(positiveWalletAmount(body.amount));
+  if (!(amount > 0)) throw new ErrorHandler(400, 'المبلغ يجب ألا يقل عن 0.01');
+  const description = String(body.description ?? statement.description).trim();
+  if (!description) throw new ErrorHandler(400, 'اكتب بيان السحب');
+  const source = body.withdrawalSource ?? statement.withdrawalSource ?? 'box';
+  const office = body.office ?? statement.office;
+  const operations = require('../accounting/services/posting/operations');
+  const actor = source === 'custody' ? { _id: statement.createdBy } : req.user;
+  const funding = await operations.resolveWithdrawalAccount(actor, office, statement.currency, source, session);
+  const { AccountingSettings, JournalEntry } = require('../accounting/models');
+  const settings = await AccountingSettings.findOne({ key: 'main' }).session(session).lean();
+  const hasEntry = await JournalEntry.exists({ 'source.model': 'UserStatement', 'source.id': statement._id, status: 'posted', reversalOf: null }).session(session);
+  if (source === 'custody' && !settings?.liveEnabled && !hasEntry) throw new ErrorHandler(400, 'فعّل الترحيل المباشر قبل الصرف من العهدة');
+  const allStatements = await UserStatement.find({ user: statement.user, currency: statement.currency }).sort({ _id: 1 }).session(session);
+  const opening = getOpeningBalance(allStatements);
+  const before = statement.toObject();
+  const oldSigned = signedAmount(statement);
+  statement.amount = amount; statement.createdAt = day; statement.description = description;
+  statement.note = body.note === undefined ? statement.note : String(body.note);
+  statement.actionType = 'withdrawal'; statement.withdrawalSource = source;
+  statement.office = funding.office || office;
+  statement.accountId = source === 'box' ? funding.account._id : undefined;
+  statement.custodyEmployeeId = source === 'custody' ? statement.createdBy : undefined;
+  if (body.rate !== undefined) {
+    if (body.rate !== '' && body.rate !== null && (!Number.isFinite(Number(body.rate)) || Number(body.rate) <= 0)) throw new ErrorHandler(400, 'سعر الصرف يجب أن يكون موجبًا');
+    statement.rate = body.rate === '' || body.rate === null ? undefined : Number(body.rate);
+  }
+  const editedFields = ['amount', 'createdAt', 'description', 'note', 'actionType', 'withdrawalSource', 'office', 'accountId', 'custodyEmployeeId', 'rate'];
+  statement.editHistory.push({ editedBy: req.user._id, editedAt: new Date(), before: Object.fromEntries(editedFields.map(field => [field, before[field]])) });
+  await statement.save({ session });
+  const delta = roundToTwo(signedAmount(statement) - oldSigned);
+  if (delta) await adjustWalletBalance(statement.user, statement.currency, delta, session);
+  await rebuildStatementTotals(allStatements.map(item => String(item._id) === String(statement._id) ? statement : item), opening, session);
+  const event = await emitAccountingEvent('statementUpdated', statement._id, {}, req.user, { session });
+  if (settings?.liveEnabled || hasEntry) {
+    const result = await operations.repostStatement(statement._id, { session, user: req.user });
+    await finishWithdrawalEvents(statement._id, event, result, session, req);
+  }
+  await require('../accounting/services/audit').logAudit({ req, action: 'withdrawal.update', model: 'UserStatement', docId: statement._id, before, after: statement }, session);
+  return UserStatement.findById(statement._id).session(session).populate('user');
+}
 
 module.exports.deleteStatement = async (req, res, next) => {
   try {
@@ -469,7 +552,9 @@ module.exports.deleteStatement = async (req, res, next) => {
       if (!statement) throw new ErrorHandler(404, 'Statement not found');
       if (statement.linkedCustomerRefundId || statement.linkedBankRefundLineId) throw new ErrorHandler(400, 'هذه الحركة مرتبطة باسترداد مورد؛ فك الربط قبل حذفها');
       // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
-      if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
+      const withdrawal = isWithdrawal(statement);
+      if (withdrawal) await assertEditableWithdrawal(statement, req, session);
+      else if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
       const locked = protectedStatement(statement);
       if (locked) throw new ErrorHandler(400, locked);
       await assertOpenPeriod(req.user, statement.createdAt, { session });
@@ -499,7 +584,12 @@ module.exports.deleteStatement = async (req, res, next) => {
       }], { session });
 
       await UserStatement.deleteOne({ _id: statement._id }, { session });
-      await emitAccountingEvent('statementDeleted', statement._id, {}, req.user, { session });
+      const deletionEvent = await emitAccountingEvent('statementDeleted', statement._id, {}, req.user, { session });
+      if (withdrawal) {
+        const reversed = await require('../accounting/services/posting/operations').reverseStatement(statement._id, { session, user: req.user });
+        await finishWithdrawalEvents(statement._id, deletionEvent, reversed, session, req);
+        await require('../accounting/services/audit').logAudit({ req, action: 'withdrawal.delete', model: 'UserStatement', docId: statement._id, before: snapshot, after: { archivedId: archived._id } }, session);
+      }
 
       // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
       const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement), session);
@@ -532,6 +622,7 @@ module.exports.updateStatement = async (req, res, next) => {
       const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session);
       if (!statement) throw new ErrorHandler(404, 'Statement not found');
       if (statement.linkedCustomerRefundId || statement.linkedBankRefundLineId) throw new ErrorHandler(400, 'هذه الحركة مرتبطة باسترداد مورد؛ فك الربط قبل تعديلها');
+      if (isWithdrawal(statement)) return updateWithdrawal(statement, req.body, req, session);
       // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
       if (statement.calculationType === '-') throw new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted');
 
@@ -810,6 +901,13 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
+    const withdrawalSource = req.body.withdrawalSource || 'box';
+    if (actionType === 'withdrawal' && !['box', 'custody'].includes(withdrawalSource)) throw new ErrorHandler(400, 'اختر مصدر السحب النقدي');
+    if (actionType === 'withdrawal' && withdrawalSource === 'custody') {
+      const { settings } = await require('../accounting/services/config').getConfig();
+      if (!settings?.liveEnabled) throw new ErrorHandler(400, 'السحب من العهدة يحتاج إلى تفعيل الترحيل المحاسبي المباشر');
+      if (!(req.user?.roles?.isEmployee || req.user?.roles?.isAccountant || req.user?.roles?.isAdmin)) throw new ErrorHandler(403, 'السحب من العهدة متاح للموظفين فقط');
+    }
     const amountValue = roundToTwo(positiveWalletAmount(amount));
     if (amountValue <= 0) throw new ErrorHandler(400, 'Amount must be at least 0.01');
 
@@ -833,6 +931,10 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       return next(new ErrorHandler(400, 'Insufficient wallet balance'));
     }
 
+    if (actionType === 'withdrawal') {
+      await require('../accounting/services/posting/operations').resolveWithdrawalAccount(req.user, office, currency, withdrawalSource);
+    }
+
     let list = [];
     if (req.body.list && typeof req.body.list === 'string') {
       list = JSON.parse(req.body.list);
@@ -853,6 +955,11 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     }
 
     const userStatement = await runInTransaction(async (session) => {
+    const withdrawalSettings = actionType === 'withdrawal' ? await require('../accounting/services/periodLock').lockPeriod(session) : null;
+    const funding = actionType === 'withdrawal'
+      ? await require('../accounting/services/posting/operations').resolveWithdrawalAccount(req.user, office, currency, withdrawalSource, session)
+      : null;
+    if (withdrawalSource === 'custody' && actionType === 'withdrawal' && !withdrawalSettings?.liveEnabled) throw new ErrorHandler(400, 'السحب من العهدة يحتاج إلى تفعيل الترحيل المحاسبي المباشر');
     // Deducted atomically and only if the balance still covers it: two payments at the same moment
     // (a double click, two employees) cannot both spend the same money. It used to read the
     // balance, subtract, and write the result, so the second payment overwrote the first.
@@ -883,6 +990,8 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       note,
       actionType,
       office,
+      ...(actionType === 'withdrawal' && { withdrawalSource, office: funding.office || office,
+        ...(withdrawalSource === 'custody' ? { custodyEmployeeId: req.user._id } : { accountId: funding.account._id }) }),
       attachments: files,
       ...(currency === 'LYD' && Number(rate) > 0 && { rate: Number(rate) }),
     }], { session });
@@ -918,6 +1027,11 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     await emitAccountingEvent('statement', userStatement._id, {
       target: { orderId: order?._id, category, packageIds: (list || []).map((p) => p?._id || p?.id).filter(Boolean) },
     }, req.user, { session });
+    // Post every live withdrawal in the same transaction as the wallet deduction.
+    // The queued event finds this entry and skips it, so it cannot post twice.
+    if (actionType === 'withdrawal' && withdrawalSettings?.liveEnabled) {
+      await require('../accounting/services/posting/operations').postStatement(userStatement._id, { session, user: req.user });
+    }
     return userStatement;
     });
 

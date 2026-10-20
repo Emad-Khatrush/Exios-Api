@@ -146,7 +146,9 @@ test('import suggests the original order invoice with reasons and waits for expl
   expect(await JournalEntry.countDocuments()).toBe(0);
   const suggested = await bank.suggestions(source._id);
   expect(suggested[line._id].billCandidates[0].orders[0].number).toBe('MATCH-ORDER-1');
-  const expense = await account('530800');
+  // Selecting purchase cost must retain purchase matching; an explicit operating
+  // expense category is allowed independently (rent is not an order purchase).
+  const expense = await account('510400');
   await expect(tx(session => bank.createEntryForLine(line._id, { counterAccountId: expense._id }, { session, req }))).rejects.toThrow('اختر الفاتورة الأصلية');
   await tx(session => bank.createEntryForLine(line._id, { billId: original._id }, { session, req }));
   const posted = await BankStatementLine.findById(line._id).lean();
@@ -168,7 +170,8 @@ test('multiple same-value invoices require a choice and the user can choose the 
   expect(result.notPosted[0].reason).toContain('اختر الفاتورة الأصلية');
   const [hint] = await bank.classifyRows(source._id, [{ ...row, description: 'Other unseen statement row', reference: 'NEW' }]);
   expect(hint.billCandidates).toHaveLength(2);
-  expect(hint.suggestedBillId).toBeNull();
+  expect(String(hint.suggestedBillId)).toBe(String(second._id));
+  expect(hint.requiresConfirmation).toBe(true);
   await tx(session => bank.createEntryForLine(line._id, { billId: second._id }, { session, req }));
   expect((await SupplierBill.findById(first._id)).status).toBe('draft');
   expect((await SupplierBill.findById(second._id)).status).toBe('posted');

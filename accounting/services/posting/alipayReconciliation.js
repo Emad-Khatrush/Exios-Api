@@ -4,8 +4,10 @@ const { fail } = require('./common');
 const { addDays } = require('../dates');
 
 const referenceOf = value => String(value || '').trim();
-const walletReady = line => line.sourceProvider !== 'alipay' || ['balance', 'confirmed'].includes(line.walletImpact);
+const walletReady = line => !line.duplicateReviewPending && (line.sourceProvider !== 'alipay' || ['balance', 'confirmed'].includes(line.walletImpact));
 function assertWallet(line) {
+  if (line.duplicateResolvedToId) throw fail('هذا السطر نسخة من سطر أصلي؛ افتح السطر الأصلي للمطابقة');
+  if (line.duplicateReviewPending) throw fail('يوجد سطر مستورد بنفس المرجع والمبلغ والتاريخ؛ راجع التكرار قبل المطابقة أو الترحيل');
   if (!walletReady(line)) throw fail('طريقة الاستلام غير مذكورة في كشف Alipay؛ أكد وصول المبلغ إلى رصيد Alipay من تفاصيل السطر قبل المطابقة أو الترحيل');
 }
 // Only a full, explicitly recorded transaction ID proves an automatic Alipay match. Amount/date

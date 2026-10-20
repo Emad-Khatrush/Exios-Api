@@ -257,7 +257,7 @@ test('salary requires an employee user, and company loan repayments cannot excee
   const cash = await account('110101');
   await expect(tx((session) => people.createSalary({
     employeeId: customerId, month: '2026-03', day: '2026-03-31', office: 'tripoli', paidFromAccountId: cash._id, grossAmount: 500,
-  }, { session, req }))).rejects.toThrow('employee');
+  }, { session, req }))).rejects.toThrow(/employee|الموظف/);
 
   await fund('110101', 5000);
   await tx((session) => people.createEquity({ type: 'loan_in', partyName: 'Lender A', day: '2026-03-01', accountId: cash._id, amount: 1000 }, { session, req }));

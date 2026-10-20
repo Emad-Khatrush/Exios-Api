@@ -8,6 +8,7 @@
 const { BankStatementLine } = require('../../models/documents');
 const { Account, JournalEntry } = require('../../models');
 const UserStatement = require('../../../models/userStatement');
+const User = require('../../../models/user');
 const { postEntry } = require('../ledger');
 const { resolveAccount } = require('../roles');
 const { addDays, toDay } = require('../dates');
@@ -25,11 +26,12 @@ const movable = (s) => !s.accountingSource?.model && !['cancellation', 'wallet',
 const daysApart = (a, b) => Math.round(Math.abs(Date.parse(a) - Date.parse(b)) / 86400000);
 const customerName = (u) => [u?.firstName, u?.lastName].filter(Boolean).join(' ') || u?.customerId || '';
 const cents = (amount) => Math.round(Number(amount) * 100);
+const linkedCustomerCode = account => account?.walletCustomerCode || (account?.seedKey === '110401' ? 'N999' : null);
 
 // Only an asset current account (money a partner holds for us), not a card or a payable
 const partnerAccount = async (accountId, session) => {
   const account = await Account.findById(accountId).session(session || null).lean();
-  return account?.isCash && account.cashKind === 'current' && account.type === 'asset' ? account : null;
+  return account?.isActive && account.isCash && account.cashKind === 'current' && account.type === 'asset' ? account : null;
 };
 
 // Every deposit of the partner that could be behind each unmatched incoming line, any amount
@@ -39,21 +41,28 @@ async function candidates(accountId, { session, lineIds } = {}) {
   const lines = await BankStatementLine.find({ accountId: account._id, lineStatus: 'unmatched', amount: { $gt: 0 }, ...(lineIds && { _id: { $in: lineIds } }) })
     .session(session || null).lean();
   // The partner is the customer whose deposits were made into this account
-  const customers = lines.length ? await UserStatement.distinct('user', { accountId: account._id }).session(session || null) : [];
+  if (!lines.length) return { account, result: {} };
+  const code = linkedCustomerCode(account);
+  let customers;
+  if (code) {
+    const linked = await User.find({ customerId: code }).select('_id').session(session || null).lean();
+    if (linked.length !== 1) throw fail(`راجع ربط العميل ${code} بحساب ${account.name}: يجب أن يوجد عميل واحد بهذا الكود`);
+    customers = linked.map(user => user._id);
+  } else customers = await UserStatement.distinct('user', { accountId: account._id }).session(session || null);
   if (!customers.length) return { account, result: {} };
   const { count } = await require('../config').getConfig();
   const beforeCount = (day) => !!count && (day < count.day || (day === count.day && count.endOfDay));
   // Deposits already tied to a line of the count period
-  const covered = new Set((await BankStatementLine.distinct('partnerStatementIds', { accountId: account._id }).session(session || null)).map(String));
+  const covered = new Set((await BankStatementLine.distinct('partnerStatementIds', { lineStatus: { $in: ['matched', 'created_entry', 'ignored'] } }).session(session || null)).map(String));
   const days = lines.map((l) => l.day).sort();
   const statements = await UserStatement.find({ user: { $in: customers }, calculationType: '+', currency: account.currency || 'USD',
     createdAt: { $gte: new Date(`${addDays(days[0], -WINDOW)}T00:00:00Z`), $lte: new Date(`${addDays(days[days.length - 1], WINDOW + 1)}T00:00:00Z`) } })
     .populate('user', 'firstName lastName customerId').populate('accountId', 'code name').session(session || null).lean();
-  const usable = statements.filter(movable);
+  const usable = statements.filter(s => movable(s) && !covered.has(String(s._id)));
   // The live entry of each deposit, and whether a statement line already took it
-  const entries = await JournalEntry.find({ 'source.model': 'UserStatement', 'source.id': { $in: usable.map((s) => s._id) }, status: 'posted' })
+  const entries = await JournalEntry.find({ 'source.model': 'UserStatement', 'source.id': { $in: usable.map((s) => s._id) }, status: 'posted', reversalOf: null })
     .select('number source lines.accountId').session(session || null).lean();
-  const taken = new Set((await BankStatementLine.find({ matchedEntryIds: { $in: entries.map((e) => e._id) } }).select('matchedEntryIds').session(session || null).lean())
+  const taken = new Set((await BankStatementLine.find({ lineStatus: { $in: ['matched', 'created_entry'] }, matchedEntryIds: { $in: entries.map((e) => e._id) } }).select('matchedEntryIds').session(session || null).lean())
     .flatMap((l) => l.matchedEntryIds.map(String)));
   const entryOf = new Map(entries.map((e) => [String(e.source.id), e]));
   const result = {};
@@ -127,8 +136,12 @@ async function moveToAccount(statementId, account, { session, req }) {
 async function apply(lineId, input, { session, req }) {
   const line = await BankStatementLine.findById(lineId).session(session).lean();
   if (!line || line.lineStatus !== 'unmatched') throw fail('سطر الكشف غير متاح؛ حدّث الصفحة');
+  require('./bankEvidence').assertReviewed(line);
   const ids = [...new Set((input.statementIds || [input.statementId]).filter(Boolean).map(String))];
   if (!ids.length) throw fail('اختر الإيداع');
+  await Account.updateOne({ _id: line.accountId, isActive: true }, { $inc: { postingVersion: 1 } }, { session });
+  const locked = await UserStatement.updateMany({ _id: { $in: ids } }, { $inc: { matchingVersion: 1 } }, { session });
+  if (locked.matchedCount !== ids.length) throw fail('إيداع المحفظة لم يعد موجودًا؛ حدّث الصفحة');
   const { account, result } = await candidates(line.accountId, { session, lineIds: [line._id] });
   const chosen = ids.map((id) => (result[line._id] || []).find((c) => String(c.statementId) === id));
   if (!account || chosen.some((c) => !c)) throw fail('بعض الإيداعات المختارة لم تعد متاحة لهذا السطر؛ حدّث الصفحة');
@@ -165,9 +178,35 @@ async function apply(lineId, input, { session, req }) {
     entryIds.push(entry._id);
   }
   const matched = await require('./bank').manualMatch(line._id, entryIds, { session, req });
+  await BankStatementLine.updateOne({ _id: line._id }, { $set: { partnerStatementIds: ids } }, { session });
   await logAudit({ req, action: 'bank.partnerDepositMatch', model: 'AccountingBankStatementLine', docId: line._id,
     after: { statementIds: ids, moved: chosen.filter((c) => !c.onAccount).length, difference, daysApart: far } }, session);
   return matched;
 }
 
-module.exports = { suggestions, options, apply, WINDOW, TOLERANCE };
+// Opted-in linked wallets: one exact deposit and one statement row on the same day.
+// Ambiguous amounts, date differences and rounding differences always need manual review.
+async function autoMatch(accountId, { session, req }) {
+  const account = await partnerAccount(accountId, session);
+  if (!linkedCustomerCode(account)) return { matched: 0 };
+  const lines = await BankStatementLine.find({ accountId, amount: { $gt: 0 }, lineStatus: 'unmatched', duplicateReviewPending: { $ne: true }, purchaseReviewPending: { $ne: true } }).session(session).lean();
+  if (!lines.length) return { matched: 0 };
+  const { result } = await candidates(accountId, { session, lineIds: lines.map(line => line._id) });
+  let matched = 0;
+  for (const line of lines) {
+    const exact = (result[line._id] || []).filter(item => item.day === line.day && item.difference === 0);
+    if (exact.length !== 1) continue;
+    const competing = await BankStatementLine.countDocuments({ accountId, day: line.day, amount: line.amount }).session(session);
+    if (competing !== 1) continue;
+    if (!exact[0].beforeCount && !exact[0].onAccount) {
+      // Importing a statement must not force a financial correction into a locked period.
+      try { await require('../periodGuard').assertOpenPeriod(req?.user, exact[0].day, { session }); }
+      catch (error) { if ([400, 403].includes(error.statusCode)) continue; throw error; }
+    }
+    await apply(line._id, { statementId: exact[0].statementId }, { session, req });
+    matched++;
+  }
+  return { matched };
+}
+
+module.exports = { suggestions, options, apply, autoMatch, linkedCustomerCode, WINDOW, TOLERANCE };

@@ -105,6 +105,8 @@ async function cancelManualEntry(entryId, { reason, session, req }) {
   const reversal = await reverseEntry(entry._id, {
     session, user: req?.user, reason, eventKey: `CANCEL:JournalEntry:${entry._id}`, eventType: 'CANCEL', onLocked,
   });
+  await require('./posting/bankMatchLifecycle').releaseReversedMatches([entry._id],
+    { session, req, reason, canceledModel: 'AccountingJournalEntry', canceledId: entry._id });
   const supplement = await JournalEntry.findOne({ eventKey: new RegExp(`^YEAR_CLOSE_SUPP:\\d{4}:${entry._id}$`), status: 'posted' }).session(session);
   if (supplement) {
     await reverseEntry(supplement._id, { session, user: req?.user, reason, eventKey: `CANCEL:JournalEntry:${supplement._id}`, eventType: 'YEAR_CLOSE', onLocked: 'allow' });

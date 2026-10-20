@@ -43,7 +43,8 @@ async function getVoucher(entryId, { session, user }) {
   const [partner, vendor, employee] = await Promise.all([
     partnerId && User.findById(partnerId).select('firstName lastName customerId phone').lean(),
     vendorId && Vendor.findById(vendorId).select('name').lean(),
-    employeeId && User.findById(employeeId).select('firstName lastName').lean(),
+    employeeId && (async () => await User.findById(employeeId).select('firstName lastName').lean()
+      || await require('../models/Employee').Employee.findById(employeeId).select('firstName lastName').lean())(),
   ]);
   const person = partner ? `${partner.firstName || ''} ${partner.lastName || ''}`.trim() : vendor?.name || (employee ? `${employee.firstName || ''} ${employee.lastName || ''}`.trim() : null);
 

@@ -7,6 +7,7 @@ const { getConfig } = require('../config');
 const { isDay, addDays } = require('../dates');
 const { fail, currencyOf, moneyLine, RateBook, toCurrencyMinor } = require('./common');
 async function post(line, { session, req }) {
+  require('./bankEvidence').assertReviewed(line);
   if (line.amount <= 0 || line.lineStatus !== 'unmatched' || line.movementKind === 'card_payment') throw fail('اختر استرداداً وارداً غير مرحّل');
   const bank = await Account.findById(line.accountId).session(session).lean();
   const pending = await Account.findOne({ $or: [{ seedKey: '219100' }, { code: '219100' }] }).session(session).lean();

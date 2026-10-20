@@ -8,6 +8,7 @@
 //   that entry instead of getting a new one: import matches automatically, and posting a line
 //   is refused while an unmatched entry of the same amount sits within a week of it.
 const crypto = require('crypto');
+const evidence = require('./bankEvidence');
 const { preferences, permittedHint } = require('./bankMatchingPreferences');
 const mongoose = require('mongoose');
 const { BankStatementLine, BankRule } = require('../../models/documents');
@@ -200,9 +201,13 @@ async function importLines(accountId, rows, { session, req, deferPosting = false
   // neither matched nor posted
   docs.forEach((doc, index) => { if (rows[index].ignore) doc.lineStatus = 'ignored'; });
   const existing = await knownFingerprints(account._id, docs.map(d => d.fingerprint), session, docs);
+  const referenceRepeats = await evidence.repeatedReferences(account._id, docs, session);
+  for (const doc of docs) if (!existing.has(doc.fingerprint) && referenceRepeats.has(doc.fingerprint)) doc.duplicateReviewPending = true;
   const fresh = docs.filter((doc, index) => !existing.has(doc.fingerprint) && docs.findIndex(d => d.fingerprint === doc.fingerprint) === index);
   if (fresh.length) await BankStatementLine.insertMany(fresh, { session });
-  const { matched } = fresh.length ? await autoMatch(accountId, { session, req, matchingSettings }) : { matched: 0 };
+  // An expense may have been entered since this file was first imported. Reusing the
+  // file should refresh matches too, while the fingerprints still prevent new rows.
+  const { matched } = docs.length ? await autoMatch(accountId, { session, req, matchingSettings }) : { matched: 0 };
 
   // The accounts chosen in the table: posted now, line by line; a line the books may already
   // hold, or that cannot be posted (a missing rate, say), stays unmatched with its reason
@@ -256,7 +261,7 @@ async function importStatement(accountId, rows, { req, matchingSettings }) {
 }
 
 // Ledger movements on the account that no statement line is matched to yet
-async function unmatchedMovements(accountId, { from, to, session } = {}) {
+async function unmatchedMovements(accountId, { from, to, session, includeBalanceAdjustments = false } = {}) {
   const matched = await BankStatementLine.distinct('matchedEntryIds', { accountId, lineStatus: 'matched' }).session(session);
   const created = await BankStatementLine.distinct('entryId', { accountId, lineStatus: 'created_entry' }).session(session);
   const used = new Set([...matched, ...created].filter(Boolean).map(String));
@@ -268,11 +273,19 @@ async function unmatchedMovements(accountId, { from, to, session } = {}) {
     { $addFields: { allAccountIds: '$lines.accountId', allLines: '$lines' } },
     { $unwind: '$lines' },
     { $match: { 'lines.accountId': new mongoose.Types.ObjectId(String(accountId)) } },
-    { $group: { _id: '$_id', number: { $first: '$number' }, day: { $first: '$day' }, description: { $first: '$description' },
+    { $group: { _id: '$_id', number: { $first: '$number' }, eventType: { $first: '$eventType' }, day: { $first: '$day' }, description: { $first: '$description' },
       allAccountIds: { $first: '$allAccountIds' }, ledgerLines: { $first: '$allLines' }, bankSourceReference: { $first: '$bankSourceReference' }, bankSourceAccountId: { $first: '$bankSourceAccountId' }, amount: { $sum: '$lines.amountCurrency' } } },
     { $sort: { day: 1 } },
   ]).session(session || null);
-  return rows.filter((row) => !used.has(String(row._id)) && row.amount !== 0);
+  const opening = await resolveAccount('opening_balance');
+  return rows.filter((row) => !used.has(String(row._id)) && row.amount !== 0).map(row => {
+    // Opening counts and manual bank/opening corrections change book balances but
+    // are not new bank receipts/payments. Classify structurally, not by free text.
+    const onlyOpeningAndBank = row.eventType === 'MANUAL'
+      && row.allAccountIds.some(a => String(a) === String(opening._id))
+      && row.allAccountIds.every(a => [String(accountId), String(opening._id)].includes(String(a)));
+    return { ...row, balanceAdjustment: row.eventType === 'OPENING_CASH' || onlyOpeningAndBank };
+  }).filter(row => includeBalanceAdjustments || !row.balanceAdjustment);
 }
 
 // One journal entry can match one line per bank account, but never two lines from the same
@@ -300,20 +313,25 @@ const dayDistance = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
 // Same account and native amount within three days, only when one candidate is eligible.
 async function autoMatch(accountId, { session, req, matchingSettings }) {
   const settings = preferences(matchingSettings);
-  if (!settings.engines.includes('ledger')) return { matched: 0 };
   if (session?.inTransaction()) await require('../periodLock').lockPeriod(session);
-  await bankAccount(accountId);
-  const lines = await BankStatementLine.find({ accountId, lineStatus: 'unmatched', purchaseReviewPending: { $ne: true } }).sort({ day: 1 }).session(session);
-  if (!lines.length) return { matched: 0 };
+  const account = await bankAccount(accountId);
+  const partnerDeposits = require('./partnerDeposits');
+  const linkedWallet = account.type === 'asset' && account.cashKind === 'current' && partnerDeposits.linkedCustomerCode(account);
+  const partnerMatched = settings.engines.includes('partners') ? (await partnerDeposits.autoMatch(accountId, { session, req })).matched : 0;
+  if (!settings.engines.includes('ledger')) return { matched: partnerMatched };
+  const lines = await BankStatementLine.find({ accountId, lineStatus: 'unmatched', purchaseReviewPending: { $ne: true }, duplicateReviewPending: { $ne: true } }).sort({ day: 1 }).session(session);
+  if (!lines.length) return { matched: partnerMatched };
   const firstDay = lines[0].day;
   const lastDay = lines[lines.length - 1].day;
   const candidates = await unmatchedMovements(accountId, { from: addDays(firstDay, -settings.automaticDays), to: addDays(lastDay, settings.automaticDays), session });
   const taken = new Set();
-  let matched = 0;
+  let matched = partnerMatched;
   const guess = await guesser(accountId);
   // Merchant credits need approval against their original purchase/refund document.
-  const matchableLines = lines.filter(line => alipayReconciliation.walletReady(line) && !needsRefundReview(line, guess(line)));
+  const matchableLines = lines.filter(line => !(linkedWallet && line.amount > 0) && alipayReconciliation.walletReady(line) && !needsRefundReview(line, guess(line)));
   const compatible = (line, candidate) => candidate.amount === line.amount && dayDistance(candidate.day, line.day) <= settings.automaticDays
+    && evidence.referenceCompatible(line, candidate)
+    && (!settings.strongLedgerOnly || evidence.quality(line, candidate).level === 'strong')
     && (line.sourceProvider !== 'alipay' || alipayReconciliation.exactMatch(line, candidate, accountId))
     && bankTransferHints.matchesMovement(line, guess(line), candidate);
   for (const line of matchableLines) {
@@ -337,6 +355,7 @@ async function autoMatch(accountId, { session, req, matchingSettings }) {
     if (!best) continue;
     taken.add(String(best._id));
     line.matchedEntryIds = [best._id];
+    line.matchGroupId = undefined;
     line.lineStatus = 'matched';
     await line.save({ session });
     matched++;
@@ -361,9 +380,11 @@ async function manualMatch(lineId, entryIds, { session, req }) {
   if (line.sourceProvider === 'alipay' && chosen.some(m => String(m.bankSourceAccountId) === String(line.accountId)
     && m.bankSourceReference && m.bankSourceReference !== line.sourceTransactionId)) throw fail('رقم عملية Alipay في القيد يختلف عن رقم العملية في الكشف');
   const total = chosen.reduce((sum, m) => sum + m.amount, 0);
+  if (chosen.some(m => !evidence.referenceCompatible(line, m))) throw fail('مرجع القيد المسجل مختلف عن مرجع الكشف؛ اختر العملية الصحيحة');
   if (total !== line.amount) throw fail('مجموع القيود المختارة لا يساوي مبلغ سطر الكشف');
   await reserveMatchedEntries(line.accountId, chosen.map((m) => m._id), session);
   line.matchedEntryIds = chosen.map((m) => m._id);
+  line.matchGroupId = undefined;
   line.lineStatus = 'matched';
   const orderRefund = await require('../../models/documents').CustomerRefund.findOne({ entryId: { $in: line.matchedEntryIds }, accountId: line.accountId, status: 'posted' }).session(session).lean();
   if (orderRefund) {
@@ -527,6 +548,7 @@ async function createEntryForLine(lineId, input, { session, req }) {
 
   // Match the original invoice currency before considering creation of another cost.
   const chosenCounter = input.counterAccountId && await Account.findById(input.counterAccountId).session(session).lean();
+  if (chosenCounter?.seedKey && /^expanded:(1293|1106|1702|2402|2403)/.test(chosenCounter.seedKey)) throw fail('هذا حساب تسوية مرتبط بعملية أصلية؛ استخدم «تسوية حوالة أو تأمين أو مستحق مسجل»، أو سجل الأصل من «التسويات والمستحقات»');
   const config = await getConfig();
   const purchaseCost = await resolveAccount('cost_purchase_invoices');
   const expenseCounterAccountId = chosenCounter?.type === 'expense' && String(chosenCounter._id) !== String(purchaseCost._id)
@@ -852,7 +874,20 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
   if (line?.tripCostSettlementId) throw fail('هذا السطر ضمن تسوية جماعية؛ ألغِ التسوية كاملة من تكاليف الرحلات');
   if (!line || line.lineStatus !== 'created_entry') throw fail('لا يوجد قيد لهذا السطر');
   if (!String(reason || '').trim()) throw fail('سبب الإلغاء مطلوب');
+  if (line.financialActionId) {
+    await require('../cancel').cancelDocument('AccountingFinancialOperationAction', line.financialActionId, { session, req, reason, fromBankLineId: line._id });
+    const oldIds = [line.entryId, ...(line.matchedEntryIds || [])].filter(Boolean);
+    await JournalEntry.updateMany({ _id: { $in: oldIds } }, { $pull: { bankMatchedAccounts: line.accountId } }, { session });
+    await BankStatementLine.updateOne({ _id: line._id }, { $addToSet: { historyEntryIds: { $each: oldIds } } }, { session });
+    await BankStatementLine.updateOne({ _id: line._id }, { $set: { lineStatus: 'unmatched', matchedEntryIds: [] }, $unset: { entryId: 1, financialActionId: 1 }, $inc: { postingAttempt: 1 } }, { session });
+    return BankStatementLine.findById(line._id).session(session);
+  }
   const previousEntryIds = [line.entryId].filter(Boolean);
+  if (line.historicalSettlementPaymentId) {
+    const corrections = await JournalEntry.find({ 'source.model': 'AccountingBankStatementLine', 'source.id': line._id,
+      eventType: 'BANK_HISTORICAL_SETTLEMENT_CLOSE', status: 'posted', reversalOf: null }).select('_id').session(session).lean();
+    previousEntryIds.push(...corrections.map(entry => entry._id));
+  }
   const others = line.paymentId ? await BankStatementLine.countDocuments({ billId: line.billId, lineStatus: 'created_entry', _id: { $ne: line._id } }).session(session) : 0;
   const willCancelBill = !!line.paymentId && !others && line.billCreatedFromStatement !== false;
   const reversedEntryIds = [...previousEntryIds];
@@ -932,9 +967,11 @@ async function cancelLineEntry(lineId, { session, req, reason }) {
 async function setIgnored(lineId, ignored, { session, req }) {
   const line = await BankStatementLine.findById(lineId).session(session);
   if (!line) throw fail('سطر الكشف غير موجود');
+  if (!ignored && line.duplicateResolvedToId) throw fail('هذا السطر نسخة من سطر أصلي؛ افتح السطر الأصلي بدل إعادة تفعيله');
   if (ignored && line.lineStatus !== 'unmatched') throw fail('السطر مطابق مسبقاً');
   if (!ignored && line.lineStatus === 'created_entry') throw fail('لهذا السطر قيد؛ ألغِ القيد من شاشة القيود');
   if (!ignored && line.lineStatus === 'matched') {
+    if (line.matchGroupId) return require('./bankGroups').unmatch(lineId, { session, req });
     await releaseMatchedEntries(line.accountId, line.matchedEntryIds, session);
     // A difference booked when it was matched to a partner's deposits goes with the match
     const own = await JournalEntry.countDocuments({ 'source.model': 'AccountingBankStatementLine', 'source.id': line._id, status: 'posted' }).session(session);
@@ -999,6 +1036,7 @@ async function coverage({ from, to } = {}) {
 async function coverBeforeCount(lineId, input, { session, req }) {
   const line = await BankStatementLine.findById(lineId).session(session);
   if (!line || line.lineStatus !== 'unmatched') throw fail('سطر الكشف غير متاح');
+  evidence.assertReviewed(line);
   const { count } = await getConfig();
   const before = count && (line.day < count.day || (line.day === count.day && count.endOfDay));
   if (!before || !count.accountIds.has(String(line.accountId))) throw fail('هذا السطر ليس قبل جرد هذا الحساب؛ رحّله أو طابقه');
@@ -1038,7 +1076,13 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   const wip = await resolveAccount('purchase_cost_wip');
   const movements = await unmatchedMovements(accountId);
   const result = {};
+  const repeats = await evidence.repeatedReferences(accountId, lines.filter(l => l.duplicateReviewPending));
   for (const [index, line] of lines.entries()) {
+    if (line.duplicateReviewPending) {
+      result[line._id] = { account: null, requiresConfirmation: true, duplicates: [], source: 'statement_repeat',
+        statementDuplicates: repeats.get(line.fingerprint) || [], reason: 'مرجع ومبلغ وتاريخ مستورد سابقًا ببيان مختلف؛ راجع هل هي نفس العملية' };
+      continue;
+    }
     if (!alipayReconciliation.walletReady(line)) {
       result[line._id] = { account: null, requiresConfirmation: true, source: 'alipay', isRefund: isPurchaseRefund(line), reason: line.sourceReviewReason, duplicates: [] };
       continue;
@@ -1067,7 +1111,9 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
     if (hint.tripCandidates.length) Object.assign(hint, { account: null, requiresConfirmation: true });
     const sameDayLedger = twins.filter(m => m.day === line.day && bankTransferHints.matchesMovement(line, guess(line), m)
       && (line.sourceProvider !== 'alipay' || alipayReconciliation.exactMatch(line, m, accountId)));
-    if (settings.engines.includes('ledger') && !hint.isRefund && sameDayLedger.length === 1) hint.exactMatch = { kind: 'ledger', entryId: sameDayLedger[0]._id };
+    if (settings.engines.includes('ledger') && !hint.isRefund && sameDayLedger.length === 1
+      && evidence.referenceCompatible(line, sameDayLedger[0])
+      && (!settings.strongLedgerOnly || evidence.quality(line, sameDayLedger[0]).level === 'strong')) hint.exactMatch = { kind: 'ledger', entryId: sameDayLedger[0]._id };
     if (!hint.tripCandidates.length && !hint.isRefund && !guess(line).semanticTransfer && line.amount < 0 && !twins.length) {
       const exactBills = (hint.billCandidates || []).filter(b => b.day === line.day);
       const identity = guess(line).vendorId;
@@ -1090,6 +1136,11 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   }
   for (const hint of Object.values(result)) if (hint.exactMatch && targets.get(String(hint.exactMatch.entryId || hint.exactMatch.billId || hint.exactMatch.itemId)) > 1) delete hint.exactMatch;
   for (const line of lines) if (competingRows.get(`${line.day}:${line.amount}`) > 1) delete result[line._id].exactMatch;
+  for (const line of lines) {
+    const hint = result[line._id];
+    hint.matchQuality = evidence.quality(line, hint.exactMatch?.entryId ? movements.find(m => String(m._id) === String(hint.exactMatch.entryId))
+      : hint.duplicates?.length === 1 ? movements.find(m => String(m._id) === String(hint.duplicates[0]._id)) : null, hint);
+  }
   return result;
 }
 
@@ -1187,7 +1238,9 @@ async function classifyRows(accountId, rows, matchingSettings) {
   const settings = preferences(matchingSettings);
   const account = await bankAccount(accountId);
   const docs = await toDocs(account, rows);
+  if (!docs.length) return [];
   const known = await knownFingerprints(account._id, docs.map(d => d.fingerprint), null, docs);
+  const referenceRepeats = await evidence.repeatedReferences(accountId, docs);
   const days = docs.map((d) => d.day).sort();
   const movements = await unmatchedMovements(accountId, { from: addDays(days[0], -DUPLICATE_DAYS), to: addDays(days[days.length - 1], DUPLICATE_DAYS) });
   const guess = await guesser(accountId, settings);
@@ -1199,17 +1252,20 @@ async function classifyRows(accountId, rows, matchingSettings) {
   const taken = new Set();
   return Promise.all(docs.map(async (doc, index) => {
     if (known.has(doc.fingerprint)) return { status: 'imported' };
+    if (referenceRepeats.has(doc.fingerprint)) return { status: 'possibleImported', requiresConfirmation: true,
+      statementDuplicates: referenceRepeats.get(doc.fingerprint), reason: 'مستورد بنفس المرجع والمبلغ والتاريخ ببيان مختلف؛ يُحفظ للمراجعة دون ترحيل' };
     if (!alipayReconciliation.walletReady(doc)) return { status: 'new', account: null, isRefund: isPurchaseRefund(doc), requiresConfirmation: true, source: 'alipay', reason: doc.sourceReviewReason };
     const near = movements.filter((m) => !taken.has(String(m._id)) && m.amount === doc.amount)
       .sort((a, b) => dayDistance(a.day, doc.day) - dayDistance(b.day, doc.day));
     const identifiedRefund = needsRefundReview(doc, safetyGuess(doc));
     const eligible = !identifiedRefund && settings.engines.includes('ledger') ? near.filter(m => dayDistance(m.day, doc.day) <= settings.automaticDays
+      && evidence.referenceCompatible(doc, m) && (!settings.strongLedgerOnly || evidence.quality(doc, m).level === 'strong')
       && (doc.sourceProvider !== 'alipay' || alipayReconciliation.exactMatch(doc, m, accountId))
       && bankTransferHints.matchesMovement(doc, safetyGuess(doc), m)) : [];
     const match = eligible.length === 1 && docs.filter(other => other.amount === eligible[0].amount && dayDistance(other.day, eligible[0].day) <= settings.automaticDays).length === 1 ? eligible[0] : null;
     if (match) {
       taken.add(String(match._id));
-      return { status: 'match', entry: { _id: match._id, number: match.number, day: match.day, description: match.description } };
+      return { status: 'match', matchQuality: evidence.quality(doc, match), entry: { _id: match._id, number: match.number, day: match.day, description: match.description } };
     }
     const twin = near.find((m) => dayDistance(m.day, doc.day) <= DUPLICATE_DAYS);
     if (doc.sourceProvider === 'alipay' && doc.amount > 0 && !identifiedRefund) return {
@@ -1418,6 +1474,7 @@ async function linkGroup(lineIds, input, { session, req }) {
   if (!ids.length) throw fail('اختر سطور الكشف');
   const lines = await BankStatementLine.find({ _id: { $in: ids } }).sort({ day: 1 }).session(session);
   if (lines.length !== ids.length || lines.some((l) => l.lineStatus !== 'unmatched')) throw fail('بعض السطور غير متاحة (مطابقة أو مرحَّلة)');
+  lines.forEach(evidence.assertReviewed);
   if (new Set(lines.map((l) => String(l.accountId))).size > 1) throw fail('السطور من حسابات مختلفة');
   if (lines.some((l) => l.amount >= 0)) throw fail('الربط بالمشتريات للمبالغ الخارجة فقط');
   const bank = await bankAccount(lines[0].accountId);
@@ -1487,6 +1544,7 @@ async function linkGroup(lineIds, input, { session, req }) {
 }
 
 module.exports = {
+  reserveMatchedEntries,
   orderPurchaseItems, linkGroup,
   importLines, importStatement, autoMatch, manualMatch, createEntryForLine, cancelLineEntry, setIgnored, coverBeforeCount, coverage, deleteLine, unmatchedMovements, editLine,
   suggestions, classifyRows, listRules, saveRule, deleteRule, parsePdf, rowsFromText, isCreditCard, possibleDuplicates, normalize,

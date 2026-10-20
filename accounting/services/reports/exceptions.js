@@ -42,6 +42,15 @@ const userNames = async (ids) => new Map((await User.find({ _id: { $in: ids.filt
   .map((u) => [String(u._id), `${u.customerId || ''} ${u.firstName || ''} ${u.lastName || ''}`.trim()]));
 
 const CHECKS = {
+  // Cashflow, cached wallet balances and the books must agree after reconciliation.
+  async walletStatements() {
+    const report = await require('../walletStatementReconciliation').preview();
+    return result('walletStatements', 'error', 'فروقات بين كشف العميل والمحفظة أو الدفاتر',
+      'راجع الأرصدة الثلاثة ثم اختر المعالجة من قائمة تسوية كشف العميل والمحفظة والدفاتر.',
+      report.results.map(row => ({ label: `${row.customer?.customerId || ''} ${row.customer?.firstName || ''} ${row.customer?.lastName || ''}`.trim() || row.userId,
+        url: `/user/${row.userId}`, currency: row.currency, decimals: row.decimals, difference: row.difference || row.ledgerDifference,
+        wallet: row.walletMinor, statement: row.statementMinor, booked: row.ledgerMinor, system: row.statementMinor, note: row.blocked || undefined })));
+  },
   // 3. The books balance
   async balanced() {
     const [totals] = await JournalEntry.aggregate([{ $unwind: '$lines' }, { $group: { _id: null, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } }]);

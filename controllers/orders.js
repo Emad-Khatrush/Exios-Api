@@ -948,13 +948,13 @@ module.exports.updateOrder = async (req, res, next) => {
       if (!oldOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
       await assertOpenPeriod(req.user, oldOrder.createdAt, { session });
       guardOrderUpdate(body, oldOrder);
-      // A saved weight or volume is changed by an admin or the accountant only; the chargeable weight
-      // is worked out here (spec v8)
+      // All staff can edit before delivery; delivered packages are immutable.
+      if (body.paymentList !== undefined && !Array.isArray(body.paymentList)) throw new ErrorHandler(400, 'Packages must be a list');
       if (Array.isArray(body.paymentList)) {
         try {
           await guardMeasures(oldOrder, body.paymentList, req.user);
-          await normalizePackages(body.paymentList);
           keepDeliveryState(oldOrder, body.paymentList);
+          await normalizePackages(body.paymentList);
         } catch (error) {
           throw new ErrorHandler(error.statusCode || 400, error.message);
         }
@@ -1148,9 +1148,9 @@ module.exports.updateSinglePackage = async (req, res, next) => {
       guardOrderUpdate(body, oldOrder);
       if (body.paymentList) {
         try {
-          await guardMeasures(oldOrder, [body.paymentList], req.user);
-          await normalizePackages([body.paymentList]);
+          await guardMeasures(oldOrder, [body.paymentList], req.user, { partial: true });
           keepDeliveryState(oldOrder, [body.paymentList]);
+          await normalizePackages([body.paymentList]);
         } catch (error) {
           throw new ErrorHandler(error.statusCode || 400, error.message);
         }
@@ -1248,6 +1248,10 @@ module.exports.createUnsureOrder = async (req, res, next) => {
 }
 module.exports.uploadFilesToLinks= async (req, res, next) => {
   const { id, paymentListId } = req.body;
+  const existingOrder = await Orders.findOne({ _id: id, 'paymentList._id': paymentListId });
+  const existingPackage = existingOrder?.paymentList?.find(pkg => String(pkg._id) === String(paymentListId));
+  if (!existingPackage) return next(new ErrorHandler(404, 'الطرد غير موجود.'));
+  if (existingPackage.status?.received) return next(new ErrorHandler(403, 'لا يمكن تغيير مرفقات الطرد بعد تسليمه.'));
 
   const images = [];
   const changedFields = [];
@@ -1271,9 +1275,10 @@ module.exports.uploadFilesToLinks= async (req, res, next) => {
       }
     }
 
-  await Orders.updateOne({ _id: id, 'paymentList._id': paymentListId }, {
+  const uploaded = await Orders.updateOne({ _id: id, paymentList: { $elemMatch: { _id: paymentListId, 'status.received': { $ne: true } } } }, {
     $push: { 'paymentList.$.images': images },
-  }, { safe: true, upsert: true, new: true });
+  }, { safe: true });
+  if (!(uploaded.matchedCount ?? uploaded.n)) return next(new ErrorHandler(409, 'تغيرت حالة الطرد؛ أعد تحميل الطلبية قبل تعديل المرفقات.'));
 
   const order = await Orders.findOne({ _id: id });
 
@@ -1339,13 +1344,14 @@ module.exports.uploadFiles= async (req, res, next) => {
 
 module.exports.deleteLinkFiles= async (req, res, next) => {
   try {
-    const order = await Orders.findOneAndUpdate({ _id: req.body.id, 'paymentList._id': req.body.paymentListId }, {
+    const order = await Orders.findOneAndUpdate({ _id: req.body.id, paymentList: { $elemMatch: { _id: req.body.paymentListId, 'status.received': { $ne: true } } } }, {
       $pull: {
         'paymentList.$.images': {
           filename: req.body.filename
         }
       }
-    }, { safe: true, upsert: true, new: true });
+    }, { safe: true, new: true });
+    if (!order) return next(new ErrorHandler(403, 'لا يمكن حذف مرفقات طرد مُسلَّم أو غير موجود.'));
 
     // const response = await cloudinary.uploader.destroy(req.body.image.filename);
     // if (response.result !== 'ok') {
@@ -1831,33 +1837,47 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
     validatePackages(req.body.selectedPackages);
     const paymentAmounts = validatePayment(req.body.payment, { allowZero: true });
 
-    // Costs and totals come from the database; the client's totalCost and rate are ignored
-    const feeMode = req.body.feeMode === 'usd' ? 'usd' : 'separate';
-    const { selectedPackages } = await require('../accounting/services/transaction').runInTransaction(async (session) => {
+    // Costs come from the database. Credit delivery uses the explicitly agreed, validated rate.
+    const allowPartial = req.body.allowPartial === true;
+    const partialDelivery = require('../utils/partialDelivery');
+    const feeMode = allowPartial || req.body.feeMode === 'usd' ? 'usd' : 'separate';
+    const { invoice } = await require('../accounting/services/transaction').runInTransaction(async (session) => {
       const { packages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode, session });
       // Nothing paid is right only for packages that cost nothing (free shipping with a purchase)
-      if (!paymentAmounts.amountUSD && !paymentAmounts.amountLYD && (totalCost > 0 || totalFeeLYD > 0)) {
+      if (!allowPartial && !paymentAmounts.amountUSD && !paymentAmounts.amountLYD && (totalCost > 0 || totalFeeLYD > 0)) {
         throw new ErrorHandler(400, 'Payment amount cannot be zero');
       }
 
-      const payment = withCalculatedRate(paymentAmounts, totalCost);
       const walletMap = await getUserWalletMap(id, session);
-      checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD);
+      const payment = allowPartial
+        ? await partialDelivery.prepare({ ...req.body.payment, ...paymentAmounts }, totalCost, walletMap, req.user, session)
+        : withCalculatedRate(paymentAmounts, totalCost);
+      if (!allowPartial) checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD);
 
       // The transaction claims packages before any deduction. If any later write fails, both the
       // claim and every wallet, payment, debt, invoice, warehouse and outbox change roll back.
       await claimPackagesForDelivery(id, packages, session);
-      await processPackagesPayment(req, res, next, id, packages, payment, { session });
-      await payFeesLYD(req, res, next, id, feesLYD, session);
-      await updateOrderStatuses(packages, session);
-      await createInvoice(req.user, id, packages, { ...payment, amountLYD: roundFee(Number(payment.amountLYD || 0) + totalFeeLYD) }, totalCost, session);
+      let invoice;
+      if (allowPartial) {
+        invoice = await partialDelivery.deliver({ req, res, next, customerId: id, packages, totalCost, payment, session });
+      } else {
+        const settings = await require('../accounting/services/periodLock').lockPeriod(session);
+        if (settings?.liveEnabled) {
+          const affected = await Orders.find({ orderId: { $in: packages.map(pkg => pkg.orderId) } }).select('_id').session(session);
+          for (const order of affected) await require('../accounting/services/claims/sync').syncOrder(order._id, { session, user: req.user, date: new Date() });
+        }
+        await processPackagesPayment(req, res, next, id, packages, payment, { session });
+        await payFeesLYD(req, res, next, id, feesLYD, session);
+        await updateOrderStatuses(packages, session);
+        invoice = await createInvoice(req.user, id, packages, { ...payment, amountLYD: roundFee(Number(payment.amountLYD || 0) + totalFeeLYD) }, totalCost, session);
+      }
       await cleanUpInventory(packages, session);
       await emitOrdersByNumber(packages.map(pkg => pkg.orderId), req.user, { session });
-      return { selectedPackages: packages };
+      return { invoice };
     });
 
 
-    return res.status(200).json({ done: new Date() });
+    return res.status(200).json({ done: new Date(), invoiceId: invoice._id, remainingUSD: invoice.settlement?.remainingUSD || 0 });
 
   } catch (error) {
     console.error(error);
@@ -1922,6 +1942,14 @@ module.exports.cancelInvoice = async (req, res, next) => {
       };
       chosen.forEach(({ index }, k) => { saved[`list.${index}.refunds`] = result.packages[k]?.refunds || []; });
       await Invoices.updateOne({ _id: invoice._id }, { $set: saved }, { session });
+      if (invoice.partialDelivery) {
+        await require('../utils/partialDelivery').refresh(invoice._id, session);
+      }
+      const settings = await require('../accounting/services/periodLock').lockPeriod(session);
+      if (settings?.liveEnabled) {
+        const affected = await Orders.find({ orderId: { $in: chosen.map(({ pkg }) => pkg.orderId) } }).select('_id').session(session);
+        for (const order of affected) await require('../accounting/services/claims/sync').syncOrder(order._id, { session, user: req.user, date: new Date() });
+      }
       await emitOrdersByNumber(chosen.map(({ pkg }) => pkg.orderId), req.user, { session });
       return { result: { ...result, whole }, orderNumbers: chosen.map(({ pkg }) => pkg.orderId) };
     });
@@ -2082,7 +2110,9 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
 
     const updatedPaymentList = await Promise.all(payments.map(async (data) => {
       for (const d of data.list) {
-        const inventory = await Inventory.findOne({ 'orders.paymentList._id': new ObjectId(d._id), inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select(['-orders']).lean();
+        const packageId = d?.id || d?._id;
+        if (!ObjectId.isValid(packageId)) continue;
+        const inventory = await Inventory.findOne({ 'orders.paymentList._id': new ObjectId(packageId), inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select(['-orders']).lean();
         if (inventory) {
           // If inventory is found, add the flight property to the payment data
           d.flight = inventory;
@@ -2138,6 +2168,9 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       const order = await Orders.findById(id).session(session);
       if (!order || order.isCanceled || order.isDeleted) throw new ErrorHandler(400, 'Order is missing or canceled');
       if (customerId && String(customerId) !== String(order.user)) throw new ErrorHandler(400, 'Payment customer does not own this order');
+      if (category === 'receivedGoods' && await Balances.exists({ order: order._id, deliveryInvoiceId: { $exists: true }, status: { $in: ['open', 'overdue'] }, amount: { $gt: 0 } }).session(session)) {
+        throw new ErrorHandler(400, 'للسداد على فاتورة تسليم جزئي، أودع المبلغ في المحفظة ثم سدد الدين المرتبط بالطرد من قسم الديون');
+      }
       await Orders.updateOne({ _id: order._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
       const data = {
         createdBy: req.user,

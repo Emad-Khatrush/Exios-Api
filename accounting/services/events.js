@@ -4,8 +4,9 @@
 // own writes. Events are recorded ALWAYS, also before live posting is on (spec 19.11); they are
 // only posted once it is. When the historical migration is committed, every event recorded before
 // the migration read the data is marked 'covered' (the migration posted that state already).
-// An accounting problem (a missing rate, say) never blocks the operation: the event waits in the
-// queue with its error until it is fixed and retried.
+// Most legacy operations defer posting problems to this queue. Wallet cash withdrawals
+// explicitly post inside their own transaction when live posting is enabled: any posting
+// failure rolls back the withdrawal, and this queue later skips their existing entry.
 const { AccountingEvent } = require('../models');
 const { lockPeriod } = require('./periodLock');
 const { getConfig } = require('./config');

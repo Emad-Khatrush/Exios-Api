@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { JournalEntry, Account, MigrationRun } = require('../models');
 const docs = require('../models/documents');
 const User = require('../../models/user');
+require('../models/Employee');
 const Order = require('../../models/order');
 const Inventory = require('../../models/inventory');
 const { handle, badRequest, notFound, isObjectId, pick } = require('./util');
@@ -71,10 +72,11 @@ module.exports.listVendors = handle(async (req, res) => {
 });
 
 module.exports.createVendor = handle(async (req, res) => {
-  const body = pick(req.body, ['name', 'type', 'phone', 'country', 'defaultCurrency', 'linkedCustomer', 'note']);
+  const body = pick(req.body, ['name', 'type', 'phone', 'country', 'defaultCurrency', 'note']);
   if (!String(body.name || '').trim()) throw badRequest('اسم المورد مطلوب');
-  if (body.linkedCustomer === '') delete body.linkedCustomer;
   const vendor = await inTx(async (session) => {
+    const linked = await require('../services/vendorCustomerLink').linkFromInput(req.body, session);
+    if (linked) body.linkedCustomer = linked;
     const [created] = await docs.Vendor.create([body], { session });
     await logAudit({ req, action: 'vendor.create', model: 'AccountingVendor', docId: created._id, after: created }, session);
     return created;
@@ -83,17 +85,23 @@ module.exports.createVendor = handle(async (req, res) => {
 });
 
 module.exports.updateVendor = handle(async (req, res) => {
-  const vendor = await docs.Vendor.findById(req.params.id);
-  if (!vendor) throw notFound('المورد غير موجود');
-  const before = vendor.toObject();
-  const body = pick(req.body, ['name', 'type', 'phone', 'country', 'defaultCurrency', 'linkedCustomer', 'note']);
-  if (body.linkedCustomer === '') body.linkedCustomer = null;
-  Object.assign(vendor, body);
-  await inTx(async (session) => {
+  const vendor = await inTx(async (session) => {
+    const vendor = await docs.Vendor.findOneAndUpdate({ _id: req.params.id }, { $inc: { costPostingVersion: 1 } }, { new: true, session });
+    if (!vendor) throw notFound('المورد غير موجود');
+    const before = vendor.toObject();
+    const body = pick(req.body, ['name', 'type', 'phone', 'country', 'defaultCurrency', 'note']);
+    const linked = await require('../services/vendorCustomerLink').linkFromInput(req.body, session);
+    if (linked !== undefined) body.linkedCustomer = linked;
+    Object.assign(vendor, body);
     await vendor.save({ session });
     await logAudit({ req, action: 'vendor.update', model: 'AccountingVendor', docId: vendor._id, before, after: vendor }, session);
+    return vendor;
   });
   res.json(vendor);
+});
+
+module.exports.lookupCustomerCode = handle(async (req, res) => {
+  res.json({ customer: await require('../services/vendorCustomerLink').customerByCode(req.query.code) });
 });
 
 module.exports.setVendorActive = (isActive) => handle(async (req, res) => {
@@ -379,8 +387,7 @@ module.exports.runAmortization = handle(async (req, res) => {
 // ---- Employees ----
 
 module.exports.listEmployees = handle(async (req, res) => {
-  const employees = await User.find({ $or: [{ 'roles.isEmployee': true }, { 'roles.isAdmin': true }, { 'roles.isAccountant': true }] })
-    .select('firstName lastName customerId roles').sort({ firstName: 1 }).lean();
+  const employees = await require('../services/employees').list({ includeArchived: req.query.includeArchived === 'true' });
   // Custody and loans apart (owner's request 2026-10-04); the accounts the screen moves money to
   const custody = require('../services/custody');
   // Each kept in its own currency (USD, LYD): { custody: { USD: accountId, LYD: accountId }, loan: ... }
@@ -453,12 +460,13 @@ module.exports.listBankLines = handle(async (req, res) => {
     .populate('billId', 'number').populate('orderId', 'orderId').populate('customerRefundId', 'number walletUsd legacyWalletUsd legacyWalletStatementId status')
     .populate({ path: 'legacyWalletStatementId', select: 'amount currency createdAt description user', populate: { path: 'user', select: 'firstName lastName customerId' } })
     .populate('historicalSettlementPaymentId', 'number day').lean();
-  const movements = await bank.unmatchedMovements(req.query.accountId);
+  const movements = await bank.unmatchedMovements(req.query.accountId, { includeBalanceAdjustments: true });
   const balance = await getBalance(req.query.accountId);
   const statement = await require('../services/posting/statementClosingBalance').statementClosingBalance(req.query.accountId);
   const bookAtStatement = statement.day ? await getBalance(req.query.accountId, { upToDay: statement.day }) : null;
   const trial = process.env.EXIOS_QA === '1' ? await MigrationRun.findOne({ status: 'review', bankTrialEnabled: true }).select('runId').lean() : null;
-  res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements, bookBalance: balance,
+  res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements.filter(m => !m.balanceAdjustment),
+    balanceAdjustments: movements.filter(m => m.balanceAdjustment), bookBalance: balance,
     statementBalance: statement.balance, statementBalanceDay: statement.day, statementBalanceStatus: statement.status,
     bookBalanceAtStatement: bookAtStatement, bankTrialRunId: trial?.runId || null });
 });
@@ -650,4 +658,7 @@ module.exports.alipayDashboard = handle(async (req, res) => {
 
 module.exports.completeYuanPurchase = handle(async (req, res) => {
   res.json(await inTx((session) => require('../services/posting/alipay').completeYuanPurchase(req.params.id, req.body || {}, { session, req })));
+});
+module.exports.settleYuanPurchase = handle(async (req, res) => {
+  res.json(await inTx((session) => require('../services/posting/yuanSettlement').settle(req.params.id, { ...(req.body || {}), initial: false }, { session, req })));
 });

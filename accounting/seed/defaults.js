@@ -64,7 +64,7 @@ const ACCOUNTS = [
   // A partner's current account (spec 19.4): what the partner holds for us, by their statement.
   // It works like a cash box: it can receive a customer's deposit and pay bills.
   g('1104', 'الحسابات الجارية للشركاء', 'Partner current accounts', 'asset', '11'),
-  a('110401', 'جاري وصل', 'Wasl current account', 'asset', '1104', { currency: 'USD', isCash: true, cashKind: 'current', office: 'tripoli' }),
+  a('110401', 'جاري وصل', 'Wasl current account', 'asset', '1104', { currency: 'USD', isCash: true, cashKind: 'current', office: 'tripoli', walletCustomerCode: 'N999' }),
   // Dollars paid to a broker for yuan that has not reached Alipay yet (spec 19.5)
   g('1105', 'مدفوعات بانتظار الوصول', 'Payments awaiting arrival', 'asset', '11'),
   a('110501', 'يوان مدفوع بانتظار الوصول', 'Yuan paid, awaiting arrival', 'asset', '1105', { requires: ['vendor'] }),
@@ -475,6 +475,9 @@ const SETTINGS = {
   timezone: 'Africa/Tripoli',
   lockDate: null,
 };
+
+Object.assign(ROLE_DEFAULTS, require('./expandedChart').roles);
+Object.assign(ROLE_LABELS, require('./expandedChart').labels);
 
 module.exports = {
   CURRENCIES,

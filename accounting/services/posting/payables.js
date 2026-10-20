@@ -13,7 +13,7 @@ const {
 } = require('./common');
 const { getBalance, valueOutflow } = require('../carrying');
 
-const TARGETS = ['order', 'trip', 'expense', 'asset', 'prepaid', 'customs'];
+const TARGETS = ['order', 'trip', 'expense', 'asset', 'prepaid', 'customs', 'stock'];
 // Costs that exist only against an order: an Alipay transfer's yuan and a package's customs
 // clearance. (Shipping and purchase costs may still be typed as plain expenses: bank rules post
 // unlinked card purchases there.)
@@ -99,6 +99,12 @@ async function validateBillInput(input, session, { readOnly = false } = {}) {
     if (!String(line.description || '').trim()) throw fail(`${where}: الوصف مطلوب`);
     if (!(Number(line.amount) > 0)) throw fail(`${where}: المبلغ يجب أن يكون أكبر من صفر`);
     if (!TARGETS.includes(line.target)) throw fail(`${where}: اختر نوع السطر`);
+    if (line.target === 'stock') {
+      const quantity = Number(line.quantity);
+      if (input.isCreditNote) throw fail('إرجاع مخزون الشركة يحتاج تسوية الكمية والتكلفة؛ لا تسجله كإشعار مصروف');
+      if (!(quantity > 0) || !Number.isFinite(quantity) || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001 || !line.confirmCompanyOwned) throw fail(`${where}: أدخل الكمية وأكد ملكية الشركة للبضاعة`);
+      if (!(await officeExists(line.office))) throw fail(`${where}: المكتب مطلوب`);
+    }
     if (line.target === 'order') {
       const order = line.orderId && mongoose.isValidObjectId(line.orderId) && await Order.findById(line.orderId).select('placedAt purchaseItems').session(session);
       if (!order) throw fail(`${where}: الطلب غير موجود`);
@@ -172,6 +178,19 @@ async function validateBillInput(input, session, { readOnly = false } = {}) {
 // Debit side of each bill line; creates the fixed asset / prepaid schedule it stands for
 async function costLine(bill, line, usd, session, user) {
   const base = { debit: usd, label: line.description };
+  if (line.target === 'stock') {
+    const account = await resolveAccount('company_inventory');
+    if (!line.stockOperationId) {
+      const [lot] = await require('../../models/FinancialOperation').Operation.create([{
+        kind: 'company_stock', sourceBillId: bill._id, day: bill.day, office: line.office, description: line.description,
+        currency: 'USD', totalMinor: Math.round(Number(line.quantity) * 1000), quantity: Number(line.quantity), usd,
+        counterAccountId: account._id, partyName: bill.number, createdBy: user?._id,
+        idempotencyKey: `STOCK:BILL:${bill._id}:${line._id}`, number: await nextDocNumber('FOP', bill.day, session),
+      }], { session });
+      line.stockOperationId = lot._id;
+    }
+    return { ...base, accountId: account._id, office: line.office };
+  }
   if (line.target === 'order') {
     const order = await Order.findById(line.orderId).select('placedAt').session(session);
     // Always "in progress" first; if the sale is already recognised the order sync right after
@@ -312,6 +331,7 @@ async function postBill(bill, { session, user, sync }) {
   bill.status = 'posted';
   bill.markModified('lines');
   await bill.save({ session });
+  if (bill.lines.some(line => line.stockOperationId)) await require('../../models/FinancialOperation').Operation.updateMany({ sourceBillId: bill._id }, { $set: { entryId: entry._id } }, { session });
   await syncBillTargets(bill, { session, user, sync });
 
   if (bill.paidImmediatelyFrom && !bill.isCreditNote) {
@@ -461,14 +481,16 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     // Paid in another currency than the bills (a Kuwaiti site paid from the lira bank): the bills'
     // cost becomes what was really paid, the difference going on their own targets (owner's request
     // 2026-10-04). The box's average rate against the paid rate stays an exchange difference.
-    const difference = input.differenceTo === 'cost' && allocated && !input.autoFromBillId ? atRate - allocated : 0;
+    const yuanOnly = bills.length > 0 && bills.every(b => b.yuanPurchaseId || b.lines.every(line => line.target === 'stock'));
+    const difference = input.differenceTo === 'cost' && allocated && !input.autoFromBillId && !yuanOnly ? atRate - allocated : 0;
     if (difference) {
       if (Math.abs(difference) > Math.round(allocated * 0.1) + 100) throw fail('الفرق بين المدفوع والموزَّع أكبر من 10%: راجع المبلغ أو السعر');
       lines.push(...await costDifferenceLines(bills, allocations, difference, session, actor));
       doc.costDifferenceUsd = difference;
     }
     // The payment made with its bill pays exactly that bill: a cent of rounding is not an advance
-    const advance = input.autoFromBillId || difference ? 0 : Math.max(atRate - allocated, 0);
+    const yuanFxSettlement = yuanOnly && currency !== 'USD' && input.differenceTo === 'cost';
+    const advance = input.autoFromBillId || difference || yuanFxSettlement ? 0 : Math.max(atRate - allocated, 0);
     if (advance > 0) lines.push({ accountId: payable._id, debit: advance, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'دفعة مقدمة للمورد' });
     lines.push(moneyLine(from, 'credit', minor, outUsd, { label: `دفعة للمورد ${vendor.name}`, ...(isEmployeeAdvance && { employeeId: toId(input.employeeId) }) }));
     office = from.office || undefined;

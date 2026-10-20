@@ -129,6 +129,9 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
 
     packages.push({
       ...selected,
+      deliveryInvoiceId: undefined,
+      feeOnly: false,
+      feeField: undefined,
       id: packageId,
       orderId: order.orderId,
       trackingNumber: item.deliveredPackages?.trackingNumber || '',
@@ -170,7 +173,7 @@ async function claimPackagesForDelivery(customerId, selectedPackages, session) {
       isCanceled: { $ne: true },
       unsureOrder: { $ne: true },
       paymentList: { $elemMatch: { _id: new ObjectId(selected.id), 'status.received': { $ne: true } } },
-    }, { $set: { 'paymentList.$.status.received': true } }, { session });
+    }, { $set: { 'paymentList.$.status.received': true, 'paymentList.$.shippingRecognitionFrom': new Date() } }, { session });
     if (claimed.modifiedCount !== 1) {
       throw new ErrorHandler(409, `Package ${selected.trackingNumber || selected.id} was already delivered. Refresh and try again.`);
     }
@@ -318,6 +321,7 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
         list: [pkg],
         note: `(Prev Balance: ${previousTotal} ${currency})`,
         statementId: userStatement._id,
+        ...(pkg.deliveryInvoiceId && { deliveryInvoiceId: pkg.deliveryInvoiceId, deliveryPackageId: pkg.id }),
       };
       if (session) await OrderPaymentHistory.create([paymentData], { session });
       else await OrderPaymentHistory.create(paymentData);
@@ -326,6 +330,10 @@ async function useWalletBalance(req, res, next, id, pkg, amount, currency, rate,
       ? { arKeys: [`SHP:${order?._id}:${pkg.id}:${(FEE_KEYS.find((f) => f.field === pkg.feeField) || FEE_KEYS[0]).suffix}`] }
       : pkg?.payKeys ? { arKeys: pkg.payKeys } : { orderId: order?._id, packageIds: [pkg?.id].filter(Boolean) };
     await emitAccountingEvent('statement', userStatement._id, { target }, req.user, { session });
+    if (session) {
+      const settings = await require('../accounting/services/periodLock').lockPeriod(session);
+      if (settings?.liveEnabled) await require('../accounting/services/posting/operations').postStatement(userStatement._id, { session, user: req.user, target });
+    }
 
     return userStatement;
   } catch (error) {
@@ -412,8 +420,8 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
     }))
   };
 
-  if (session) await Invoices.create([invoice], { session });
-  else await Invoices.create(invoice);
+  if (session) return (await Invoices.create([invoice], { session }))[0];
+  return Invoices.create(invoice);
 }
 
 async function cleanUpInventory(selectedPackages, session) {
@@ -455,7 +463,7 @@ async function statementOfPayment(payment, session) {
 
 // Same steps as cancelling a wallet payment on an order: money back to the wallet,
 // a "+" cancellation statement, then the payment record is removed
-async function refundWalletPayment(user, payment, description, note, session) {
+async function refundWalletPayment(user, payment, description, note, session, { postNow = false } = {}) {
   await lockWalletOwner(payment.customer, session);
   const reverses = await statementOfPayment(payment, session);
   const amount = roundToTwo(Number(payment.receivedAmount || 0));
@@ -499,6 +507,10 @@ async function refundWalletPayment(user, payment, description, note, session) {
     reverses,
     target: { orderId: payment.order, category: payment.category, packageIds: (payment.list || []).map((p) => p?.id || p?._id).filter(Boolean) },
   }, user, { session });
+  if (payment.deliveryInvoiceId || postNow) {
+    const settings = await require('../accounting/services/periodLock').lockPeriod(session);
+    if (settings?.liveEnabled) await require('../accounting/services/posting/operations').postStatement(refundStatement._id, { session, user, reverses });
+  }
   await OrderPaymentHistory.deleteOne({ _id: payment._id }, { session });
   return amount;
 }
@@ -511,6 +523,7 @@ const INVOICE_PAYMENT_WINDOW_MS = 15 * 60 * 1000;
 // leave the invoice saying the package was paid and handed over.
 async function deliveryInvoiceOf(payment, orderNumber, session) {
   if (!payment || payment.category !== 'receivedGoods' || payment.paymentType !== 'wallet' || !orderNumber) return null;
+  if (payment.deliveryInvoiceId) return Invoices.findOne({ _id: payment.deliveryInvoiceId, isCanceled: { $ne: true } }).session(session || null).lean();
   const time = new Date(payment.createdAt).getTime();
   const invoices = await Invoices.find({
     isCanceled: { $ne: true },
@@ -534,7 +547,7 @@ async function cancelInvoicePackages(user, invoice, session) {
 
     if (order) {
       const packageId = String(pkg.packageId || '');
-      const payments = await OrderPaymentHistory.find({
+      const payments = invoice.partialDelivery ? [] : await OrderPaymentHistory.find({
         order: order._id,
         category: 'receivedGoods',
         paymentType: 'wallet',
@@ -546,13 +559,19 @@ async function cancelInvoicePackages(user, invoice, session) {
         ],
       }).session(session);
 
+      if (invoice.partialDelivery) {
+        summary.refunds = await require('./partialDelivery').cancelPackage(user, invoice, pkg, session);
+        for (const refund of summary.refunds) refunded[refund.currency] = roundToTwo((refunded[refund.currency] || 0) + refund.amount);
+      }
+
       for (const payment of payments) {
         const amount = await refundWalletPayment(
           user,
           payment,
           `إلغاء الفاتورة رقم #0${invoice.referenceId} واسترجاع قيمة شحن ${pkg.trackingNumber || ''} إلى المحفظة`,
           `Invoice #0${invoice.referenceId} cancellation ${pkg.orderId || ''}`,
-          session
+          session,
+          { postNow: true }
         );
         refunded[payment.currency] = roundToTwo((refunded[payment.currency] || 0) + amount);
         summary.refunds.push({ currency: payment.currency, amount });
@@ -563,6 +582,11 @@ async function cancelInvoicePackages(user, invoice, session) {
       if (item) {
         item.status.arrivedLibya = true;
         item.status.received = false;
+        item.shippingRecognitionFrom = undefined;
+        if (invoice.partialDelivery) {
+          item.creditDeliveryInvoiceId = undefined;
+          item.status.paid = false;
+        }
         summary.statusUpdated = true;
       }
 

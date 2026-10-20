@@ -139,6 +139,12 @@ function buildTimeline(sources, config, vendors) {
   sources.deliveries.forEach((delivery, packageId) => {
     add(delivery.at, 'delivery', 'delivery', packageId, (ctx) => syncOrder(delivery.orderId, ctx));
   });
+  // A reviewed legacy delivery changes policy on its reviewed date, never on its
+  // original delivery day. Preserve that transition if a migration is rebuilt.
+  sources.orders.forEach(order => (order.paymentList || []).forEach(pkg => {
+    if (pkg.shippingRecognitionFrom) add(pkg.shippingRecognitionFrom, 'delivery', 'shippingRecognition', pkg._id, ctx => syncOrder(order._id, ctx));
+    if (pkg.freeShippingOffer?.enabled) add(pkg.freeShippingOffer.effectiveFrom || pkg.freeShippingOffer.appliedAt, 'delivery', 'freeShippingOffer', pkg._id, ctx => syncOrder(order._id, ctx));
+  }));
 
   sources.statements.forEach((statement) => {
     // A payment given back to the wallet sorts with the payments, by time, so it always comes
@@ -385,7 +391,7 @@ async function replay(run, { since } = {}) {
     suspenseId: (await suspenseAccount())._id, generalExpenseId: (await resolveAccount('general_expense'))._id,
   };
 
-  let events = buildTimeline(sources, run.config || {}, vendors);
+  let events = buildTimeline(sources, run.config || {}, vendors).filter(event => event.at <= new Date(run.cutoff));
   if (since) events = events.filter((e) => e.at > since);
   await saveProgress(run, 'replay', 0, events.length);
 

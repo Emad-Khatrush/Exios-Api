@@ -82,6 +82,7 @@ async function balances(kind) {
 const KIND_OF = {
   TRANSFER: (debit) => (debit ? 'given' : 'returned'),
   BILL: () => 'spent', VENDOR_PAYMENT: () => 'spent', SALARY: () => 'deducted',
+  WITHDRAWAL: () => 'spent',
   CANCEL: () => 'canceled', REVERSAL: () => 'canceled',
 };
 // The box or bank the money came from or went to, in its own currency (500 LYD from the dinar box)

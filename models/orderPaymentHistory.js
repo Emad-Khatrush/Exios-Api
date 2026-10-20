@@ -2,6 +2,9 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const orderPaymentHistorySchema = new Schema({
+  deliveryInvoiceId: { type: Schema.Types.ObjectId, ref: 'Invoice', index: true },
+  deliveryPackageId: Schema.Types.ObjectId,
+  deliveryDebtId: { type: Schema.Types.ObjectId, ref: 'Balance' },
   customer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User', // Reference to the 'User' collection
@@ -67,4 +70,5 @@ const orderPaymentHistorySchema = new Schema({
   }],
 }, { timestamps: true });
 
+orderPaymentHistorySchema.index({ order: 1, createdAt: -1 });
 module.exports = mongoose.model("OrderPaymentHistory", orderPaymentHistorySchema);

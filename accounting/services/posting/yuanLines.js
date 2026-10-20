@@ -89,6 +89,7 @@ async function record(input, { session, req }) {
   const proposals = await suggestions(lines[0].accountId, { session, lineIds: ids });
   const purchases = [];
   for (const line of lines.sort((a, b) => a.day.localeCompare(b.day))) {
+    require('./bankEvidence').assertReviewed(line);
     const proposal = proposals[line._id];
     if (!proposal || line.lineStatus !== 'unmatched') throw fail(`السطر ${line.day} ليس شراء يوان غير مطابق من وسيط معروف`);
     if (proposal.beforeCount) throw fail(`السطر ${line.day} قبل الجرد: رصيد Alipay المجرود يشمله؛ أغلقه «مغطى بالجرد» بدل تسجيل شراء`);

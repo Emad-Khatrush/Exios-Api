@@ -93,6 +93,12 @@ exports.canManageStatements = async (req, res, next) => {
   if (STATEMENT_MANAGER_IDS.includes(String(req.user._id))) {
     return next();
   }
+  if (req.user.roles?.isAdmin && require('mongoose').isValidObjectId(req.params.statementId) && require('mongoose').isValidObjectId(req.params.id)) {
+    try {
+      const withdrawal = await require('../models/userStatement').exists({ _id: req.params.statementId, user: req.params.id, calculationType: '-', $or: [{ actionType: 'withdrawal' }, { paymentType: 'withdrawal' }] });
+      if (withdrawal) return next();
+    } catch (error) { return next(error); }
+  }
   return next(new ErrorHandler(403, 'You are not allowed to edit or delete payments'));
 }
 

@@ -21,7 +21,7 @@ async function order(number, amount, date = '2026-09-20T10:00:00Z') {
 }
 async function bill(amount, currency = 'USD', day = '2026-09-20', options = {}) {
   const vendor = await Vendor.create({ name: `Vendor-${oid()}`, type: 'supplier' });
-  const expense = await account('530800');
+  const expense = await account(options.expenseCode || '530800');
   return tx(session => payables.createBill({ vendorId: vendor._id, day, currency, ...(currency !== 'USD' && { rate: currency === 'KWD' ? 3.1 : 0.9 }),
     lines: [{ description: 'review purchase', amount, ...(options.orderId ? { target: 'order', orderId: options.orderId } : { target: 'expense', accountId: expense._id, office: 'turkey' }) }] },
   { session, req, asDraft: options.asDraft !== false }));
@@ -228,7 +228,7 @@ test('multiple order purchase candidates suggest the nearest date without postin
 });
 
 test('a new SWIFT fee exposes its duplicate evidence and supports a reviewed independent retry', async () => {
-  const original = await bill(26.25, 'USD', '2026-09-15', { asDraft: false });
+  const original = await bill(26.25, 'USD', '2026-09-15', { asDraft: false, expenseCode: '530400' });
   const otherBank = await account('110204');
   await tx(session => payables.createPayment({ vendorId: original.vendorId, day: '2026-09-15', fromAccountId: otherBank._id, amount: 1312.5, rate: 50,
     allocations: [{ billId: original._id, amountUsd: 2625 }] }, { session, req }));

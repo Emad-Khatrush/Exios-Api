@@ -65,7 +65,10 @@ const billLineSchema = new Schema({
   amount: { type: Number, required: true },
   // customs: the clearance of one package, owed to the clearing agent and sold to the customer
   // with the package (its cost waits until that sale is recognised)
-  target: { type: String, enum: ['order', 'trip', 'expense', 'asset', 'prepaid', 'customs'], required: true },
+  target: { type: String, enum: ['order', 'trip', 'expense', 'asset', 'prepaid', 'customs', 'yuan', 'stock'], required: true },
+  quantity: Number,
+  confirmCompanyOwned: Boolean,
+  stockOperationId: Schema.Types.ObjectId,
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   packageId: { type: Schema.Types.ObjectId },
   tripId: { type: Schema.Types.ObjectId, ref: 'Inventory' },
@@ -83,6 +86,7 @@ const billLineSchema = new Schema({
 });
 
 const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
+  yuanPurchaseId: { type: Schema.Types.ObjectId, ref: 'AccountingYuanPurchase' },
   duplicateDecision: String,
   duplicateReason: String,
   duplicateFingerprint: String,
@@ -185,14 +189,18 @@ const ClaimWriteOff = mongoose.model('AccountingClaimWriteOff', withLifecycle({
 // currency), received in yuan; its rate is yuan / dollar. Until the yuan arrives the dollars wait
 // on "yuan in transit" against the broker.
 const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
+  settlementBillId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' },
+  initialPaymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' },
+  initialNettingId: { type: Schema.Types.ObjectId, ref: 'AccountingNetting' },
+  customerId: { type: Schema.Types.ObjectId, ref: 'User' },
   // The cash left once in this supplier payment; this document reclassifies its excess.
   fundedFromPaymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment', index: true },
   vendorId: { type: Schema.Types.ObjectId, ref: 'AccountingVendor', required: true },
   day: { type: String, required: true },
-  fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
+  fromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: function () { return !this.settlementBillId; } },
   currency: String,
   amount: Number,
-  // USD cents that left
+  // USD cents: total purchase value (including unpaid consideration for settlement bills).
   usd: Number,
   toAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
   cnyExpected: Number,
@@ -281,7 +289,17 @@ const PrepaidExpense = mongoose.model('AccountingPrepaidExpense', withLifecycle(
 }));
 
 const SalaryPayment = mongoose.model('AccountingSalaryPayment', withLifecycle({
-  employeeId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  employeeModel: { type: String, enum: ['User', 'AccountingEmployee'], default: 'User' },
+  employeeId: { type: Schema.Types.ObjectId, ref: function () { return this.employeeModel || 'User'; }, required: true },
+  employeeName: String,
+  structuredSalary: { type: Boolean, default: false },
+  paymentKind: { type: String, enum: ['salary', 'commission'] },
+  commissionAllocations: [{ _id: false, adjustmentId: { type: Schema.Types.ObjectId, ref: 'AccountingEmployeeAdjustment' }, amountMinor: Number, waivedMinor: Number }],
+  closeCommissions: Boolean,
+  commissionCloseReason: String,
+  baseSalary: Number, commissionAmount: Number, salaryDeduction: Number,
+  commissionConversions: [{ _id: false, adjustmentId: Schema.Types.ObjectId, amount: Number, currency: String, sourceRate: Number, targetRate: Number, salaryCurrency: String, salaryAmount: Number, day: String }],
+  adjustments: [{ type: Schema.Types.ObjectId, ref: 'AccountingEmployeeAdjustment' }],
   month: { type: String, required: true },
   day: { type: String, required: true },
   office: { type: String, required: true },
@@ -294,6 +312,7 @@ const SalaryPayment = mongoose.model('AccountingSalaryPayment', withLifecycle({
 }));
 
 const EquityTransaction = mongoose.model('AccountingEquityTransaction', withLifecycle({
+  loanRole: { type: String, enum: ['loans', 'long_term_loans', 'current_loan_portion'] },
   type: { type: String, enum: ['capital_in', 'withdrawal', 'loan_in', 'loan_repayment'], required: true },
   partyName: { type: String, required: true },
   day: { type: String, required: true },
@@ -344,6 +363,11 @@ const bankLineSchema = new Schema({
   amount: { type: Number, required: true },
   balanceAfter: Number,
   matchedEntryIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' }],
+  matchGroupId: Schema.Types.ObjectId,
+  duplicateReviewPending: Boolean,
+  financialActionId: { type: Schema.Types.ObjectId, ref: 'AccountingFinancialOperationAction' },
+  duplicateIndependentReason: String,
+  duplicateResolvedToId: { type: Schema.Types.ObjectId, ref: 'AccountingBankStatementLine' },
   lineStatus: { type: String, enum: ['unmatched', 'matched', 'created_entry', 'ignored'], default: 'unmatched' },
   entryId: { type: Schema.Types.ObjectId, ref: 'AccountingJournalEntry' },
   importBatchId: String,
@@ -429,6 +453,8 @@ bankLineSchema.index({ accountId: 1, lineStatus: 1, day: 1 });
 bankLineSchema.index({ historicalSettlementPaymentId: 1 }, { unique: true, partialFilterExpression: { lineStatus: 'created_entry', historicalSettlementPaymentId: { $exists: true } } });
 bankLineSchema.index({ accountId: 1, fingerprint: 1 });
 bankLineSchema.index({ accountId: 1, fingerprintAliases: 1 });
+bankLineSchema.index({ accountId: 1, matchGroupId: 1 });
+bankLineSchema.index({ accountId: 1, day: 1, reference: 1, amount: 1 });
 bankLineSchema.index({ accountId: 1, sourceProvider: 1, sourceTransactionId: 1 });
 const BankStatementLine = mongoose.model('AccountingBankStatementLine', bankLineSchema);
 

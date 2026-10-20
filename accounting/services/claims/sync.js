@@ -14,6 +14,7 @@ const { resolveAccount } = require('../roles');
 const { getConfig } = require('../config');
 const { nextSeq } = require('../counter');
 const { toMinor } = require('../money');
+const { toDay, addDays } = require('../dates');
 const { purchaseKey, shipmentKey, isDomesticFeeKey, customsFeeKey, isCustomsFeeKey, PACKAGE_FEES, CLAIM_EVENTS } = require('./keys');
 
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
@@ -119,7 +120,7 @@ async function orderLedger(orderId, ctx) {
 
   const state = {
     ar: new Map(), arByPartner: new Map(), billed: new Map(), recognized: new Map(), refunded: new Map(), writtenOff: new Map(),
-    shipCost: new Map(), customsCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0, remittanceCostRecognized: 0,
+    shipCost: new Map(), shipCostByAccount: new Map(), customsCost: new Map(), purchaseCostTotal: 0, purchaseCostRecognized: 0, remittanceCostRecognized: 0,
   };
   const add = (map, key, value) => map.set(key, (map.get(key) || 0) + value);
 
@@ -151,7 +152,10 @@ async function orderLedger(orderId, ctx) {
     // A package's share of a trip; a free package's share sits on the purchase cost (see step 4)
     const tripShare = packageId && tripId && (shippingCostIds.has(String(row._id.accountId)) || is(row, a.cost_purchase_invoices));
     if (tripShare) {
-      add(state.shipCost, `${packageId}|${tripId}`, row.net);
+      const shareKey = `${packageId}|${tripId}`;
+      add(state.shipCost, shareKey, row.net);
+      if (!state.shipCostByAccount.has(shareKey)) state.shipCostByAccount.set(shareKey, new Map());
+      add(state.shipCostByAccount.get(shareKey), String(row._id.accountId), row.net);
     } else if (is(row, a.purchase_cost_wip) || is(row, a.cost_purchase_invoices) || is(row, a.cost_remittance)) {
       state.purchaseCostTotal += row.net;
       if (!is(row, a.purchase_cost_wip)) state.purchaseCostRecognized += row.net;
@@ -331,6 +335,7 @@ async function syncOrder(orderId, options = {}) {
       const paidOn = (state.billed.get(key) || 0) - open - Math.max(state.writtenOff.get(key) || 0, 0);
       if (!open || Math.abs(open) > ROUNDING_CENTS || paidOn <= 0) continue;
       const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
+      if (packageId && packages.get(packageId)?.creditDeliveryInvoiceId) continue;
       const dims = { arKey: key, orderId: order._id, ...(packageId && { packageId: oid(packageId) }) };
       posted.push(await post(ctx, 'ROUNDING', key, `فرق تقريب - طلب ${order.orderId}`, move(
         -open, { accountId: a.customer_receivable._id, partnerId, ...dims }, { accountId: a.rounding._id, office, ...dims },
@@ -367,10 +372,12 @@ async function syncOrder(orderId, options = {}) {
     }
   }
 
-  // ---- 3. Revenue: recognised when paid (and, for a package, delivered) ----
+  // ---- 3. Shipping is earned at delivery; purchase invoices keep their instalment policy ----
   // A written-off claim counts as settled; its revenue is only what was paid
   const recognizedNow = new Map();
   const writtenOffKeys = new Set();
+  const eventDay = toDay(ctx.date);
+  const recognitionDay = !ctx.isHistorical && settings.lockDate && eventDay <= settings.lockDate ? addDays(settings.lockDate, 1) : eventDay;
   for (const key of keys) {
     const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
     const pkg = packageId && packages.get(packageId);
@@ -379,11 +386,15 @@ async function syncOrder(orderId, options = {}) {
     const billed = (state.billed.get(key) || 0) - written;
     const paid = (state.ar.get(key) || 0) <= tolerance;
     const delivered = packageId ? !!pkg?.status?.received || (active && abandoned.has(packageId)) : true;
-    // A package: all of it once delivered and paid in full. A purchase invoice: what has been paid
-    // so far (the instalment method, owner's decision in v8), all of it once paid in full; its cost
-    // follows in the same proportion below
+    // Delivery completes the shipping service regardless of collection. Unpaid amounts remain
+    // on the same receivable. Payments made later never trigger a second shipping sale.
+    // Purchase invoices retain their existing instalment policy.
     const open = Math.max(state.ar.get(key) || 0, 0);
-    const want = billed <= 0 || !delivered ? 0 : paid ? billed : (packageId ? 0 : Math.max(billed - open, 0));
+    // New deliveries use one accrual policy. Older unpaid deliveries keep their existing
+    // books until explicitly reviewed; their transition date prevents rewriting history.
+    const shippingAccrual = packageId && (pkg?.creditDeliveryInvoiceId ||
+      (pkg?.shippingRecognitionFrom && toDay(pkg.shippingRecognitionFrom) <= recognitionDay));
+    const want = billed <= 0 || !delivered ? 0 : paid || shippingAccrual ? billed : (packageId ? 0 : Math.max(billed - open, 0));
     if (packageId && active && abandoned.has(packageId)) writtenOffKeys.add(shipmentKey(order._id, packageId));
     const byAccount = state.recognized.get(key) || new Map();
     const have = [...byAccount.values()].reduce((s, v) => s + v, 0);
@@ -463,22 +474,26 @@ async function syncOrder(orderId, options = {}) {
     for (const tripId of tripIds) {
       const allocation = await tripAllocation(tripId, ctx);
       const want = recognized ? (allocation.shares.get(packageId) || 0) : 0;
-      const have = state.shipCost.get(`${packageId}|${tripId}`) || 0;
-      if (want === have) continue;
       const shippingRole = allocation.shippingType === 'sea' ? 'cost_shipping_sea' : allocation.shippingType === 'domestic' ? 'cost_shipping_domestic' : 'cost_shipping_air';
       const role = free && order.isPayment ? 'cost_purchase_invoices' : shippingRole;
       const dims = { tripId: oid(tripId), packageId: oid(packageId), orderId: order._id, office };
       const tracking = packages.get(packageId)?.deliveredPackages?.trackingNumber || packageId;
-      posted.push(await post(ctx, 'COST_RECOGNITION', `${packageId}:${tripId}`, `حصة الطرد ${tracking} من تكلفة الرحلة${free ? ' (شحن مجاني)' : ''} - طلب ${order.orderId}`, move(
-        want - have,
-        { accountId: a[role]._id, ...dims },
-        { accountId: a.trip_cost_wip._id, ...dims },
-      )));
+      // Reconcile by account as well as amount. A free offer can move a previously
+      // recognised shipping cost to purchase cost without recognising it twice.
+      const byAccount = state.shipCostByAccount.get(`${packageId}|${tripId}`) || new Map();
+      const targetId = String(a[role]._id);
+      for (const accountId of new Set([...byAccount.keys(), targetId])) {
+        const delta = (accountId === targetId ? want : 0) - (byAccount.get(accountId) || 0);
+        if (!delta) continue;
+        posted.push(await post(ctx, 'COST_RECOGNITION', `${packageId}:${tripId}`, `حصة الطرد ${tracking} من تكلفة الرحلة${free ? ' (شحن مجاني ضمن فاتورة الشراء)' : ''} - طلب ${order.orderId}`, move(
+          delta, { accountId: oid(accountId), ...dims }, { accountId: a.trip_cost_wip._id, ...dims },
+        )));
+      }
     }
   }
 
   // The clearing agent's invoice of a package follows the customs clearance it sold: cost of sales
-  // once that is recognised (delivered and paid in full) or written off. Cleared but sold to nobody
+  // once that is recognised at delivery or written off. Cleared but sold to nobody
   // (no fee on the package), it is a cost once the package is delivered. A cancelled order keeps it
   // waiting, like a purchase cost, until the accountant settles it.
   for (const [packageId, cost] of state.customsCost) {
@@ -571,4 +586,4 @@ async function syncTrip(tripId, options = {}) {
   return { posted, orders: orderIds.length };
 }
 
-module.exports = { syncOrder, syncTrip, allocate, packageCharge };
+module.exports = { syncOrder, syncTrip, allocate, packageCharge, tripAllocation };

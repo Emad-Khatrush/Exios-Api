@@ -41,7 +41,7 @@ async function details(id) {
   ] })
     .sort({ at: -1 }).limit(100).populate('userId', 'firstName lastName username').lean();
   return { line, bills, payments, receipts, refunds, entries: entries.map(entry => ({ ...entry,
-    role: currentIds.includes(String(entry._id)) ? 'settlement' : costIds.includes(String(entry._id)) ? 'cost' : 'history',
+    role: currentIds.includes(String(entry._id)) || (entry.eventType === 'BANK_HISTORICAL_SETTLEMENT_CLOSE' && entry.status === 'posted' && line.lineStatus === 'created_entry') ? 'settlement' : costIds.includes(String(entry._id)) ? 'cost' : 'history',
     totalCredit: entry.lines.reduce((sum, l) => sum + (l.credit || 0), 0),
   })), audit };
 }

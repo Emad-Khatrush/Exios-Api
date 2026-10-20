@@ -114,21 +114,21 @@ module.exports.accountLedger = handle(async (req, res) => {
   if (to) dayRange.$lte = to;
   const rows = await JournalEntry.aggregate([
     { $match: { ...lineMatch, ...visible, ...(from || to ? { day: dayRange } : {}) } },
-    { $sort: { day: 1, createdAt: 1 } },
+    { $sort: { day: 1, createdAt: 1, _id: 1 } },
     { $limit: 5000 },
     // The operation's amount in its own currency (dinars...), even when this account is kept in dollars
     { $addFields: { original: { $first: { $filter: { input: '$lines', cond: { $and: [{ $ne: [{ $ifNull: ['$$this.currency', 'USD'] }, 'USD'] }, { $ne: [{ $ifNull: ['$$this.amountCurrency', 0] }, 0] }] } } } } } },
     { $unwind: '$lines' },
     { $match: lineMatch },
-    { $project: { number: 1, day: 1, description: 1, eventType: 1, status: 1, source: 1, reversalOf: 1, line: '$lines', original: { currency: '$original.currency', amount: { $abs: '$original.amountCurrency' }, rate: '$original.rate' } } },
+    { $project: { number: 1, day: 1, createdAt: 1, description: 1, eventType: 1, status: 1, source: 1, reversalOf: 1, line: '$lines', original: { currency: '$original.currency', amount: { $abs: '$original.amountCurrency' }, rate: '$original.rate' } } },
   ]);
 
   let usd = opening?.usd || 0;
   let foreign = opening?.foreign || 0;
-  const movements = rows.map((row) => {
+  const movements = rows.map((row, sequence) => {
     usd += row.line.debit - row.line.credit;
     foreign += row.line.amountCurrency || 0;
-    return { ...row, balanceUsd: usd, balanceForeign: foreign, account: names.get(String(row.line.accountId)) };
+    return { ...row, sequence, balanceUsd: usd, balanceForeign: foreign, account: names.get(String(row.line.accountId)) };
   });
 
   res.json({

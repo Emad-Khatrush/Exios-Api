@@ -121,16 +121,16 @@ test('YalukII and IKEA get distinct service and goods classifications', async ()
   expect((await merchants.matcher(source._id))({description:'Yalukll truck service'})).toMatchObject({vendorName:'YalukII',vendorType:'service'});
 });
 
-test('AlQFILA is yuan purchase, never a goods expense or a supplier refund by merchant name alone', async () => {
-  const source=await account('110202'); const expense=await account('510400');
+test('AlQFILA suggests yuan review but an explicitly chosen rent expense is permitted', async () => {
+  const source=await account('110202'); const expense=await account('530200');
   const rows=[{day:'2026-09-01',amount:-100,description:'AlQFILA'}, {day:'2026-09-01',amount:100,description:'AlQFILA'}];
   const hints=await bank.classifyRows(source._id,rows);
   expect(hints[0]).toMatchObject({source:'yuan',account:null,requiresConfirmation:true});
   expect(hints[1]).toMatchObject({source:'yuan',account:null,requiresConfirmation:true});
   expect(hints[1].isRefund).toBeFalsy();
   await bank.importStatement(source._id,[{...rows[0],counterAccountId:expense._id,office:'china'}],{req});
-  expect(await require('../models/documents').SupplierBill.countDocuments()).toBe(0);
-  expect(await getBalance(source._id)).toEqual({usd:0,foreign:0});
+  expect(await require('../models/documents').SupplierBill.countDocuments()).toBe(1);
+  expect(await getBalance(source._id)).toEqual({usd:-10000,foreign:-10000});
 });
 
 test('unknown purchase defaults to purchase cost while unknown transfers remain for review', async () => {

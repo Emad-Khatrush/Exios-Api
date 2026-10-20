@@ -6,8 +6,8 @@
 // weight.actual. Every screen and report that multiplies weight by price follows by itself, and old
 // packages (never charged by volume) keep their recorded weight.
 //
-// Once a package has a weight, only an admin, an accountant or the owner changes its weight,
-// volume or volumetric choice; other staff see them.
+// Staff may edit package data until delivery. Delivered packages are immutable
+// in the general editors, including for administrators and accountants.
 const ErrorHandler = require('./errorHandler');
 
 const DEFAULT_FACTOR = 167;
@@ -53,8 +53,14 @@ function normalizeDetails(details, { factor, rate }) {
     const cbm = cbmOf(volumetric);
     if (!(cbm > 0)) throw new ErrorHandler(400, `Package ${details.trackingNumber || ''}: type the volume in CBM or its three dimensions (cm) to charge it by volume`);
     if (weight.actual === undefined || weight.actual === null || weight.actual === '') weight.actual = Number(weight.total) || 0;
-    details.volumetric = { ...volumetric, enabled: true, cbm: round(cbm, 4), factor };
-    weight.total = round(cbm * factor, 2);
+    const calculatedWeight = round(cbm * factor, 2);
+    const hasOverride = volumetric.chargeableWeight !== undefined && volumetric.chargeableWeight !== null && volumetric.chargeableWeight !== '';
+    const chargeableWeight = hasOverride ? round(volumetric.chargeableWeight, 2) : calculatedWeight;
+    if (hasOverride && (typeof volumetric.chargeableWeight === 'boolean' || !Number.isFinite(chargeableWeight) || chargeableWeight <= 0)) {
+      throw new ErrorHandler(400, 'وزن الفوترة المعدّل يجب أن يكون رقمًا أكبر من صفر.');
+    }
+    details.volumetric = { ...volumetric, enabled: true, cbm: round(cbm, 4), factor, calculatedWeight, chargeableWeight: hasOverride ? chargeableWeight : undefined };
+    weight.total = chargeableWeight;
   } else if (volumetric.enabled) {
     // A sea package is already measured in CBM: nothing to convert
     details.volumetric = { ...volumetric, enabled: false };
@@ -80,15 +86,15 @@ function normalizeDetails(details, { factor, rate }) {
 async function normalizePackages(packages) {
   if (!Array.isArray(packages) || !packages.length) return packages;
   const factor = await volumetricFactor();
-  const needsRate = packages.some((p) => FEE_FIELDS.some((field) => p?.deliveredPackages?.[field]?.currency === 'LYD' && !(Number(p.deliveredPackages[field].usd) > 0)));
+  const needsRate = packages.some((p) => !p?.status?.received && FEE_FIELDS.some((field) => p?.deliveredPackages?.[field]?.currency === 'LYD' && !(Number(p.deliveredPackages[field].usd) > 0)));
   const rate = needsRate ? await settingsRate() : null;
-  packages.forEach((pkg) => normalizeDetails(pkg?.deliveredPackages, { factor, rate }));
+  packages.forEach((pkg) => { if (!pkg?.status?.received) normalizeDetails(pkg?.deliveredPackages, { factor, rate }); });
   return packages;
 }
 
 async function canEditMeasures(user) {
   if (!user) return false;
-  if (user.roles?.isAdmin || user.roles?.isAccountant) return true;
+  if (user.roles?.isAdmin || user.roles?.isAccountant || user.roles?.isEmployee) return true;
   try {
     return await require('../accounting/services/access').isOwner(user);
   } catch {
@@ -96,27 +102,38 @@ async function canEditMeasures(user) {
   }
 }
 
-const measuresOf = (pkg) => {
-  const d = pkg?.deliveredPackages || {};
-  const v = d.volumetric || {};
-  return JSON.stringify([
-    Number(d.weight?.total ?? d.weight) || 0, Number(d.weight?.actual) || 0, String(d.weight?.measureUnit || ''),
-    !!v.enabled, Number(v.cbm) || 0, Number(v.length) || 0, Number(v.width) || 0, Number(v.height) || 0,
-  ]);
+// Compare schema-cast data so harmless numeric strings, object key order and
+// populated references do not prevent saving other, undelivered packages.
+const snapshot = (order, pkg) => {
+  const value = pkg.toObject ? pkg.toObject({ depopulate: true }) : pkg;
+  const cast = new order.constructor({ paymentList: [value] }).paymentList[0];
+  return JSON.parse(JSON.stringify(cast.toObject({ depopulate: true })));
 };
 
-// Refuses a change of weight, volume or volumetric choice on a package that already had a weight,
-// unless the user may make it. `before` is the order as saved.
-async function guardMeasures(before, packages, user) {
+async function guardMeasures(before, packages, user, { partial = false } = {}) {
   if (!before || !Array.isArray(packages)) return;
+  const ids = packages.filter(pkg => pkg?._id).map(pkg => String(pkg._id));
+  if (new Set(ids).size !== ids.length) throw new ErrorHandler(400, 'لا يمكن تكرار الطرد نفسه في الطلبية.');
   const saved = new Map((before.paymentList || []).map((pkg) => [String(pkg._id), pkg]));
-  const changed = packages.filter((pkg) => {
-    const old = pkg?._id && saved.get(String(pkg._id));
-    return old && Number(old.deliveredPackages?.weight?.total) > 0 && measuresOf(old) !== measuresOf(pkg);
-  });
-  if (changed.length && !(await canEditMeasures(user))) {
-    const names = changed.map((pkg) => pkg.deliveredPackages?.trackingNumber || pkg._id).join(', ');
-    throw new ErrorHandler(403, `Only an admin or the accountant can change a saved weight or volume (${names})`);
+  for (const pkg of packages) {
+    const old = saved.get(String(pkg?._id));
+    if (old?.freeShippingOffer?.enabled) {
+      pkg.freeShippingOffer = old.freeShippingOffer.toObject ? old.freeShippingOffer.toObject() : old.freeShippingOffer;
+      if (pkg.deliveredPackages?.exiosPrice !== undefined && Number(pkg.deliveredPackages.exiosPrice) !== 0) {
+        throw new ErrorHandler(403, 'هذا الطرد ضمن عرض شحن مجاني معتمد؛ لا يمكن تغيير سعره بالتعديل العادي.');
+      }
+    } else if (pkg) delete pkg.freeShippingOffer;
+  }
+  const { isDeepStrictEqual } = require('util');
+  for (const [id, old] of saved) {
+    if (!old.status?.received) continue;
+    const index = packages.findIndex(pkg => String(pkg?._id) === id);
+    if (index === -1 && partial) continue;
+    if (index === -1 || !isDeepStrictEqual(snapshot(before, old), snapshot(before, packages[index]))) {
+      throw new ErrorHandler(403, 'لا يمكن تعديل بيانات الطرد أو حذفه بعد تسليمه، بما في ذلك من حساب المحاسب.');
+    }
+    // Preserve the exact saved data and historical fee/volumetric conversions.
+    packages[index] = old.toObject({ depopulate: true });
   }
 }
 
@@ -127,6 +144,13 @@ function keepDeliveryState(oldOrder, packages) {
   (packages || []).forEach((pkg) => {
     if (!pkg) return;
     const old = pkg._id && (oldOrder?.paymentList || []).find((p) => String(p._id) === String(pkg._id));
+    if (old?.creditDeliveryInvoiceId) pkg.creditDeliveryInvoiceId = old.creditDeliveryInvoiceId;
+    else delete pkg.creditDeliveryInvoiceId;
+    if (old?.shippingRecognitionFrom) pkg.shippingRecognitionFrom = old.shippingRecognitionFrom;
+    else delete pkg.shippingRecognitionFrom;
+    if (old?.freeShippingOffer) pkg.freeShippingOffer = old.freeShippingOffer.toObject ? old.freeShippingOffer.toObject() : old.freeShippingOffer;
+    else delete pkg.freeShippingOffer;
+    if (old?.freeShippingOffer?.enabled && pkg.deliveredPackages) pkg.deliveredPackages.exiosPrice = 0;
     pkg.status = { ...(pkg.status || {}), received: !!old?.status?.received };
   });
   return packages;

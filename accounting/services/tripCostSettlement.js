@@ -43,7 +43,7 @@ async function options(input, session) {
   const currencyInfo = config.currencies.get(currency);
   if (!currencyInfo?.isActive) throw fail('عملة الحساب غير مفعلة');
   const period = input.from || input.to ? { day: { ...(input.from && { $gte: input.from }), ...(input.to && { $lte: input.to }) } } : {};
-  const query = { accountId: account._id, lineStatus: 'unmatched', amount: { $lt: 0 }, ...period };
+  const query = { accountId: account._id, lineStatus: 'unmatched', duplicateReviewPending: { $ne: true }, amount: { $lt: 0 }, ...period };
   const [rawLines, accountCount, periodCount, periodStates] = await Promise.all([
     BankStatementLine.find(query).sort({ day: 1, _id: 1 }).session(session || null).lean(),
     BankStatementLine.countDocuments({ accountId: account._id }).session(session || null),

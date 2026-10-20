@@ -30,6 +30,54 @@ async function settledIds(session) {
   return new Set(entries.map((e) => e.eventKey.split(':').slice(2, 4).join(':')));
 }
 
+// A wallet correction reverses a historical adjustment and transfers its suspense
+// effect back to opening equity. Only a complete, posted, zero-net pair is resolved.
+// Unpaired or nonzero corrections remain visible; never hide a whole event type.
+async function resolvedWalletCorrections(suspenseId, session) {
+  const entries = await JournalEntry.find({ status: 'posted', eventType: 'WALLET_RECONCILIATION',
+    eventKey: /^WALLET_CASHFLOW_(REVERSE|CLOSE|CLOSE_FIX):/ }).session(session || null).lean();
+  const byKey = new Map(entries.map(entry => [entry.eventKey, entry]));
+  const resolved = new Set();
+  const net = entry => entry.lines.filter(line => String(line.accountId) === String(suspenseId))
+    .reduce((sum, line) => sum + line.debit - line.credit, 0);
+  for (const transfer of entries) {
+    const match = /^WALLET_CASHFLOW_(?:CLOSE|CLOSE_FIX):([a-f0-9]{24})$/.exec(transfer.eventKey);
+    if (!match) continue;
+    const reversal = byKey.get(`WALLET_CASHFLOW_REVERSE:${match[1]}`);
+    if (!reversal || String(reversal.reversalOf) !== match[1] || transfer.reversalOf ||
+      !transfer.source?.id || transfer.source.model !== 'User' || reversal.source?.model !== 'User' ||
+      String(transfer.source.id) !== String(reversal.source.id)) continue;
+    if (Number.isSafeInteger(net(transfer)) && net(transfer) !== 0 && net(transfer) + net(reversal) === 0) {
+      resolved.add(String(transfer._id)); resolved.add(String(reversal._id));
+    }
+  }
+  return resolved;
+}
+
+async function resolvedHistoricalBankSettlements(suspenseId, session) {
+  const entries = await JournalEntry.find({ status: 'posted', eventType: { $in: ['BANK_HISTORICAL_SETTLEMENT', 'BANK_HISTORICAL_SETTLEMENT_CLOSE'] } })
+    .session(session || null).lean();
+  const byId = new Map(entries.map(entry => [String(entry._id), entry]));
+  const resolved = new Set();
+  for (const correction of entries) {
+    const match = /^BANK_HISTORICAL_SETTLEMENT_CLOSE:([a-f0-9]{24})$/.exec(correction.eventKey);
+    if (!match || correction.reversalOf || correction.lines.length !== 2) continue;
+    const original = byId.get(match[1]);
+    if (!original || original.eventType !== 'BANK_HISTORICAL_SETTLEMENT' || original.reversalOf ||
+      original.source?.model !== 'AccountingBankStatementLine' || correction.source?.model !== 'AccountingBankStatementLine' ||
+      !original.source.id || String(original.source.id) !== String(correction.source.id)) continue;
+    const net = entry => entry.lines.filter(line => String(line.accountId) === String(suspenseId))
+      .reduce((sum, line) => sum + line.debit - line.credit, 0);
+    const amount = net(original);
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount + net(correction) !== 0) continue;
+    const linked = await require('../models/documents').BankStatementLine.exists({ _id: original.source.id,
+      entryId: original._id, lineStatus: 'created_entry', historicalSettlementPaymentId: { $ne: null } }).session(session || null);
+    if (!linked) continue;
+    resolved.add(String(original._id)); resolved.add(String(correction._id));
+  }
+  return resolved;
+}
+
 // Every open item, newest first, with totals per cause
 async function listOpen({ cause, search, from, to, limit = 500 } = {}) {
   const suspense = await resolveAccount('migration_suspense');
@@ -43,10 +91,14 @@ async function listOpen({ cause, search, from, to, limit = 500 } = {}) {
   if (from || to) match.day = { ...(from && { $gte: from }), ...(to && { $lte: to }) };
   const entries = await JournalEntry.find(match).select('number day description eventType fallbacks isHistorical lines source').sort({ day: -1, createdAt: -1 }).lean();
   const settled = await settledIds();
+  const resolvedWallet = await resolvedWalletCorrections(suspense._id);
+  const resolvedHistorical = await resolvedHistoricalBankSettlements(suspense._id);
 
   const term = String(search || '').trim().toLowerCase();
   const items = [];
   entries.forEach((entry) => entry.lines.forEach((line, lineIndex) => {
+    if (resolvedWallet.has(String(entry._id))) return;
+    if (resolvedHistorical.has(String(entry._id))) return;
     if (String(line.accountId) !== String(suspense._id)) return;
     const id = `${entry._id}:${lineIndex}`;
     if (settled.has(id)) return;
@@ -92,6 +144,8 @@ async function settleItem(id, { accountId, partnerId, arKey, office, day, note }
   const line = entry?.lines?.[Number(index)];
   if (!entry || entry.status !== 'posted' || !line || String(line.accountId) !== String(suspense._id)) throw fail('البند غير موجود في حساب المعلّق');
   if ((await settledIds(session)).has(`${entryId}:${Number(index)}`)) throw fail('البند سُوّي مسبقاً');
+  if ((await resolvedWalletCorrections(suspense._id, session)).has(String(entryId))) throw fail('هذا البند عولج تلقائيًا ضمن تسوية المحفظة؛ حدّث القائمة');
+  if ((await resolvedHistoricalBankSettlements(suspense._id, session)).has(String(entryId))) throw fail('هذا البند عولج مع إقفال السداد التاريخي؛ حدّث القائمة');
 
   const { accountsById, currencies } = await getConfig();
   const target = accountsById.get(String(accountId || ''));

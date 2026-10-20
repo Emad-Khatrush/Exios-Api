@@ -104,6 +104,7 @@ router.get('/acc/orders/:orderId/previous-wallet-refunds', STAFF, handle(async (
 router.post('/acc/bills/:billId/cancel', STAFF, handle(async (req, res) => res.json(await staff.cancelOwnBill(req.params.billId, req, req.body?.reason))));
 
 router.get('/office-expenses/options', STAFF, handle(async (req, res) => res.json(await staff.officeExpenseOptions(req.user, req.query.office))));
+router.get('/office-expenses/trips', STAFF, handle(async (req, res) => res.json({ results: await staff.officeExpenseTrips(req.query) })));
 router.route('/office-expenses')
   .get(STAFF, handle(async (req, res) => res.json({ results: await staff.myExpenses(req.user, req.query) })))
   .post(STAFF, upload.array('files'), handle(async (req, res) => res.json(await staff.createOfficeExpense(req.body || {}, await uploadReceipts(req.files), req))));
