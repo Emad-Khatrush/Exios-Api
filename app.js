@@ -441,6 +441,7 @@ process.on('SIGINT', () => shutdownWhatsAppClient('SIGINT'));
 process.on('SIGUSR2', () => shutdownWhatsAppClient('SIGUSR2'));
 
 // render routes
+if (isQa) app.use('/api/qa-files', require('./utils/qaFiles').router);
 app.use('/api/accounting', accountingRoutes);
 // Trip costs, order purchases and office expenses entered from the system's own screens
 app.use('/api', accountingSystemRoutes);
