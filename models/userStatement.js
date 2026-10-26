@@ -18,7 +18,10 @@ const userStatementSchema = new Schema({
   rate: Number,
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
-  actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
+  actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal', 'exchange'] },
+  walletExchangeId: { type: Schema.Types.ObjectId, ref: 'WalletExchange', immutable: true },
+  walletExchangeLeg: { type: String, enum: ['from', 'to'], immutable: true },
+  accountingSource: { model: String, id: Schema.Types.ObjectId },
   office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank', 'bank'] },
   editHistory: [{
     editedBy: { type: Schema.Types.ObjectId, ref: 'User' },

@@ -1,0 +1,12 @@
+diff --git a/accounting/services/posting/operations.js b/accounting/services/posting/operations.js
+index 48d4df4..dc7ac41 100644
+--- a/accounting/services/posting/operations.js
++++ b/accounting/services/posting/operations.js
+@@ -205,6 +205,7 @@ async function postStatement(statementId, options = {}) {
+   const { session } = options;
+   const statement = await UserStatement.findById(statementId).session(session).lean();
+   if (!statement) return { skipped: 'statement not found' };
++  if (statement.walletExchangeId) return require('../../../utils/walletExchangeAccounting').postExchange(statement.walletExchangeId, options);
+   if (statement.accountingSource?.model) return { skipped: 'posted by accounting itself' };
+ 
+   // The historical migration may say what an old statement was when its kind was never saved

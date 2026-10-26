@@ -11,7 +11,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node app.js",
     "app": "nodemon app.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chrome",
+    "test:wallet-exchange": "node --test tests/walletExchange.check.cjs tests/walletExchangeAccounting.check.cjs"
   },
   "keywords": [],
   "author": "",
@@ -44,6 +45,7 @@
     "whatsapp-web.js": "^1.34.7"
   },
   "devDependencies": {
+    "mongodb-memory-server": "^10.4.3",
     "nodemon": "^3.1.4",
     "puppeteer": "^24.36.0"
   },

@@ -199,11 +199,12 @@ module.exports.getLatestStatements = async (req, res, next) => {
       // Same rule as the customer statement: only cash/bank deposits and cash withdrawals
       // are real money. Refunds, compensation and cancellations only credit the wallet.
       const flowOf = ({ type, actionType, paymentType }) => {
+        if (actionType === 'exchange') return type === '-' ? 'exchangeOut' : 'exchangeIn';
         if (type === '-') return actionType === 'withdrawal' || paymentType === 'withdrawal' ? 'cashOut' : 'spent';
         return ['refund', 'compensation', 'cancellation', 'wallet'].includes(actionType) ? 'credit' : 'cashIn';
       };
       const empty = () => ({ USD: 0, LYD: 0, count: 0 });
-      summary = { count: totalCount, cashIn: empty(), credit: empty(), spent: empty(), cashOut: empty() };
+      summary = { count: totalCount, cashIn: empty(), credit: empty(), spent: empty(), cashOut: empty(), exchangeIn: empty(), exchangeOut: empty() };
       groups.forEach(({ _id, amount, count }) => {
         const bucket = summary[flowOf(_id)];
         if (_id.currency === 'USD' || _id.currency === 'LYD') bucket[_id.currency] += amount || 0;
@@ -229,6 +230,7 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, actionType, office } = req.body;
+    if (actionType === 'exchange') throw new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل طرفي التحويل معًا');
 
     const existWallet = await Wallet.findOne({ user: id, currency });
 
@@ -411,6 +413,7 @@ module.exports.deleteStatement = async (req, res, next) => {
 
     const statement = await UserStatement.findOne({ _id: statementId, user: id }).populate('createdBy', 'firstName lastName');
     if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
+    if (statement.walletExchangeId) return next(new ErrorHandler(400, 'لا يمكن حذف طرف منفرد من عملية صرافة'));
     // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
     if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
 
@@ -466,6 +469,8 @@ module.exports.updateStatement = async (req, res, next) => {
 
     const statement = await UserStatement.findOne({ _id: statementId, user: id });
     if (!statement) return next(new ErrorHandler(404, 'Statement not found'));
+    if (statement.walletExchangeId) return next(new ErrorHandler(400, 'لا يمكن تعديل طرف منفرد من عملية صرافة'));
+    if (req.body.actionType === 'exchange') return next(new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل التحويل'));
     // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
     if (statement.calculationType === '-') return next(new ErrorHandler(400, 'Outgoing payments cannot be edited or deleted'));
 
@@ -687,6 +692,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
+    if (actionType === 'exchange') throw new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل طرفي التحويل معًا');
 
     const truncateToTwo = (num) => Math.trunc(num * 100) / 100;
 
@@ -723,10 +729,10 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const newBalance = truncateToTwo(wallet.balance - Number(amount));
 
     // Update wallet with new balance
-    await Wallet.findOneAndUpdate(
+    const debitedWallet = await Wallet.findOneAndUpdate(
       {
-        user: id,
-        currency,
+        _id: wallet._id,
+        balance: wallet.balance,
       },
       {
         balance: newBalance
@@ -735,6 +741,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
         new: true,
       }
     );
+    if (!debitedWallet) throw new ErrorHandler(409, 'تغير رصيد المحفظة أثناء العملية؛ حدّث الرصيد وأعد المحاولة');
 
     const lastUserStatement = await UserStatement.find({ user: id, currency }).sort({ _id: -1 }).limit(1);
     const previousTotal = Number(lastUserStatement[0]?.total || 0);
@@ -787,7 +794,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
       createdAt: userStatement.createdAt
     });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 

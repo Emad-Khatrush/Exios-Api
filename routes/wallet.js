@@ -1,8 +1,11 @@
 const express = require('express');
 const wallet = require('../controllers/wallet');
+const walletExchange = require('../controllers/walletExchange');
 const { protect, allowAdminsAndEmployee, isAdmin, canManageStatements } = require('../middleware/check-auth');
 
 const router  = express.Router();
+router.post('/wallet/:id/exchange/quote', protect, walletExchange.quote);
+router.post('/wallet/:id/exchange', protect, walletExchange.create);
 const multer = require('multer');
 const upload = multer({
       storage: multer.memoryStorage(),
