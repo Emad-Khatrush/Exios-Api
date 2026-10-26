@@ -219,7 +219,7 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
         'orders.paymentList._id': { $in: packageIds },
         inventoryType: 'inventoryGoods',
         shippingType: { $ne: 'domestic' }
-      }).lean();
+      }).select('-attachments').lean();
 
       // --- 4. MAP INVENTORY IN MEMORY (CRASH-PROOF) ---
       const inventoryMap = {};
@@ -647,6 +647,7 @@ module.exports.getOrdersBySearch = async (req, res, next) => {
 };
 module.exports.createOrder = async (req, res, next) => {
   try {
+    if (['shippingBlocked', 'shippingBlockReason', 'shippingBlockedAt', 'shippingBlockedBy'].some(key => req.body?.[key] !== undefined)) throw new ErrorHandler(400, 'Save the order first, then use its shipping restriction action.');
     if (!req.body) {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
@@ -832,7 +833,7 @@ module.exports.getOrder = async (req, res, next) => {
     if (!order) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
     const updatedPaymentList = await Promise.all(order.paymentList.map(async (data) => {
-      const inventory = await Inventory.findOne({ 'orders.paymentList._id': data._id, inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } });
+      const inventory = await Inventory.findOne({ 'orders.paymentList._id': data._id, inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select('-attachments');
       if (inventory) {
         // If inventory is found, add the flight property to the payment data
         data.flight = inventory;
@@ -1844,7 +1845,7 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
     const { invoice } = await require('../accounting/services/transaction').runInTransaction(async (session) => {
       const { packages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode, session });
       // Nothing paid is right only for packages that cost nothing (free shipping with a purchase)
-      if (!allowPartial && !paymentAmounts.amountUSD && !paymentAmounts.amountLYD && (totalCost > 0 || totalFeeLYD > 0)) {
+      if (!allowPartial && !paymentAmounts.amountUSD && !paymentAmounts.amountLYD && totalCost > 0) {
         throw new ErrorHandler(400, 'Payment amount cannot be zero');
       }
 
@@ -2112,7 +2113,7 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
       for (const d of data.list) {
         const packageId = d?.id || d?._id;
         if (!ObjectId.isValid(packageId)) continue;
-        const inventory = await Inventory.findOne({ 'orders.paymentList._id': new ObjectId(packageId), inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select(['-orders']).lean();
+        const inventory = await Inventory.findOne({ 'orders.paymentList._id': new ObjectId(packageId), inventoryType: 'inventoryGoods', shippingType: { $ne: 'domestic' } }).select('-orders -attachments').lean();
         if (inventory) {
           // If inventory is found, add the flight property to the payment data
           d.flight = inventory;

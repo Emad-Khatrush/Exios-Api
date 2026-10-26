@@ -17,14 +17,20 @@ const { logAudit } = require('./audit');
 const ErrorHandler = require('../../utils/errorHandler');
 const fail = (code, text) => new ErrorHandler(code, text);
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const hasShippingData = pkg => !!(String(pkg.deliveredPackages?.trackingNumber || '').trim() ||
+  Number(pkg.deliveredPackages?.weight?.total) > 0 || pkg.tripId || pkg.domesticTripId);
 
 // These are candidates for HUMAN review, never inferred to be free merely because unpaid.
 async function review({ orderId, session } = {}) {
   if (orderId && !mongoose.isValidObjectId(orderId)) throw fail(400, 'رقم الطلبية غير صالح');
   const { settings } = await getConfig();
   const orders = await Order.find({ isPayment: true, isRemittance: { $ne: true }, isCanceled: { $ne: true },
-    isDeleted: { $ne: true }, unsureOrder: { $ne: true }, ...(orderId && { _id: orderId }), 'paymentList.0': { $exists: true } })
-    .select('orderId user totalInvoice createdAt updatedAt paymentList').sort({ _id: 1 }).session(session || null).lean();
+    isDeleted: { $ne: true }, unsureOrder: { $ne: true }, ...(orderId && { _id: orderId }),
+    paymentList: { $elemMatch: { $or: [
+      { 'deliveredPackages.trackingNumber': /\S/ }, { 'deliveredPackages.weight.total': { $gt: 0 } },
+      { tripId: { $ne: null } }, { domesticTripId: { $ne: null } },
+    ] } } })
+    .select('orderId user isShipment totalInvoice createdAt updatedAt paymentList').sort({ _id: 1 }).session(session || null).lean();
   const ids = orders.map(order => order._id);
   const roles = ['customer_receivable', 'revenue_shipping_air', 'revenue_shipping_sea', 'revenue_other',
     'trip_cost_wip', 'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices'];
@@ -53,6 +59,8 @@ async function review({ orderId, session } = {}) {
   for (const order of orders) {
     const ledger = ledgerByOrder.get(String(order._id)) || [];
     for (const pkg of order.paymentList) {
+      // A payment/purchase link alone is not a shipment or an offer candidate.
+      if (!hasShippingData(pkg)) continue;
       if (pkg.freeShippingOffer?.enabled && !orderId) continue;
       const key = shipmentKey(order._id, pkg._id);
       const claim = ledger.filter(row => row._id.key === key);
@@ -86,6 +94,7 @@ async function review({ orderId, session } = {}) {
       if (![billed, open, paid, recognized, expectedCost, currentCost].every(Number.isSafeInteger) || open < 0 || recognized < 0) blocked ||= 'رصيد غير صالح أو دائن يحتاج مراجعة';
       const row = { key: `${order._id}:${pkg._id}`, orderId: String(order._id), packageId: String(pkg._id), orderNumber: order.orderId,
         customer: users.get(String(order.user)) || null, tracking: pkg.deliveredPackages?.trackingNumber || '', date: order.createdAt,
+        invoiceType: order.isShipment ? 'combined' : 'purchase',
         invoiceMinor: Math.round(Number(order.totalInvoice) * 100), chargeMinor: charge, billedMinor: billed,
         openMinor: open, paidMinor: paid, revenueMinor: recognized, currentCostMinor: currentCost,
         purchaseCostMinor: expectedCost, purchaseBookedCostMinor: purchaseBookedCost, profitImpactMinor: -recognized - (expectedCost - currentCost),

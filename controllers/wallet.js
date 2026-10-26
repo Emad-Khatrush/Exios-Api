@@ -449,11 +449,11 @@ const rebuildStatementTotals = async (statementsAsc, openingBalance, session) =>
   if (updates.length) await UserStatement.bulkWrite(updates, { session });
 }
 
-const adjustWalletBalance = async (userId, currency, delta, session) => {
+const adjustWalletBalance = async (userId, currency, delta, session, errorMessage) => {
   const filter = { user: userId, currency };
   if (delta < 0) filter.balance = { $gte: -delta };
   const wallet = await Wallet.findOneAndUpdate(filter, { $inc: { balance: delta } }, { new: true, session });
-  if (!wallet) throw new ErrorHandler(400, 'Wallet missing or deposit money already spent. Cancel the payments made from it first.');
+  if (!wallet) throw new ErrorHandler(400, errorMessage || 'Wallet missing or deposit money already spent. Cancel the payments made from it first.');
 
   const after = roundToTwo(wallet.balance);
   await Wallet.updateOne({ _id: wallet._id, balance: wallet.balance }, { balance: after }, { session });
@@ -478,8 +478,14 @@ const protectedStatement = (statement) => {
 // The fields the journal entry is made from: changing only the text does not re-post it
 const POSTED_STATEMENT_FIELDS = ['createdAt', 'amount', 'office', 'actionType', 'accountId'];
 const isWithdrawal = statement => statement.calculationType === '-' && (statement.actionType === 'withdrawal' || statement.paymentType === 'withdrawal');
+function assertWithdrawalRevision(statement, body) {
+  if (body.expectedEditCount === undefined) return;
+  if (!Number.isSafeInteger(body.expectedEditCount) || body.expectedEditCount < 0) throw new ErrorHandler(400, 'Invalid withdrawal revision. Reload the customer statement.');
+  if (body.expectedEditCount !== (statement.editHistory || []).length) throw new ErrorHandler(409, 'This cash withdrawal has changed since you opened it. Reload the customer statement before editing or deleting it.');
+}
 async function assertEditableWithdrawal(statement, req, session) {
   if (!req.user.roles?.isAdmin) throw new ErrorHandler(403, 'تعديل وحذف السحب النقدي متاح للأدمن فقط');
+  assertWithdrawalRevision(statement, req.body || {});
   const locked = protectedStatement(statement);
   if (locked) throw new ErrorHandler(400, locked);
   if (await OrderPaymentHistory.exists({ statementId: statement._id }).session(session)) throw new ErrorHandler(400, 'السحب مرتبط بدفعة طلبية؛ صحح الدفعة من مصدرها أولًا');
@@ -498,6 +504,7 @@ async function updateWithdrawal(statement, body, req, session) {
   if (body.actionType !== undefined && body.actionType !== 'withdrawal') throw new ErrorHandler(400, 'لا يمكن تحويل السحب النقدي إلى نوع آخر');
   if (body.currency !== undefined && body.currency !== statement.currency) throw new ErrorHandler(400, 'عملة السحب لا تتغير؛ احذف العملية وأنشئها بالعملة الصحيحة');
   await assertOpenPeriod(req.user, statement.createdAt, { session });
+  if (body.createdAt !== undefined && (body.createdAt === null || typeof body.createdAt === 'boolean' || (typeof body.createdAt === 'string' && !body.createdAt.trim()))) throw new ErrorHandler(400, 'Choose a valid withdrawal date.');
   const day = body.createdAt === undefined ? statement.createdAt : new Date(body.createdAt);
   if (!day || isNaN(new Date(day).getTime())) throw new ErrorHandler(400, 'اختر تاريخًا صحيحًا');
   await assertOpenPeriod(req.user, day, { session });
@@ -509,7 +516,16 @@ async function updateWithdrawal(statement, body, req, session) {
   const office = body.office ?? statement.office;
   const operations = require('../accounting/services/posting/operations');
   const actor = source === 'custody' ? { _id: statement.createdBy } : req.user;
-  const funding = await operations.resolveWithdrawalAccount(actor, office, statement.currency, source, session);
+  let funding;
+  // An unchanged office/source keeps its explicitly recorded cash account. Changing
+  // the office mapping later must not silently move an edited withdrawal to another box.
+  if (source === 'box' && (statement.withdrawalSource || 'box') === 'box' && String(office || '') === String(statement.office || '') && statement.accountId) {
+    const account = await require('../accounting/models').Account.findById(statement.accountId).session(session).lean();
+    if (!account?.isActive || account.isGroup || !account.isCash || (account.currency || 'USD') !== statement.currency) throw new ErrorHandler(400, 'The original withdrawal account is unavailable. Choose a valid withdrawal source before saving.');
+    funding = { account, office };
+  } else {
+    funding = await operations.resolveWithdrawalAccount(actor, office, statement.currency, source, session);
+  }
   const { AccountingSettings, JournalEntry } = require('../accounting/models');
   const settings = await AccountingSettings.findOne({ key: 'main' }).session(session).lean();
   const hasEntry = await JournalEntry.exists({ 'source.model': 'UserStatement', 'source.id': statement._id, status: 'posted', reversalOf: null }).session(session);
@@ -529,10 +545,15 @@ async function updateWithdrawal(statement, body, req, session) {
     statement.rate = body.rate === '' || body.rate === null ? undefined : Number(body.rate);
   }
   const editedFields = ['amount', 'createdAt', 'description', 'note', 'actionType', 'withdrawalSource', 'office', 'accountId', 'custodyEmployeeId', 'rate'];
+  const sameValue = (field, left, right) => field === 'createdAt'
+    ? new Date(left).getTime() === new Date(right).getTime()
+    : field === 'amount' || field === 'rate' ? Number(left || 0) === Number(right || 0)
+      : String(left?._id || left || '') === String(right?._id || right || '');
+  if (editedFields.every(field => sameValue(field, before[field], statement[field]))) return statement.populate('user');
   statement.editHistory.push({ editedBy: req.user._id, editedAt: new Date(), before: Object.fromEntries(editedFields.map(field => [field, before[field]])) });
   await statement.save({ session });
   const delta = roundToTwo(signedAmount(statement) - oldSigned);
-  if (delta) await adjustWalletBalance(statement.user, statement.currency, delta, session);
+  if (delta) await adjustWalletBalance(statement.user, statement.currency, delta, session, 'The available customer wallet balance does not cover the additional withdrawal amount.');
   await rebuildStatementTotals(allStatements.map(item => String(item._id) === String(statement._id) ? statement : item), opening, session);
   const event = await emitAccountingEvent('statementUpdated', statement._id, {}, req.user, { session });
   if (settings?.liveEnabled || hasEntry) {

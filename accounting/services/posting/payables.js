@@ -265,7 +265,7 @@ async function carriedValue(bill, session) {
   return { shares: allocate(usd, minors), total: usd };
 }
 
-async function postBill(bill, { session, user, sync }) {
+async function postBill(bill, { session, user, sync, correctionKey, embeddedPaidUsd }) {
   const vendor = await Vendor.findById(bill.vendorId).session(session);
   const rates = new RateBook(session);
   const lines = [];
@@ -274,7 +274,7 @@ async function postBill(bill, { session, user, sync }) {
   // Paid on the spot from a foreign-currency account (Alipay in yuan, a lira bank) with no rate
   // typed: the cost is what the money is worth in that account, its average carrying rate (spec
   // 2.4). The bill and its payment then carry the same dollars and no exchange difference appears.
-  const carried = await carriedValue(bill, session);
+  const carried = correctionKey ? null : await carriedValue(bill, session);
 
   for (const [index, line] of bill.lines.entries()) {
     const minor = await toCurrencyMinor(line.amount, bill.currency);
@@ -305,20 +305,25 @@ async function postBill(bill, { session, user, sync }) {
   } else if (bill.paidBeforeCount) {
     // Paid before the count day: the counted boxes already lack this money, so it comes out of the
     // opening balance instead of a box (spec v8)
-    lines.push({ accountId: (await resolveAccount('opening_balance'))._id, credit: totalUsd, label: `دُفع قبل يوم الجرد - ${vendor.name}` });
+    const paid = correctionKey ? embeddedPaidUsd : totalUsd;
+    if (!Number.isSafeInteger(paid) || paid < 0) throw fail('تعذر تحديد المبلغ التاريخي المدفوع');
+    if (paid) lines.push({ accountId: (await resolveAccount('opening_balance'))._id, credit: paid, label: `دُفع قبل يوم الجرد - ${vendor.name}` });
+    const remaining = totalUsd - paid;
+    if (remaining) lines.push({ accountId: payable._id, vendorId: vendor._id, apKey,
+      debit: remaining < 0 ? -remaining : 0, credit: remaining > 0 ? remaining : 0, label: `فرق تعديل ${bill.number}` });
   } else {
     lines.push({ accountId: payable._id, credit: totalUsd, vendorId: vendor._id, apKey, label: `فاتورة ${vendor.name}${bill.vendorRef ? ` رقم ${bill.vendorRef}` : ''}` });
   }
 
   bill.number = bill.number || await nextDocNumber(bill.isCreditNote ? 'CN' : 'BILL', bill.day, session);
   const entry = await postEntry({
-    eventType: 'BILL',
-    eventKey: `BILL:${bill._id}`,
+    eventType: correctionKey ? 'BILL_EDIT' : 'BILL',
+    eventKey: correctionKey || `BILL:${bill._id}`,
     date: bill.day,
     description: `${bill.isCreditNote ? 'إشعار دائن' : 'فاتورة مورد'} ${bill.number} - ${vendor.name}`,
     source: { model: 'AccountingSupplierBill', id: bill._id },
-    isHistorical: bill.isHistorical,
-    migrationRunId: bill.migrationRunId,
+    isHistorical: correctionKey ? false : bill.isHistorical,
+    migrationRunId: correctionKey ? undefined : bill.migrationRunId,
     fallbacks: rates.fallbacks,
     lines,
   }, { session, user });
@@ -334,7 +339,7 @@ async function postBill(bill, { session, user, sync }) {
   if (bill.lines.some(line => line.stockOperationId)) await require('../../models/FinancialOperation').Operation.updateMany({ sourceBillId: bill._id }, { $set: { entryId: entry._id } }, { session });
   await syncBillTargets(bill, { session, user, sync });
 
-  if (bill.paidImmediatelyFrom && !bill.isCreditNote) {
+  if (bill.paidImmediatelyFrom && !bill.isCreditNote && !correctionKey) {
     // A historical cost was paid from a cash box nobody recorded: it is paid from the suspense
     // account in USD (or from the mapped cash box when it is in the bill's currency)
     const from = await getAccount(bill.paidImmediatelyFrom, 'حساب الدفع');
@@ -604,6 +609,6 @@ async function createReceipt(input, { session, req, user }) {
 }
 
 module.exports = {
-  createReceipt, carriedValue,
+  createReceipt, carriedValue, postBill,
   syncBillTargets, apBalance, billKey, advanceKey, lockBillAllocation, createBill, updateDraftBill, postDraftBill, deleteDraftBill, createPayment, validateBillInput,
 };

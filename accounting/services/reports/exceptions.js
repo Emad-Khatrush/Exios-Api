@@ -13,7 +13,7 @@ const OrderPaymentHistory = require('../../../models/orderPaymentHistory');
 const Balance = require('../../../models/balance');
 const { getConfig } = require('../config');
 const { accountTotals } = require('../balances');
-const { today, addDays, monthOf } = require('../dates');
+const { today, addDays, monthOf, toDay } = require('../dates');
 const { monthsBetween, lastClosedMonth } = require('../posting/schedules');
 const { ROLE_DEFAULTS } = require('../../seed/defaults');
 const { roleIds, netBy, receivables, payables, purchaseProfitability } = require('./operations');
@@ -175,9 +175,16 @@ const CHECKS = {
 
   // 11. Purchase orders sold with no cost
   async purchases() {
+    const { settings, count } = await getConfig();
+    // The opening-count day is the user's historical boundary; migrationDate is
+    // when the replay ran and can be several days later.
+    const migrationDay = count?.day || settings?.migrationDate || (settings?.cutoffAt ? toDay(settings.cutoffAt) : null);
     const { results } = await purchaseProfitability({});
-    const items = results.filter((r) => r.withoutCost).map((r) => ({ label: `${r.orderNumber} · بلا تكلفة`, usd: r.revenue, url: `/invoice/${r.orderId}/edit` }));
-    return result('purchases', 'warn', 'فاتورة شراء مسددة بلا تكلفة', 'ربح 100% يعني غالباً فاتورة مورد لم تُدخل.', items, '/accounting/reports?tab=purchases');
+    const items = results.filter((r) => r.withoutCost).map((r) => ({ day: r.date ? toDay(r.date) : null, label: `${r.orderNumber} · بلا تكلفة`, usd: r.revenue, url: `/invoice/${r.orderId}/edit` }));
+    const build = rows => result('purchases', 'warn', 'فاتورة شراء مسددة بلا تكلفة', 'ربح 100% يعني غالباً فاتورة مورد لم تُدخل.', rows, '/accounting/reports?tab=purchases');
+    // Filter before sampling, so historical rows cannot crowd live orders out of the list.
+    return { ...build(migrationDay ? items.filter(item => item.day && item.day > migrationDay) : items), migrationDay,
+      includingHistorical: build(items) };
   },
 
   // 7. A cancelled order whose supplier cost is still waiting (owner's decision: the customer
@@ -440,7 +447,7 @@ const CHECKS = {
   // off (spec 19.7; the number of days is a setting)
   async writeOffCandidates() {
     const { settings } = await getConfig();
-    const days = settings.writeOffAfterDays || 180;
+    const days = settings.writeOffAfterDays ?? 180;
     const title = `مسلَّم وغير مسدد أكثر من ${days} يوماً`;
     const roles = await roleIds(['customer_receivable']);
     const open = await JournalEntry.aggregate([
@@ -450,7 +457,7 @@ const CHECKS = {
       { $match: { usd: { $gt: 0 } } },
     ]);
     if (!open.length) return result('writeOffCandidates', 'info', title, '', []);
-    const cutoff = new Date(`${addDays(today(), -days)}T00:00:00Z`);
+    const cutoffDay = addDays(today(), -days);
     const orderIds = [...new Set(open.map((row) => row._id.split(':')[1]))].filter(mongoose.isValidObjectId).map(oid);
     const orders = new Map((await Order.find({ _id: { $in: orderIds }, isCanceled: { $ne: true } })
       .select('orderId createdAt paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.deliveredInfo.deliveredDate').lean())
@@ -468,7 +475,7 @@ const CHECKS = {
         since = pkg.deliveredPackages?.deliveredInfo?.deliveredDate || order.createdAt;
         label = `${order.orderId} · ${pkg.deliveredPackages?.trackingNumber || 'طرد'}`;
       }
-      if (since && new Date(since) < cutoff) items.push({ label, usd: row.usd, note: `منذ ${new Date(since).toISOString().slice(0, 10)}`, arKey: row._id, url: `/accounting/customer-invoices/${orderId}` });
+      if (since && toDay(since) < cutoffDay) items.push({ label, usd: row.usd, note: `منذ ${toDay(since)}`, arKey: row._id, url: `/accounting/customer-invoices/${orderId}` });
     });
     items.sort((a, b) => b.usd - a.usd);
     return result('writeOffCandidates', 'info', title, 'راجعها مع العميل؛ ما لن يُدفع يُشطب من صفحة الطلب في المحاسبة (المطالبات ← شطب). الشطب يُبقي الإيراد بقدر ما دُفع ويُحمِّل التكلفة كاملة.', items);
@@ -522,6 +529,15 @@ async function runAndStore() {
 // A report stored before items carried their ref gets it here, so they can still be marked
 const latest = async () => {
   const report = await Reconciliation.findOne({}).sort({ day: -1 }).lean();
+  // Refresh views whose scope depends on current settings rather than showing
+  // yesterday's threshold and candidates from the saved daily snapshot.
+  if (report) {
+    const dynamicKeys = ['purchases', 'writeOffCandidates'];
+    const fresh = (await runChecks({ only: dynamicKeys })).results;
+    report.results = (report.results || []).filter(row => !dynamicKeys.includes(row.key)).concat(fresh);
+    report.errorCount = report.results.filter(row => row.severity === 'error' && row.count > 0).length;
+    report.warningCount = report.results.filter(row => row.severity === 'warn' && row.count > 0).length;
+  }
   (report?.results || []).forEach((r) => (r.items || []).forEach((item) => { if (!item.ref) item.ref = refOf(item); }));
   return report;
 };

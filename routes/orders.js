@@ -3,6 +3,7 @@ const express = require('express');
 const orders = require('../controllers/orders');
 const ordersControl = require('../controllers/ordersControl');
 const xTracking = require('../controllers/xTracking');
+const shippingBlock = require('../controllers/shippingBlock');
 const { protect, isAdmin, isClient, allowAdminsAndAccountants, allowAdminsAndEmployee } = require('../middleware/check-auth');
 const multer = require('multer');
 // cloudinary settings
@@ -16,6 +17,8 @@ const upload = multer({
 
 const router  = express.Router();
 const allowDeliveryStaff = (req, res, next) => req.user?.roles?.isAccountant ? next() : allowAdminsAndEmployee(req, res, next);
+
+router.put('/order/:id/shipping-block', protect, allowDeliveryStaff, shippingBlock.update);
 
 // Admin Routes
 router.route('/invoices')

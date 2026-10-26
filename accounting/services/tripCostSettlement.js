@@ -12,7 +12,7 @@ const { logAudit } = require('./audit');
 const payables = require('./posting/payables');
 const { convertToUsdMinor, fromMinor } = require('./money');
 const { getRate, markRateUsed } = require('./rates');
-const COUNTRIES = ['CN', 'UAE', 'TR', 'USA', 'UK', 'LY'];
+const COUNTRIES = Inventory.schema.path('shippedCountry').enumValues;
 const id = value => String(value?._id || value);
 const ids = values => [...new Set((Array.isArray(values) ? values : []).map(String))].sort();
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');

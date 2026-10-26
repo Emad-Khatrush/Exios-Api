@@ -5,8 +5,13 @@ const referenceId = value => value == null ? null : String(value._id || value);
 // Financial actions have their own routes. The general editor cannot impersonate
 // a cancellation, rewrite audit history, or reassign the owner through a raw ID.
 function guardOrderUpdate(body, saved) {
+  const previousDispatchStage = saved.isPayment ? 3 : 2;
+  const dispatchStage = (body.isPayment ?? saved.isPayment) ? 3 : 2;
+  if (saved.shippingBlocked && (body.orderStatus !== undefined || body.isPayment !== undefined) && Number(saved.orderStatus || 0) < previousDispatchStage && Number(body.orderStatus ?? saved.orderStatus ?? 0) >= dispatchStage) {
+    throw new ErrorHandler(409, 'Shipping is blocked for this order. Remove the restriction before marking it as shipped.');
+  }
   if (Object.keys(body).some(key => key.startsWith('$') || key.includes('.'))) throw new ErrorHandler(400, 'Update operators and dotted field paths are not accepted');
-  for (const key of ['isCanceled', 'isDeleted', 'deletedAt', 'deletedBy', 'cancelation', 'invoiceConfirmed', 'requestedEditDetails', 'editedAmounts', 'accountingMutationVersion', 'madeBy', 'orderId', 'orderStatusChangedAt', 'user']) {
+  for (const key of ['shippingBlocked', 'shippingBlockReason', 'shippingBlockedAt', 'shippingBlockedBy', 'isCanceled', 'isDeleted', 'deletedAt', 'deletedBy', 'cancelation', 'invoiceConfirmed', 'requestedEditDetails', 'editedAmounts', 'accountingMutationVersion', 'madeBy', 'orderId', 'orderStatusChangedAt', 'user']) {
     if (body[key] === undefined) continue;
     const value = saved[key]?.toObject ? saved[key].toObject() : saved[key];
     // Read APIs populate staff/customer references. Sending the same reference

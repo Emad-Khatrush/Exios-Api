@@ -63,6 +63,40 @@ async function takeBackRefunds(order, user, amount, refunds, session) {
   await emitAccountingEvent('statement', statement._id, { target: { arKeys: [`PUR:${order._id}`] } }, user, { session });
 }
 
+// A linked credit was posted before the supplier refund. Undo its actual lines, rather
+// than treating compensation (or a dinar credit) as a new USD purchase payment.
+async function takeBackLegacyRefund(order, user, refund, session) {
+  const { JournalEntry } = require('../accounting/models');
+  const original = await UserStatement.findById(refund.legacyWalletStatementId).lean().session(session);
+  const entry = await JournalEntry.findById(refund.legacyWalletEntryId).lean().session(session);
+  if (!original || !entry || entry.status !== 'posted' || entry.reversalOf
+    || String(original.user) !== String(order.user)
+    || String(original.linkedCustomerRefundId) !== String(refund._id)
+    || entry.source?.model !== 'UserStatement' || String(entry.source.id) !== String(original._id)) {
+    throw new ErrorHandler(400, 'حركة الاسترداد السابقة تغيّرت؛ راجع ربطها قبل إلغاء الطلبية.');
+  }
+  await lockWalletOwner(order.user, session);
+  const amount = roundToTwo(Number(original.amount));
+  const wallet = await Wallet.findOneAndUpdate({ user: order.user, currency: original.currency, balance: { $gte: amount - 0.001 } },
+    { $inc: { balance: -amount } }, { new: true, session });
+  if (!wallet) throw new ErrorHandler(400, `رصيد ${original.currency} لا يكفي لخصم الاسترداد السابق ${refund.number}. لم يتم الإلغاء.`);
+  await Wallet.updateOne({ _id: wallet._id }, { balance: roundToTwo(wallet.balance) }, { session });
+  const [last] = await UserStatement.find({ user: order.user, currency: original.currency }).sort({ _id: -1 }).limit(1).session(session);
+  const [statement] = await UserStatement.create([{
+    user: order.user, createdBy: user, calculationType: '-', paymentType: 'wallet', actionType: 'wallet',
+    createdAt: new Date(), amount, currency: original.currency,
+    total: roundToTwo(Number(last?.total || 0) - amount),
+    description: `خصم الاسترداد السابق ${refund.number} عند إلغاء الطلب ${order.orderId}`,
+    note: `Order Id (${order.orderId}) => إلغاء إضافة سابقة مرتبطة بالاسترداد`,
+    accountingSource: { model: 'AccountingCustomerRefund', id: refund._id },
+  }], { session });
+  await require('../accounting/services/ledger').reverseEntry(entry._id, {
+    session, user, reason: statement.description,
+    eventKey: `ORDER_CANCEL_LEGACY_REFUND:${refund._id}`,
+  });
+  return { amount: -amount, currency: original.currency, paymentType: 'refundTakenBack' };
+}
+
 // Gives every payment of the order back to the wallet; refused once a package was handed over
 async function returnOrderPayments(order, user, { session } = {}) {
   if ((order.paymentList || []).some(p => p.creditDeliveryInvoiceId && p.status?.received)) {
@@ -76,7 +110,9 @@ async function returnOrderPayments(order, user, { session } = {}) {
     throw new ErrorHandler(400, 'لا يمكن إلغاء طلب سُلِّم طرد منه للعميل وعليه دفعات. ألغِ فاتورة التسليم أولاً.');
   }
   // Dollars already given back to the wallet by supplier refunds on this order
-  const refunds = await CustomerRefund.find({ orderId: order._id, status: 'posted', walletUsd: { $gt: 0 } }).select('number walletUsd').lean().session(session);
+  const allRefunds = await CustomerRefund.find({ orderId: order._id, status: 'posted',
+    $or: [{ walletUsd: { $gt: 0 } }, { legacyWalletUsd: { $gt: 0 } }] }).lean().session(session);
+  const refunds = allRefunds.filter(r => r.walletUsd > 0);
   const refunded = roundToTwo(refunds.reduce((sum, r) => sum + r.walletUsd, 0) / 100);
   if (refunded > 0) {
     const usdWallet = Number((await Wallet.findOne({ user: order.user, currency: 'USD' }).lean().session(session))?.balance || 0);
@@ -101,6 +137,9 @@ async function returnOrderPayments(order, user, { session } = {}) {
   if (refunded > 0) {
     await takeBackRefunds(order, user, refunded, refunds, session);
     returned.push({ amount: -refunded, currency: 'USD', paymentType: 'refundTakenBack' });
+  }
+  for (const refund of allRefunds.filter(r => r.legacyWalletStatementId && r.legacyWalletUsd > 0)) {
+    returned.push(await takeBackLegacyRefund(order, user, refund, session));
   }
   return returned;
 }

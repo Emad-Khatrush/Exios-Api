@@ -18,6 +18,7 @@ const STAGES = {
   waitingPurchase: { ...ACTIVE, unsureOrder: false, orderStatus: 0, isPayment: true, isCanceled: false },
   unpaid: { ...ACTIVE, paymentState: 'unpaid' }, partial: { ...ACTIVE, paymentState: 'partial' },
   hasProblem: { ...ACTIVE, hasProblem: true }, finished: { isFinished: true },
+  blocked: { ...ACTIVE, shippingBlocked: true },
 };
 const PAYMENT_FILTERS = {
   all: {}, paid: { paymentState: 'paid' }, unpaid: { paymentState: 'unpaid' },
@@ -27,26 +28,28 @@ const PAYMENT_FILTERS = {
 function counterGroup(withPayments) {
   const yes = field => ({ $eq: [{ $ifNull: [`$${field}`, false] }, true] });
   return { $group: { _id: {
-    finished: yes('isFinished'), purchase: yes('isPayment'), shipping: yes('isShipment'), problem: yes('hasProblem'),
+    finished: yes('isFinished'), purchase: yes('isPayment'), shipping: yes('isShipment'), problem: yes('hasProblem'), blocked: yes('shippingBlocked'),
     waiting: { $and: [{ $eq: ['$unsureOrder', false] }, { $eq: ['$orderStatus', 0] }, { $eq: ['$isPayment', true] }, { $eq: ['$isCanceled', false] }] },
     ...(withPayments ? { payment: '$paymentState' } : {}),
   }, n: { $sum: 1 } } };
 }
 
 // One small matrix serves every category/payment combination for the same search.
-function counterMatrix(rows) {
+function counterMatrix(rows, includeFinished = false) {
   const emptyCategories = () => Object.fromEntries(Object.keys(STAGES).map(key => [key, 0]));
   const emptyPayments = () => Object.fromEntries(Object.keys(PAYMENT_FILTERS).map(key => [key, 0]));
   const countsByPayment = Object.fromEntries(Object.keys(PAYMENT_FILTERS).map(key => [key, emptyCategories()]));
   const paymentCountsByStage = Object.fromEntries(Object.keys(STAGES).map(key => [key, emptyPayments()]));
   for (const { _id: flags, n } of rows) {
-    const categories = flags.finished ? ['finished'] : ['all'];
-    if (!flags.finished) {
+    const categories = flags.finished && !includeFinished ? ['finished'] : ['all'];
+    if (flags.finished && includeFinished) categories.push('finished');
+    if (!flags.finished || includeFinished) {
       if (flags.purchase && flags.shipping) categories.push('combined');
       else if (flags.purchase) categories.push('purchase');
       else if (flags.shipping) categories.push('shipping');
       if (flags.waiting) categories.push('waitingPurchase');
       if (flags.problem) categories.push('hasProblem');
+      if (flags.blocked) categories.push('blocked');
       if (flags.payment === 'unpaid' || flags.payment === 'partial') categories.push(flags.payment);
     }
     const payments = ['all', ...(flags.payment !== 'all' && Object.hasOwnProperty.call(PAYMENT_FILTERS, flags.payment) ? [flags.payment] : [])];
@@ -147,11 +150,17 @@ exports.list = async (req, res, next) => {
   try {
     const stage = Object.hasOwnProperty.call(STAGES, req.query.stage) ? req.query.stage : 'all';
     const payment = Object.hasOwnProperty.call(PAYMENT_FILTERS, req.query.payment) ? req.query.payment : 'all';
-    const selection = { $and: [STAGES[stage], PAYMENT_FILTERS[payment]] };
+    const search = String(req.query.search || '').trim().slice(0, 120);
+    // Searching includes completed orders in every type/payment category. Without
+    // a search the existing active-only browsing rules remain in effect.
+    const stageFilters = search ? Object.fromEntries(Object.entries(STAGES).map(([key, filter]) => {
+      const { isFinished, ...rest } = filter;
+      return [key, key === 'finished' ? filter : rest];
+    })) : STAGES;
+    const selection = { $and: [stageFilters[stage], PAYMENT_FILTERS[payment]] };
     const skip = Math.max(0, Math.min(Number.parseInt(req.query.skip, 10) || 0, 1000000));
     const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 10, 50));
     const filter = { isCanceled: { $ne: true } };
-    const search = String(req.query.search || '').trim().slice(0, 120);
     if (search) {
       const pattern = new RegExp(escapeRegex(search), 'i');
       if (req.query.searchType === 'trackingNumber') {
@@ -172,7 +181,7 @@ exports.list = async (req, res, next) => {
     if (countsOnly && req.query.countsPart === 'categories') {
       // Category totals require no accounting joins or package/payment calculations.
       const rows = await Order.aggregate([{ $match: filter }, counterGroup(false)]).allowDiskUse(true);
-      return res.json({ counts: counterMatrix(rows).countsByPayment.all });
+      return res.json({ counts: counterMatrix(rows, !!search).countsByPayment.all });
     }
     const { settings, offices } = await getConfig();
     const role = settings?.accountRoles?.customer_receivable;
@@ -181,14 +190,14 @@ exports.list = async (req, res, next) => {
     if (countsOnly && req.query.countsPart === 'matrix') {
       const rows = await Order.aggregate([
         { $match: filter },
-        { $project: { isFinished: 1, isPayment: 1, isShipment: 1, hasProblem: 1, unsureOrder: 1, orderStatus: 1, isCanceled: 1,
+        { $project: { isFinished: 1, isPayment: 1, isShipment: 1, hasProblem: 1, shippingBlocked: 1, unsureOrder: 1, orderStatus: 1, isCanceled: 1,
           totalInvoice: 1, receivedUSD: 1, receivedLYD: 1, receivedShipmentUSD: 1, receivedShipmentLYD: 1,
           'paymentList.deliveredPackages.weight.total': 1, 'paymentList.deliveredPackages.exiosPrice': 1,
           'paymentList.deliveredPackages.domesticFee.usd': 1, 'paymentList.deliveredPackages.customsFee.usd': 1,
           'paymentList.deliveredPackages.receivedShipmentUSD': 1, 'paymentList.deliveredPackages.receivedShipmentLYD': 1 } },
         ...stages, counterGroup(true),
       ]).allowDiskUse(true);
-      return res.json(counterMatrix(rows));
+      return res.json(counterMatrix(rows, !!search));
     }
     const financialFilter = stage === 'unpaid' || stage === 'partial' || payment !== 'all';
     const financialFirst = countsOnly || financialFilter;
@@ -196,7 +205,7 @@ exports.list = async (req, res, next) => {
     const lastActivity = { $addFields: { lastActivityAt: { $ifNull: ['$orderStatusChangedAt', { $ifNull: [{ $max: '$activity.createdAt' }, '$createdAt'] }] }, ageIsEstimated: { $eq: [{ $ifNull: ['$orderStatusChangedAt', null] }, null] } } };
     const sort = { $sort: req.query.sort === 'waiting' ? { lastActivityAt: 1, _id: 1 } : { createdAt: -1, _id: -1 } };
     const projection = { $project: { orderId: 1, customerInfo: 1, user: 1, shipment: 1, placedAt: 1, productName: 1,
-      isPayment: 1, isShipment: 1, unsureOrder: 1, hasProblem: 1, orderNote: 1, isFinished: 1, orderStatus: 1,
+      isPayment: 1, isShipment: 1, unsureOrder: 1, hasProblem: 1, shippingBlocked: 1, shippingBlockReason: 1, orderNote: 1, isFinished: 1, orderStatus: 1,
       createdAt: 1, lastActivityAt: 1, ageIsEstimated: 1, billedCents: 1, purchaseCents: 1, openCents: 1, paymentState: 1, moneySource: 1,
       packageCount: { $size: { $ifNull: ['$paymentList', []] } },
       paymentList: { $map: { input: { $ifNull: ['$paymentList', []] }, as: 'p', in: {
@@ -212,15 +221,15 @@ exports.list = async (req, res, next) => {
       combined: { $and: ['$isPayment', '$isShipment'] },
       waitingPurchase: { $and: [{ $eq: ['$unsureOrder', false] }, { $eq: ['$orderStatus', 0] }, { $eq: ['$isPayment', true] }, { $eq: ['$isCanceled', false] }] },
       unpaid: { $eq: ['$paymentState', 'unpaid'] }, partial: { $eq: ['$paymentState', 'partial'] },
-      hasProblem: '$hasProblem', finished: '$isFinished',
+      hasProblem: '$hasProblem', blocked: { $eq: ['$shippingBlocked', true] }, finished: '$isFinished',
     };
-    const activeRule = { $ne: [{ $ifNull: ['$isFinished', false] }, true] };
+    const activeRule = search ? true : { $ne: [{ $ifNull: ['$isFinished', false] }, true] };
     let result;
     if (quick) {
       // Stream matching records in order; stop after one extra row instead of counting the
       // entire ledger first. The separate counts request supplies the exact total later.
       const monetaryStage = stage === 'unpaid' || stage === 'partial';
-      const earlyMatch = { $and: [filter, monetaryStage ? ACTIVE : STAGES[stage]] };
+      const earlyMatch = { $and: [filter, monetaryStage ? stageFilters.all : stageFilters[stage]] };
       const rows = await Order.aggregate([
         { $match: earlyMatch },
         ...(req.query.sort === 'waiting' ? [lastActivity] : []), sort,
@@ -235,7 +244,7 @@ exports.list = async (req, res, next) => {
       { $facet: {
         ...(countsOnly ? {
           counts: [{ $match: PAYMENT_FILTERS[payment] }, { $group: { _id: null, ...Object.fromEntries(Object.entries(countRules).map(([key, rule]) => [key, { $sum: { $cond: [key === 'finished' ? rule : { $and: [activeRule, rule] }, 1, 0] } }])) } }],
-          paymentCounts: [{ $match: STAGES[stage] }, { $group: { _id: null, all: { $sum: 1 }, ...Object.fromEntries(Object.keys(PAYMENT_FILTERS).filter(key => key !== 'all').map(key => [key, { $sum: { $cond: [{ $eq: ['$paymentState', key] }, 1, 0] } }])) } }],
+          paymentCounts: [{ $match: stageFilters[stage] }, { $group: { _id: null, all: { $sum: 1 }, ...Object.fromEntries(Object.keys(PAYMENT_FILTERS).filter(key => key !== 'all').map(key => [key, { $sum: { $cond: [{ $eq: ['$paymentState', key] }, 1, 0] } }])) } }],
         } : {}),
         ...(countsOnly ? {} : { total: [{ $match: selection }, { $count: 'n' }],
         orders: [{ $match: selection }, lastActivity, sort,

@@ -305,10 +305,17 @@ test('9. an expense paid in dinars is valued at the rate of its own date, or the
   const box = await account('110122');
   const cashVendor = await docs.Vendor.findOne({ seedKey: 'cash_expenses' }).lean();
   const rent = await account('530200');
-  const expense = (day, rate) => tx((session) => payables.createBill({
-    vendorId: cashVendor._id, day, currency: 'LYD', rate, isQuickExpense: true, paidImmediatelyFrom: box._id,
-    lines: [{ description: `إيجار ${day}`, amount: 800, target: 'expense', accountId: rent._id, office: 'tripoli' }],
-  }, { session, req: { user: owner } }));
+  const expense = async (day, rate) => {
+    const input = {
+      vendorId: cashVendor._id, day, currency: 'LYD', rate, isQuickExpense: true, paidImmediatelyFrom: box._id,
+      lines: [{ description: `إيجار ${day}`, amount: 800, target: 'expense', accountId: rent._id, office: 'tripoli' }],
+    };
+    // These are separate expenses on consecutive days, explicitly reviewed as in the UI.
+    const preview = await require('../services/costDuplicates').preview(input);
+    return tx((session) => payables.createBill({ ...input, duplicateDecision: 'independent',
+      duplicateReason: 'Separate test expense for a different rental day', duplicateFingerprint: preview.fingerprint,
+    }, { session, req: { user: owner } }));
+  };
   const rentOf = async (bill) => (await JournalEntry.findOne({ eventKey: `BILL:${bill._id}` }).lean()).lines.find((l) => String(l.accountId) === String(rent._id)).debit;
   // April, no rate typed: April's rate (8), not today's
   expect(await rentOf(await expense('2026-04-20'))).toBe(10000);
@@ -326,7 +333,7 @@ test('10. cancelling an order after a supplier refund gives back exactly what wa
   await pay(order, 100);
   await orderCost(order, 80);
   // The supplier gave 30$ back; all of it to the customer's wallet
-  await tx(async (session) => createCustomerRefund({ orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 30, walletUsd: 30, day: today() }, { session, req: { user: owner } }));
+  await tx(async (session) => createCustomerRefund({ confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 30, walletUsd: 30, day: today() }, { session, req: { user: owner } }));
   await expectConsistent('refund');
   expect(await walletUsd()).toBeCloseTo(start - 100 + 30, 2);
   await call(orders.cancelOrder, { ...as(owner), params: { id: String(order._id) }, body: { cancelationReason: 'test' } });
@@ -343,7 +350,7 @@ test('11. a supplier refund on an order with no cost recorded is flagged; on a t
   await deposit(100, 'USD');
   const order = await purchase(60);
   await pay(order, 60);
-  await tx(async (session) => createCustomerRefund({ orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 40, walletUsd: 40, day: today() }, { session, req: { user: owner } }));
+  await tx(async (session) => createCustomerRefund({ confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 40, walletUsd: 40, day: today() }, { session, req: { user: owner } }));
   await expectConsistent('refund with no cost');
   expect((await CHECKS.negativeOrderCost()).items.map((i) => i.label)).toContain(order.orderId);
   const byOrder = { orderId: new mongoose.Types.ObjectId(String(order._id)) };
@@ -365,7 +372,7 @@ test('12. a refund cannot give the wallet more than was paid; transfer orders sh
   const order = await purchase(70);
   await pay(order, 70);
   await orderCost(order, 50);
-  const refund = (walletUsd) => tx(async (session) => createCustomerRefund({ orderId: String(order._id), accountId: String((await account('110101'))._id), amount: walletUsd, walletUsd, day: today() }, { session, req: { user: owner } }));
+  const refund = (walletUsd) => tx(async (session) => createCustomerRefund({ confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: walletUsd, walletUsd, day: today() }, { session, req: { user: owner } }));
   await refund(43);
   await expect(refund(30)).rejects.toThrow('أقصى ما يُضاف لمحفظته الآن 27$');
   await refund(27);
@@ -391,7 +398,7 @@ test('12a. concurrent supplier refunds cannot give the customer more than the pa
   await expectConsistent('refund concurrency setup');
   const before = Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'USD' }))?.balance || 0);
   const refund = () => tx(async (session) => createCustomerRefund({
-    orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 60, walletUsd: 60, day: today(),
+    confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 60, walletUsd: 60, day: today(),
   }, { session, req: { user: owner } }));
   const outcomes = await Promise.allSettled([refund(), refund()]);
   expect(outcomes.filter((item) => item.status === 'fulfilled')).toHaveLength(1);
@@ -507,7 +514,7 @@ test('15. "received" is never ticked by hand: creating or editing an order keeps
   await call(orders.markPackagesAsDelivered, { ...as(owner), params: { id: String(customer._id) }, body: { selectedPackages: [{ id: String(full.paymentList[0]._id), orderId: full.orderId }], payment: { amountUSD: 20 } } });
   full = await Order.findById(order._id).lean();
   expect(full.paymentList[0].status.received).toBe(true);
-  await call(orders.updateOrder, { ...as(owner), params: { id: String(order._id) }, body: { paymentList: full.paymentList.map((p) => ({ ...p, status: { ...p.status, received: false } })) } });
+  await expect(call(orders.updateOrder, { ...as(owner), params: { id: String(order._id) }, body: { paymentList: full.paymentList.map((p) => ({ ...p, status: { ...p.status, received: false } })) } })).rejects.toMatchObject({ statusCode: 403 });
   expect((await Order.findById(order._id).lean()).paymentList[0].status.received).toBe(true);
   await expectConsistent('delivered');
 });
@@ -674,4 +681,81 @@ test('19. the same on an order already sold and paid: the difference reaches cos
   }, { session, req: { user: owner } }));
   expect(await usd('510400', { orderId: order._id })).toBe(30115);
   await expectConsistent('paid again');
+});
+
+test.each(['refund', 'compensation'])('cancellation recovers a linked previous %s without a second credit or orphan receivable', async (kind) => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  const walletUsd = async () => Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'USD' }))?.balance || 0);
+  await deposit(200, 'USD');
+  const start = await walletUsd();
+  const order = await purchase(100);
+  await pay(order, 100);
+  await orderCost(order, 80);
+  await deposit(30, 'USD', { actionType: kind });
+  await expectConsistent('previous credit posted');
+  const prior = await UserStatement.findOne({ user: customer._id, amount: 30, actionType: kind, linkedCustomerRefundId: null }).sort({ _id: -1 }).lean();
+  const refund = await tx(async (session) => createCustomerRefund({ confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 30,
+    day: today(), legacyWalletStatementId: String(prior._id), confirmLegacyRefund: true }, { session, req: { user: owner } }));
+  expect(refund.legacyWalletUsd).toBe(3000);
+  await tx(async (session) => createCustomerRefund({ confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 20, walletUsd: 20, day: today(), confirmNewWalletRefund: true }, { session, req: { user: owner } }));
+  expect(await walletUsd()).toBeCloseTo(start - 50, 2);
+  await call(orders.cancelOrder, { ...as(owner), params: { id: String(order._id) }, body: { cancelationReason: 'linked credit cancellation' } });
+  await expectConsistent('linked credit recovered');
+  expect((await JournalEntry.findById(refund.legacyWalletEntryId).lean()).status).toBe('reversed');
+  expect(await walletUsd()).toBeCloseTo(start, 2);
+  expect(await usd('121000', { arKey: `PUR:${order._id}` })).toBe(0);
+  await call(orders.cancelOrder, { ...as(owner), params: { id: String(order._id) }, body: { cancelationReason: 'retry' } });
+  await expectConsistent('idempotent linked cancellation');
+  expect(await walletUsd()).toBeCloseTo(start, 2);
+  expect(await JournalEntry.countDocuments({ eventKey: `ORDER_CANCEL_LEGACY_REFUND:${refund._id}` })).toBe(1);
+});
+
+test('free shipping collects only its LYD fees in full, rejects insufficient funds and refunds once', async () => {
+  const order = await purchase(100, { isShipment: 'true', paymentList: JSON.stringify([{ arrived: true, arrivedLibya: true, received: false,
+    deliveredPackages: { weight: 5, measureUnit: 'KG', exiosPrice: 0, trackingNumber: `FEES${Date.now()}`, shipmentMethod: 'air', domesticFee: { amount: 10, currency: 'LYD' }, customsFee: { amount: 5, currency: 'LYD' } } }]) });
+  const full = await Order.findById(order._id).lean();
+  const pkg = full.paymentList[0];
+  const lyd = async () => Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'LYD' }))?.balance || 0);
+  const before = await lyd();
+  if (before > 0) await call(wallet.useBalanceOfWallet, { ...as(owner), params: { id: String(customer._id) }, body: { amount: before, currency: 'LYD', actionType: 'withdrawal', source: 'box', office: 'tripoli', description: 'clear test wallet' } });
+  const deliver = () => call(orders.markPackagesAsDelivered, { ...as(owner), params: { id: String(customer._id) }, body: { selectedPackages: [{ id: String(pkg._id), orderId: full.orderId }], payment: { amountUSD: 0, amountLYD: 0 }, feeMode: 'separate' } });
+  await expect(deliver()).rejects.toMatchObject({ statusCode: 400 });
+  expect((await Order.findById(order._id).lean()).paymentList[0].status.received).not.toBe(true);
+  await deposit(15, 'LYD');
+  const delivery = await deliver();
+  await expectConsistent('fees only delivery');
+  expect(await lyd()).toBe(0);
+  expect(await usd('121000', { arKey: `SHP:${order._id}:${pkg._id}:DOM` })).toBe(0);
+  expect(await usd('121000', { arKey: `SHP:${order._id}:${pkg._id}:CUS` })).toBe(0);
+  await expect(deliver()).rejects.toMatchObject({ statusCode: 400 });
+  await call(orders.cancelInvoice, { ...as(owner), params: { id: String(delivery.body.invoiceId) }, body: {} });
+  await expectConsistent('fees refunded');
+  expect(await lyd()).toBe(15);
+});
+
+test('cancelling a purchase recovers linked LYD compensation in LYD and rolls back if it was spent', async () => {
+  const { createCustomerRefund } = require('../services/posting/customerRefund');
+  const lyd = async () => Number((await mongoose.connection.collection('wallets').findOne({ user: customer._id, currency: 'LYD' }))?.balance || 0);
+  await deposit(200, 'USD');
+  const order = await purchase(100);
+  await pay(order, 100);
+  await orderCost(order, 80);
+  const before = await lyd();
+  await deposit(300, 'LYD', { actionType: 'compensation' });
+  await expectConsistent('dinar credit before link');
+  const prior = await UserStatement.findOne({ user: customer._id, amount: 300, currency: 'LYD', actionType: 'compensation', linkedCustomerRefundId: null }).sort({ _id: -1 }).lean();
+  await tx(async (session) => createCustomerRefund({ confirmNewWalletRefund: true, orderId: String(order._id), accountId: String((await account('110101'))._id), amount: 30, day: today(),
+    legacyWalletStatementId: String(prior._id), confirmLegacyRefund: true }, { session, req: { user: owner } }));
+  const payments = require('../../models/orderPaymentHistory');
+  const cancel = () => call(orders.cancelOrder, { ...as(owner), params: { id: String(order._id) }, body: { cancelationReason: 'dinar refund' } });
+  // Spend the credit: cancellation must preserve both the original payment and order on refusal.
+  await call(wallet.useBalanceOfWallet, { ...as(owner), params: { id: String(customer._id) }, body: { amount: before + 300, currency: 'LYD', actionType: 'withdrawal', withdrawalSource: 'box', office: 'tripoli', description: 'spent credit' } });
+  await expect(cancel()).rejects.toMatchObject({ statusCode: 400 });
+  expect((await Order.findById(order._id).lean()).isCanceled).not.toBe(true);
+  expect(await payments.countDocuments({ order: order._id })).toBe(1);
+  await deposit(300, 'LYD');
+  await cancel();
+  await expectConsistent('dinar linked credit recovered');
+  expect(await lyd()).toBe(0);
+  expect(await usd('121000', { arKey: `PUR:${order._id}` })).toBe(0);
 });

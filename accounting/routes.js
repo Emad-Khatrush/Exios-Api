@@ -222,6 +222,12 @@ router.post('/bills/import/preview', P.purchases, handle(async (req, res) => res
 router.post('/bills/import/commit', P.purchases, handle(async (req, res) => res.status(201).json(await billImport.commit(req.body, req))));
 router.route('/bills').get(can('purchases', 'payments'), documents.listBills).post(P.purchases, documents.createBill);
 router.route('/bills/:id').get(can('purchases', 'payments'), documents.getBill).patch(P.purchases, documents.updateDraftBill).delete(P.purchases, documents.deleteDraftBill);
+router.post('/bills/:id/edit-details', P.purchases, handle(async (req, res) => res.json(await reviewTx(session =>
+  require('./services/billDetailsEdit').edit(req.params.id, req.body || {}, { session, req })))));
+router.post('/bills/:id/edit-preview', P.purchases, handle(async (req, res) => res.json(await
+  require('./services/billFinancialEdit').preview(req.params.id, req.body || {}))));
+router.post('/bills/:id/edit-posted', P.purchases, handle(async (req, res) => res.json(await reviewTx(session =>
+  require('./services/billFinancialEdit').apply(req.params.id, req.body || {}, { session, req })))));
 router.post('/bills/:id/post', P.purchases, documents.postDraftBill);
 
 // Each kind of document belongs to one kind of work

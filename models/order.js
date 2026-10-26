@@ -145,6 +145,10 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false
   },
+  shippingBlocked: { type: Boolean, default: false },
+  shippingBlockReason: { type: String, maxlength: 500, default: '' },
+  shippingBlockedAt: Date,
+  shippingBlockedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   orderStatus: {
     type: Number,
     default: 0
@@ -469,5 +473,6 @@ orderSchema.pre('aggregate', function hideDeletedInPipeline() {
   this.pipeline().unshift({ $match: { isDeleted: { $ne: true } } });
 });
 orderSchema.index({ 'paymentList.domesticTripId': 1 });
+orderSchema.index({ shippingBlocked: 1, isFinished: 1, createdAt: -1 }, { partialFilterExpression: { shippingBlocked: true } });
 
 module.exports = mongoose.model("Order", orderSchema);

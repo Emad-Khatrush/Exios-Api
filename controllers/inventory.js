@@ -13,6 +13,15 @@ const { refreshTripPackages } = require('../accounting/services/tripLinks');
 const Users = require("../models/user");
 const PackageDeletion = require("../models/packageDeletion");
 const WarehouseCheck = require("../models/warehouseCheck");
+const tripNumbering = require('../utils/tripNumbering');
+const inventoryAttachments = require('../utils/inventoryAttachments');
+
+const creationKeyFor = (req, operation = 'trip') => {
+  const key = req.body?.creationRequestId;
+  if (key === undefined) return undefined;
+  if (typeof key !== 'string' || !/^[a-zA-Z0-9_-]{12,100}$/.test(key)) throw new ErrorHandler(400, 'Invalid trip creation request ID.');
+  return `${req.user._id}:${operation}:${key}`;
+};
 
 const { ObjectId } = mongodb;
 
@@ -187,7 +196,7 @@ module.exports.getInventory = async (req, res, next) => {
 
     // Return the response
     res.status(200).json({
-      results: inventory,
+      results: inventory.map(item => inventoryAttachments.serialize(item, req.user)),
       total: counts.all,
       countList: counts,
       limit: Number(limit),
@@ -361,22 +370,20 @@ module.exports.getFlights = async (req, res, next) => {
 
 
 module.exports.createInventory = async (req, res, next) => {
+  let uploadedAttachments = [];
+  let attachmentsCommitted = false;
   try {
     const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, seaLoadType, note, costPrice, odoReferenceCode } = req.body;
     if (seaLoadType && !['FCL', 'LCL'].includes(seaLoadType)) throw new ErrorHandler(400, 'Invalid sea load type');
-    const attachments = [];
-    if (req.files) {
-      for (let i = 0; i < req.files.length; i++) {
-        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-inventory");
-        attachments.push({
-          path: uploadedImg.publicUrl,
-          filename: uploadedImg.filename,
-          folder: uploadedImg.folder,
-          bytes: uploadedImg.bytes,
-          fileType: req.files[i].mimetype
-        });
-      }
+    const creationKey = creationKeyFor(req);
+    if (creationKey) {
+      const existing = await Inventory.findOne({ creationKey });
+      if (existing) return res.status(200).json(inventoryAttachments.serialize(existing, req.user));
     }
+    const identity = !inventoryType || ['inventoryGoods', 'shippingVoyage'].includes(inventoryType) ? tripNumbering.scope(shippedCountry, shippingType, seaLoadType) : null;
+    if (identity) await tripNumbering.ensureRule(identity);
+    const attachments = await inventoryAttachments.storeUploads(req);
+    uploadedAttachments = attachments;
 
     let odoCode = odoReferenceCode;
     if (!odoCode && shippedCountry === 'UAE') {
@@ -386,13 +393,22 @@ module.exports.createInventory = async (req, res, next) => {
 
 
     const outcome = await runInTransaction(async (session) => {
+      if (creationKey) {
+        const existing = await Inventory.findOne({ creationKey }).session(session);
+        if (existing) return existing;
+      }
+      const inventoryId = new ObjectId();
+      const numbered = identity ? await tripNumbering.allocate(identity, inventoryId, req.user, session) : null;
       const [inventory] = await Inventory.create([{
+        _id: inventoryId,
+        creationKey,
+        tripNumbering: numbered?.tripNumbering,
         createdBy: req.user,
         attachments,
         inventoryFinishedDate,
         arrivalDate: arrivalDate || undefined,
         voyageAmount,
-        voyage,
+        voyage: numbered?.voyage || String(voyage || '').trim(),
         shippedCountry,
         inventoryPlace,
         voyageCurrency,
@@ -406,8 +422,16 @@ module.exports.createInventory = async (req, res, next) => {
 
       return inventory;
     });
-    res.status(200).json(outcome);
+    attachmentsCommitted = true;
+    const kept = new Set((outcome.attachments || []).map(file => String(file.storageId)));
+    await inventoryAttachments.discard(uploadedAttachments.filter(file => !kept.has(String(file.storageId))));
+    res.status(200).json(inventoryAttachments.serialize(outcome, req.user));
   } catch (error) {
+    if (!attachmentsCommitted) await inventoryAttachments.discard(uploadedAttachments);
+    if (error.code === 11000 && req.body?.creationRequestId) {
+      const existing = await Inventory.findOne({ creationKey: creationKeyFor(req) }).catch(() => null);
+      if (existing) return res.status(200).json(inventoryAttachments.serialize(existing, req.user));
+    }
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
@@ -448,7 +472,7 @@ module.exports.getSingleInventory = async (req, res, next) => {
 
     inventory.orders = orders;
 
-    res.status(200).json(inventory);
+    res.status(200).json(inventoryAttachments.serialize(inventory, req.user));
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
@@ -567,6 +591,10 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
       // a blank inventory holding these packages.
       const savedInventory = await Inventory.findById(inventoryId).session(session);
       if (!savedInventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      if (savedInventory.inventoryType !== 'warehouseInventory') {
+        const blocked = orders.filter(order => order.shippingBlocked);
+        if (blocked.length) throw new ErrorHandler(409, `Shipping is blocked for order(s): ${[...new Set(blocked.map(order => order.orderId))].join(', ')}. Remove the restriction before adding them to a trip.`);
+      }
       const present = new Set((savedInventory.orders || []).map(order => String(order.paymentList?._id)));
       const additions = orders.filter(order => !present.has(String(order.paymentList._id)));
       const inventory = await Inventory.findOneAndUpdate(
@@ -612,7 +640,7 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
 
       return inventory;
     });
-    res.status(200).json(outcome);
+    res.status(200).json(inventoryAttachments.serialize(outcome, req.user));
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
@@ -651,90 +679,14 @@ module.exports.removeOrdersFromInventory = async (req, res, next) => {
 
       return inventory;
     });
-    res.status(200).json(outcome);
+    res.status(200).json(inventoryAttachments.serialize(outcome, req.user));
   } catch (error) {
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
-module.exports.uploadFiles= async (req, res, next) => {
-  const { id } = req.body;
-
-  const images = [];
-  const changedFields = [];
-
-  if (req.files) {
-    for (let i = 0; i < req.files.length; i++) {
-      const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-inventory");
-      images.push({
-        path: uploadedImg.publicUrl,
-        filename: uploadedImg.filename,
-        folder: uploadedImg.folder,
-        bytes: uploadedImg.bytes,
-        fileType: req.files[i].mimetype
-      });
-      changedFields.push({
-        label: 'image',
-        value: 'image',
-        changedFrom: '',
-        changedTo: uploadedImg.publicUrl
-      })
-    }
-  }
-
-  const inventory = await Inventory.findByIdAndUpdate(id, {
-    $push: { "attachments": images },
-  });
-
-  await Activities.create({
-    user: req.user,
-    details: {
-      path: '/inventory',
-      status: 'added',
-      type: 'inventory',
-      actionName: 'image',
-      actionId: inventory._id
-    },
-    changedFields
-  })
-  res.status(200).json(inventory)
-}
-
-module.exports.deleteFiles = async (req, res, next) => {
-  try {
-    const inventory = await Inventory.findByIdAndUpdate(req.body.id, {
-      $pull: {
-        attachments: {
-          filename: req.body.image.filename
-        }
-      }
-    }, { new: true });
-
-    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-
-    await Activities.create({
-      user: req.user,
-      details: {
-        path: '/inventory',
-        status: 'deleted',
-        type: 'inventory',
-        actionName: 'image',
-        actionId: inventory._id
-      },
-      changedFields: [{
-        label: 'image',
-        value: 'image',
-        changedFrom: req.body.image.path,
-        changedTo: ''
-      }]
-    })
-
-    res.status(200).json({ isSuccess: true });
-  } catch (error) {
-    console.log(error);
-    return next(new ErrorHandler(404, error.message));
-  }
-}
+module.exports.uploadFiles = inventoryAttachments.upload;
+module.exports.deleteFiles = inventoryAttachments.remove;
 
 const WAREHOUSE_OFFICES = ['tripoli', 'benghazi'];
 const WAREHOUSE_NAMES = { tripoli: 'مخزن طرابلس', benghazi: 'مخزن بنغازي' };
@@ -799,7 +751,7 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     ]);
     orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
     inventory[0].orders = orders;
-    res.status(200).json(inventory);
+    res.status(200).json(inventory.map(item => inventoryAttachments.serialize(item, req.user)));
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
@@ -949,6 +901,9 @@ module.exports.updateInventory = async (req, res, next) => {
       const currentInventory = await Inventory.findById(id).session(session);
       if (!currentInventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
       const update = { ...req.body };
+      if (Object.keys(update).some(key => key.startsWith('$') || /^(tripNumbering|creationKey|attachments)(\.|$)/.test(key))) {
+        throw new ErrorHandler(400, 'Sequence details and attachments must be changed using their dedicated actions.');
+      }
       if (update.seaLoadType && !['FCL', 'LCL'].includes(update.seaLoadType)) throw new ErrorHandler(400, 'Invalid sea load type');
       if ((update.shippingType || currentInventory.shippingType) !== 'sea') update.seaLoadType = null;
       else if (update.seaLoadType === '') update.seaLoadType = null;
@@ -1091,14 +1046,20 @@ module.exports.createReturnedPayment = async (req, res, next) => {
 // Creates a new domestic inventory holding them, then removes them from the warehouse.
 module.exports.createInternalShipping = async (req, res, next) => {
   try {
+    const identity = tripNumbering.scope('LY', 'domestic', null);
+    await tripNumbering.ensureRule(identity);
+    const creationKey = creationKeyFor(req, 'internal');
     const outcome = await runInTransaction(async (session) => {
+      if (creationKey) {
+        const existing = await Inventory.findOne({ creationKey }).session(session);
+        if (existing) return { _id: existing._id, voyage: existing.voyage, movedCount: existing.orders.length };
+      }
 
       const { office } = req.params;
       const { paymentListIds, voyage, destination, note } = req.body || {};
 
       if (!WAREHOUSE_OFFICES.includes(office)) throw new ErrorHandler(400, 'Unknown office');
       if (!WAREHOUSE_OFFICES.includes(destination)) throw new ErrorHandler(400, 'Choose the destination office');
-      if (!String(voyage || '').trim()) throw new ErrorHandler(400, 'Shipment name is required');
       if (!Array.isArray(paymentListIds) || paymentListIds.length === 0) {
         throw new ErrorHandler(400, 'Select at least one package');
       }
@@ -1121,18 +1082,26 @@ module.exports.createInternalShipping = async (req, res, next) => {
         { $match: { 'paymentList._id': { $in: objectIds } } }
       ]).session(session);
       if (orders.length !== requested.length) throw new ErrorHandler(409, 'Some selected packages are missing');
+      const blocked = orders.filter(order => order.shippingBlocked);
+      if (blocked.length) throw new ErrorHandler(409, `Shipping is blocked for order(s): ${[...new Set(blocked.map(order => order.orderId))].join(', ')}. Remove the restriction before transporting them.`);
       for (const id of [...new Set(orders.map(order => String(order._id)))].sort()) {
         const locked = await Orders.updateOne({ _id: id, isDeleted: { $ne: true }, isCanceled: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
         if (locked.modifiedCount !== 1) throw new ErrorHandler(409, 'A selected order is no longer available');
       }
 
+      const inventoryId = new ObjectId();
+      const numbered = await tripNumbering.allocate(identity, inventoryId, req.user, session);
+      if (!numbered && !String(voyage || '').trim()) throw new ErrorHandler(400, 'Shipment name is required');
       const [shipment] = await Inventory.create([{
+        _id: inventoryId,
+        creationKey,
+        tripNumbering: numbered?.tripNumbering,
         createdBy: req.user,
         inventoryType: 'inventoryGoods',
         shippingType: 'domestic',
         shippedCountry: 'LY',
         inventoryPlace: destination,
-        voyage: String(voyage).trim(),
+        voyage: numbered?.voyage || String(voyage).trim(),
         note: [`شحن داخلي من ${WAREHOUSE_NAMES[office]}`, String(note || '').trim()].filter(Boolean).join('\n'),
         status: 'processing',
         orders,
@@ -1179,7 +1148,10 @@ module.exports.createInternalShipping = async (req, res, next) => {
     });
     res.status(200).json(outcome);
   } catch (error) {
-    console.log(error);
+    if (error.code === 11000 && req.body?.creationRequestId) {
+      const existing = await Inventory.findOne({ creationKey: creationKeyFor(req, 'internal') }).catch(() => null);
+      if (existing) return res.status(200).json({ _id: existing._id, voyage: existing.voyage, movedCount: existing.orders.length });
+    }
     return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }

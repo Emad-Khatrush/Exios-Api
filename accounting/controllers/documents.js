@@ -250,7 +250,10 @@ module.exports.getBill = handle(async (req, res) => {
     Inventory.find({ _id: { $in: tripIds } }).select('voyage shippingType inventoryPlace status').lean(),
     Order.find({ _id: { $in: orderIds } }).select('orderId customerInfo.fullName isDeleted').setOptions({ withDeleted: true }).lean(),
   ]);
-  res.json({ bill, payments, creditNotes, entries, open, paymentStatus: open === null ? null : paymentStatusOf(bill, open), trips, orders });
+  const { settings } = await getConfig();
+  const editLock = bill.status !== 'posted' ? '' : settings?.lockDate && bill.day <= settings.lockDate ? `الفترة مقفلة حتى ${settings.lockDate}`
+    : settings?.migrationGuardDay && bill.day <= settings.migrationGuardDay ? 'الفاتورة ضمن فترة الترحيل قيد المراجعة' : '';
+  res.json({ bill, payments, creditNotes, entries, open, paymentStatus: open === null ? null : paymentStatusOf(bill, open), trips, orders, editLock });
 });
 
 module.exports.createBill = handle(async (req, res) => {

@@ -4,6 +4,11 @@ const Schema = mongoose.Schema;
 
 const inventorySchema = new Schema({
   accountingMutationVersion: { type: Number, default: 0 },
+  creationKey: String,
+  tripNumbering: {
+    type: new Schema({ ruleId: String, period: String, number: Number, year: String, nameTemplate: String }, { _id: false }),
+    default: undefined,
+  },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User'},
   orders: [],
   attachments: [{
@@ -12,7 +17,13 @@ const inventorySchema = new Schema({
     folder: String,
     bytes: String,
     fileType: String,
-    description: String
+    description: String,
+    originalName: String,
+    visibility: { type: String, enum: ['staff', 'management'], default: 'staff' },
+    storageKind: { type: String, enum: ['gridfs', 'legacy'] },
+    storageId: Schema.Types.ObjectId,
+    legacyStoragePath: String,
+    uploadedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   }],
   voyage: {
     type: String,
@@ -23,7 +34,7 @@ const inventorySchema = new Schema({
     type: String,
     required: true,
     // LY: goods already in Libya (office warehouses and internal shipping between offices)
-    enum: ['CN', 'UAE', 'TR', 'USA', 'UK', 'LY']
+    enum: ['CN', 'UAE', 'SA', 'TR', 'USA', 'UK', 'LY']
   },
   inventoryPlace: {
     type: String,
@@ -93,6 +104,7 @@ const inventorySchema = new Schema({
 })
 
 // Create compound indexes
+inventorySchema.index({ creationKey: 1 }, { unique: true, partialFilterExpression: { creationKey: { $type: 'string' } } });
 inventorySchema.index({ 'orders.paymentList._id': 1, inventoryType: 1 });
 inventorySchema.index(
   { inventoryType: 1, status: 1, shippingType: 1, createdAt: -1 },

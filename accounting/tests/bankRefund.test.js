@@ -157,7 +157,9 @@ test('third-currency refund keeps the native pair and reports only the actual ex
  expect((await SupplierBill.findById(posted.creditNoteId)).totalUsd).toBe(500);
  expect(await getBalance(source._id)).toEqual({ usd: 600, foreign: 24000 });
  expect((await getBalance(expense._id)).usd).toBe(4500);
- expect((await getBalance((await account('710100'))._id)).usd).toBe(-100);
+ const gain = await require('../services/posting/common').resolveAccount('fx_realized_gain');
+ expect((await getBalance(gain._id)).usd).toBe(-100);
+ expect((await getBalance((await account('710100'))._id)).usd).toBe(0);
  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(0);
 });
 test('an order refund before the opening count is matched to its original document without altering the counted bank balance', async () => {

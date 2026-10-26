@@ -5,6 +5,7 @@
 const mongoose = require('mongoose');
 const ErrorHandler = require('../../utils/errorHandler');
 const { Vendor, SupplierBill, ExpenseType } = require('../models/documents');
+const { JournalEntry } = require('../models');
 const Inventory = require('../../models/inventory');
 const Order = require('../../models/order');
 const User = require('../../models/user');
@@ -90,10 +91,23 @@ const billView = (bill, field, id) => {
 };
 
 async function billsOn(field, id) {
+  const { settings } = await getConfig();
   const bills = await SupplierBill.find({ [`lines.${field}`]: oid(id), status: { $ne: 'draft' } })
     .populate('vendorId', 'name').populate('createdBy', 'firstName lastName').populate('paidImmediatelyFrom', 'name')
     .sort({ day: -1, createdAt: -1 }).lean();
-  return bills.map((bill) => billView(bill, field, id));
+  const keys = bills.filter(bill => bill.status === 'posted' && !bill.isCreditNote).map(bill => `BILL:${bill._id}`);
+  const balances = keys.length ? await JournalEntry.aggregate([
+    { $match: { 'lines.apKey': { $in: keys } } }, { $unwind: '$lines' },
+    { $match: { 'lines.apKey': { $in: keys } } },
+    { $group: { _id: '$lines.apKey', open: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+  ]) : [];
+  const openByBill = new Map(balances.map(row => [row._id, row.open]));
+  return bills.map((bill) => ({ ...billView(bill, field, id),
+    canEditFinancial: !bill.isCreditNote && !bill.yuanPurchaseId && bill.lines.every(line => ['trip', 'order', 'expense', 'customs'].includes(line.target)),
+    openUsd: bill.status === 'posted' && !bill.isCreditNote ? openByBill.get(`BILL:${bill._id}`) || 0 : undefined,
+    paid: bill.status === 'posted' && !bill.isCreditNote && (openByBill.get(`BILL:${bill._id}`) || 0) <= 0,
+    editLocked:
+    !!((settings?.lockDate && bill.day <= settings.lockDate) || (settings?.migrationGuardDay && bill.day <= settings.migrationGuardDay)) }));
 }
 
 async function tripCosts(tripId) {
