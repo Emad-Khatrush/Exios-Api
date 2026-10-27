@@ -95,6 +95,26 @@ test('insufficient funds and unauthorized customers are refused atomically', asy
   assert.equal(await balance('USD'), 100); assert.equal(await balance('LYD'), 0);
   assert.equal(await Statement.countDocuments(), 0);
 });
+
+test('only administrators and accountants can quote and execute exchanges', async () => {
+  const controller = require('../controllers/walletExchange');
+  for (const roles of [{ isEmployee: true }, { isClient: true }, {}]) {
+    const deniedActor = { ...actor, roles };
+    let failure;
+    await controller.quote({ user: deniedActor, body: input() }, { json() { assert.fail('Unauthorized quote'); } }, error => { failure = error; });
+    assert.equal(failure.statusCode, 403);
+    await assert.rejects(createExchange(customer, input(), deniedActor), error => error.statusCode === 403);
+  }
+  assert.equal(await balance('USD'), 100);
+  assert.equal(await Exchange.countDocuments(), 0);
+  for (const roles of [{ isAdmin: true }, { isAccountant: true, isEmployee: true }]) {
+    let result;
+    await controller.quote({ user: { ...actor, roles }, body: input() }, { json(value) { result = value; } }, error => { throw error; });
+    assert.equal(result.results.toMinor, 95000);
+  }
+  await createExchange(customer, input(), { ...actor, roles: { isAccountant: true } });
+  assert.equal(await balance('LYD'), 950);
+});
 test('retries and simultaneous clicks execute once; reuse with changed amounts is refused', async () => {
   const replies = await Promise.all([createExchange(customer, input(), actor), createExchange(customer, input(), actor)]);
   assert.equal(replies.filter(r => r.replayed).length, 1);

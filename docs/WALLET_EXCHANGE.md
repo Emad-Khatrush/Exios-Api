@@ -23,7 +23,7 @@ arithmetic with rounding to the nearest cent, with halves rounded up.
 - `POST /api/wallet/:customerId/exchange/quote`: `{fromCurrency, amount, rate}`,
   or `{fromCurrency, amount, toAmount, pricingMode: "received"}`.
 - `POST /api/wallet/:customerId/exchange`: the same fields plus
-  `{day: "YYYY-MM-DD", note?, idempotencyKey}`. Only staff roles can use it.
+  `{day: "YYYY-MM-DD", note?, idempotencyKey}`. Only administrators and accountants can use it; employees without either role are denied.
 - One `WalletExchange` stores both native amounts, direction, rate, effective
   date, pricing mode, actual creation timestamp, actor and the two statement identifiers.
 - In received-amount mode the exact two amounts are authoritative. The derived

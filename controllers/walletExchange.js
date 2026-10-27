@@ -9,7 +9,7 @@ const accounting = require('../utils/walletExchangeAccounting');
 
 const round = n => Math.round(n * 100) / 100;
 const fail = text => new ErrorHandler(400, text);
-const staff = user => user?.roles?.isAdmin || user?.roles?.isEmployee || user?.roles?.isAccountant;
+const staff = user => user?.roles?.isAdmin || user?.roles?.isAccountant;
 function authorize(user) { if (!staff(user)) throw new ErrorHandler(403, 'الصرافة متاحة للموظفين المخولين فقط'); }
 
 async function createExchange(userId, input, actor) {
