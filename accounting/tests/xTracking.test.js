@@ -24,6 +24,33 @@ async function claim(o, billed = 10000, open = billed) {
 }
 const fetch = query => new Promise((resolve, reject) => list({ query }, { json: resolve }, reject));
 
+test('purchase follow-up selects purchased active purchase and combined orders with consistent search and counters', async () => {
+  const purchase = await order('FOLLOW-PURCHASE', { orderStatus: 1, isShipment: false });
+  const combined = await order('FOLLOW-COMBINED', { orderStatus: 1, isShipment: true });
+  await claim(purchase, 10000, 0); await claim(combined, 10000, 3000);
+  await order('FOLLOW-PREPARE', { orderStatus: 0 });
+  await order('FOLLOW-ARRIVED', { orderStatus: 2 });
+  await order('FOLLOW-DELIVERED', { orderStatus: 5 });
+  await order('FOLLOW-FINISHED', { orderStatus: 1, isFinished: true });
+  await order('FOLLOW-CANCELED', { orderStatus: 1, isCanceled: true });
+  await order('FOLLOW-UNSURE', { orderStatus: 1, unsureOrder: true });
+  await order('FOLLOW-SHIPPING', { orderStatus: 1, isPayment: false, isShipment: true });
+  for (const quick of [undefined, 'true']) for (const search of ['', 'FOLLOW']) {
+    const result = await fetch({ stage: 'purchaseFollowUp', quick, search });
+    expect(result.orders.map(o => o.orderId).sort()).toEqual(['FOLLOW-COMBINED', 'FOLLOW-PURCHASE']);
+  }
+  expect((await fetch({ stage: 'purchaseFollowUp', payment: 'paid', quick: 'true' })).orders.map(o => o.orderId)).toEqual(['FOLLOW-PURCHASE']);
+  for (const search of ['', 'FOLLOW']) {
+    const categories = await fetch({ countsOnly: 'true', countsPart: 'categories', search });
+    expect(categories.counts.purchaseFollowUp).toBe(2);
+    const matrix = await fetch({ countsOnly: 'true', countsPart: 'matrix', search });
+    expect(matrix.countsByPayment.all.purchaseFollowUp).toBe(2);
+    expect(matrix.countsByPayment.paid.purchaseFollowUp).toBe(1);
+    expect(matrix.paymentCountsByStage.purchaseFollowUp.partial).toBe(1);
+    expect((await fetch({ countsOnly: 'true', stage: 'purchaseFollowUp', search })).counts.purchaseFollowUp).toBe(2);
+  }
+});
+
 test('tracking returns admin pictures and parcel pictures on both listing paths without client receipts', async () => {
   await order('PHOTOS', { images: [
     { path: 'https://example.com/admin.jpg', category: 'invoice' },

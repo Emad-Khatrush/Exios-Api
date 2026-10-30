@@ -10,12 +10,19 @@ const ErrorHandler = require('../utils/errorHandler');
 
 const escapeRegex = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ACTIVE = { isFinished: { $ne: true } };
+const PURCHASE_FOLLOW_UP = { ...ACTIVE, isPayment: true, orderStatus: 1, unsureOrder: { $ne: true } };
+const PURCHASE_FOLLOW_UP_RULE = { $and: [
+  { $eq: ['$isPayment', true] }, { $eq: ['$orderStatus', 1] },
+  { $ne: [{ $ifNull: ['$isFinished', false] }, true] },
+  { $ne: [{ $ifNull: ['$unsureOrder', false] }, true] },
+] };
 const STAGES = {
   all: ACTIVE, purchase: { ...ACTIVE, isPayment: true, isShipment: { $ne: true } },
   shipping: { ...ACTIVE, isPayment: { $ne: true }, isShipment: true },
   combined: { ...ACTIVE, isPayment: true, isShipment: true },
   // The former Unpaid order stage, limited to active orders; this is not an AR balance.
   waitingPurchase: { ...ACTIVE, unsureOrder: false, orderStatus: 0, isPayment: true, isCanceled: false },
+  purchaseFollowUp: PURCHASE_FOLLOW_UP,
   unpaid: { ...ACTIVE, paymentState: 'unpaid' }, partial: { ...ACTIVE, paymentState: 'partial' },
   hasProblem: { ...ACTIVE, hasProblem: true }, finished: { isFinished: true },
   blocked: { ...ACTIVE, shippingBlocked: true },
@@ -30,6 +37,7 @@ function counterGroup(withPayments) {
   return { $group: { _id: {
     finished: yes('isFinished'), purchase: yes('isPayment'), shipping: yes('isShipment'), problem: yes('hasProblem'), blocked: yes('shippingBlocked'),
     waiting: { $and: [{ $eq: ['$unsureOrder', false] }, { $eq: ['$orderStatus', 0] }, { $eq: ['$isPayment', true] }, { $eq: ['$isCanceled', false] }] },
+    purchaseFollowUp: PURCHASE_FOLLOW_UP_RULE,
     ...(withPayments ? { payment: '$paymentState' } : {}),
   }, n: { $sum: 1 } } };
 }
@@ -48,6 +56,7 @@ function counterMatrix(rows, includeFinished = false) {
       else if (flags.purchase) categories.push('purchase');
       else if (flags.shipping) categories.push('shipping');
       if (flags.waiting) categories.push('waitingPurchase');
+      if (flags.purchaseFollowUp) categories.push('purchaseFollowUp');
       if (flags.problem) categories.push('hasProblem');
       if (flags.blocked) categories.push('blocked');
       if (flags.payment === 'unpaid' || flags.payment === 'partial') categories.push(flags.payment);
@@ -156,7 +165,7 @@ exports.list = async (req, res, next) => {
     // a search the existing active-only browsing rules remain in effect.
     const stageFilters = search ? Object.fromEntries(Object.entries(STAGES).map(([key, filter]) => {
       const { isFinished, ...rest } = filter;
-      return [key, key === 'finished' ? filter : rest];
+      return [key, key === 'finished' || key === 'purchaseFollowUp' ? filter : rest];
     })) : STAGES;
     const selection = { $and: [stageFilters[stage], PAYMENT_FILTERS[payment]] };
     const skip = Math.max(0, Math.min(Number.parseInt(req.query.skip, 10) || 0, 1000000));
@@ -226,6 +235,7 @@ exports.list = async (req, res, next) => {
       shipping: { $and: [{ $ne: ['$isPayment', true] }, '$isShipment'] },
       combined: { $and: ['$isPayment', '$isShipment'] },
       waitingPurchase: { $and: [{ $eq: ['$unsureOrder', false] }, { $eq: ['$orderStatus', 0] }, { $eq: ['$isPayment', true] }, { $eq: ['$isCanceled', false] }] },
+      purchaseFollowUp: PURCHASE_FOLLOW_UP_RULE,
       unpaid: { $eq: ['$paymentState', 'unpaid'] }, partial: { $eq: ['$paymentState', 'partial'] },
       hasProblem: '$hasProblem', blocked: { $eq: ['$shippingBlocked', true] }, finished: '$isFinished',
     };
