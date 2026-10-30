@@ -1,6 +1,7 @@
 # Customer wallet exchange
 
-Implemented on `master`. The accounting branch is not merged or modified.
+Master features merged into `feature/accounting` on 2026-10-30. The accounting
+dispatch is installed and tested in this branch. This does not deploy the merge.
 
 ## User flow
 
@@ -46,17 +47,17 @@ arithmetic with rounding to the nearest cent, with halves rounded up.
   balance. Backdating changes effective ordering without changing insertion-based
   stored totals or the actual current wallet balance.
 
-## Accounting integration at the approved merge
+## Accounting integration in this branch
 
 `utils/walletExchangeAccounting.js` is dormant while accounting is absent.
 Do not copy the entire accounting branch onto master to activate it.
 
-When accounting is approved and merged, retain the exchange-specific schema
-fields and the `exchange` enum value, as well as accounting's existing source
-and dynamic-office fields. Then run:
+This branch retains the exchange-specific schema fields and `exchange` value,
+the existing accounting source and dynamic-office fields, period guards and
+cash-withdrawal protections. The dispatch is already installed. Verify it with:
 
 ```sh
-node scripts/integrateWalletExchangeAccounting.js --apply
+node scripts/integrateWalletExchangeAccounting.js
 ```
 
 This installs the two-line dispatch described by
@@ -109,5 +110,10 @@ one journal across statement/outbox retries, closed-period rollback, and
 historical posting without committing the dry-run marker. All database tests
 use temporary MongoDB replica sets, never a company database.
 
-The new UI was checked on desktop and mobile against an isolated in-memory API.
-No push, deployment, branch merge or company balance migration is part of this change.
+The branch also shows one paired exchange in daily employee review with its
+linked journal, rather than two unrelated deposit/payment records. Integration
+checks cover three-decimal LYD posting, a journal failure rolling back every
+operational write, blocked single-leg edits/deletes, and blocked attempts to
+forge an exchange through ordinary deposit/withdrawal endpoints.
+Tests use isolated temporary replica sets; no company balance migration or
+deployment is part of this merge.

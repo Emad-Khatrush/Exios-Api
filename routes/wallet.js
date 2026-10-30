@@ -22,6 +22,9 @@ router.route('/wallet/:id')
 router.route('/wallets')
       .get(protect, allowAdminsAndEmployee, wallet.getAllActiveWallets)
 
+router.route('/payment-rate')
+      .get(protect, allowAdminsAndEmployee, wallet.getPaymentRate)
+
 router.route('/wallet/:id/usebalance')
       .post(protect, allowAdminsAndEmployee, upload.array('files'), wallet.useBalanceOfWallet)
 

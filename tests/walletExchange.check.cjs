@@ -14,11 +14,13 @@ const input = extra => ({ fromCurrency: 'USD', amount: '100', rate: '9.5', day: 
 before(async () => {
   database = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(database.getUri());
-  await Promise.all([User.init(), Wallet.init(), Statement.init(), Exchange.init()]);
+  await Promise.all(mongoose.modelNames().map(name => mongoose.model(name).init()));
 });
 after(async () => { await mongoose.disconnect(); if (database) await database.stop(); });
 beforeEach(async () => {
   for (const collection of await mongoose.connection.db.collections()) await collection.deleteMany({});
+  require('../accounting/services/config').invalidateConfig();
+  await require('../accounting/seed/setup').runSetup();
   customer = (await User.collection.insertOne({ firstName: 'Exchange', customerId: 'TEST-X' })).insertedId;
   actor = { _id: new mongoose.Types.ObjectId(), roles: { isAdmin: true }, office: 'tripoli' };
   await Wallet.create({ user: customer, currency: 'USD', balance: 100 });
@@ -164,13 +166,13 @@ test('a legacy withdrawal cannot overwrite a conversion using an earlier balance
     const legacy = require('../controllers/wallet');
     let failure;
     const withdrawal = legacy.useBalanceOfWallet({ params: { id: String(customer) }, user: actor,
-      body: { amount: 50, currency: 'USD', actionType: 'withdrawal', description: 'concurrent withdrawal', createdAt: new Date() },
+      body: { amount: 50, currency: 'USD', office:'tripoli', actionType: 'withdrawal', description: 'concurrent withdrawal', createdAt: new Date() },
       files: [{ originalname: 'test.png', mimetype: 'image/png' }],
     }, { status() { return this; }, json() {} }, error => { failure = error; });
-    await started;
+    await Promise.race([started, withdrawal.then(() => { throw failure || new Error('Withdrawal ended before reaching the upload'); })]);
     await createExchange(customer, input({ amount: '80' }), actor);
     releaseUpload(); await withdrawal;
-    assert.equal(failure.statusCode, 409);
+    assert.equal(failure.statusCode, 400);
     assert.equal(await balance('USD'), 20); assert.equal(await balance('LYD'), 760);
     assert.equal(await Statement.countDocuments(), 2);
   } finally {

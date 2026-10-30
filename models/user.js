@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const userSchema = new Schema({
+  walletPostingVersion: { type: Number, default: 0 },
   username: {
     type: String,
     required: true,
@@ -29,6 +30,11 @@ const userSchema = new Schema({
     unique: true,
   },
   city: {
+    type: String,
+  },
+  // The office a staff member works in (an accounting office code): their expenses are recorded on
+  // that office and paid from its cash box. Set by the owner in Accounting > Access.
+  office: {
     type: String,
   },
   password: {

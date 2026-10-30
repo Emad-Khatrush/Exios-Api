@@ -1,4 +1,5 @@
 const { MailtrapClient } = require("mailtrap");
+const { isQa } = require('./qaEnvironment');
 const handlebars = require("handlebars");
 const fs = require("fs");
 const path = require("path");
@@ -7,6 +8,7 @@ const PDFDocument = require('pdfkit');
 const arabicFontPath = 'NotoSansArabic.ttf';
 
 const sendEmail = async (email, subject, payload, template) => {
+  if (isQa) throw new Error('Email delivery is disabled in QA.');
   const TOKEN = process.env.EMAIL_PASSWORD;
   const ENDPOINT = "https://send.api.mailtrap.io/";
 

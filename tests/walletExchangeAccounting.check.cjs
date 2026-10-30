@@ -50,6 +50,9 @@ describe('wallet exchange accounting compatibility', { skip: !available }, () =>
     assert.equal(await totals('220100'), 0); assert.equal(await totals('220200'), -9500);
     assert.equal(await totals('420100'), -500);
     assert.ok(e.lines.every(l => !l.accountCode.startsWith('110')));
+    const lyd = e.lines.find(l => l.accountCode === '220200');
+    assert.equal(lyd.amountCurrency, -950000); // Native LYD precision is three decimals.
+    assert.equal(String(lyd.partnerId), String(customer));
     await createExchange(customer, input({ fromCurrency: 'LYD', amount: '950', day: '2026-01-04', idempotencyKey: 'accounting_exchange_reverse_12345' }), actor);
     assert.equal(await balance('USD'), 100); assert.equal(await balance('LYD'), 0);
     assert.equal(await totals('220200'), 0); assert.equal(await totals('710300'), 500);
@@ -77,5 +80,46 @@ describe('wallet exchange accounting compatibility', { skip: !available }, () =>
     assert.equal(await JournalEntry.countDocuments({ eventKey: `WALLET_EXCHANGE:${exchange._id}` }), 1);
     assert.equal((await Exchange.findById(exchange._id)).posting.status, 'pending');
     assert.equal((await entry(exchange._id)).migrationRunId, 'MIG-FX-COMPAT');
+  });
+  test('a journal failure rolls back both wallets, both statement legs and the exchange document', async () => {
+    const ledger = require('../accounting/services/ledger'), original = ledger.postEntry;
+    const statementCount = await Statement.countDocuments(), entries = await JournalEntry.countDocuments();
+    ledger.postEntry = async () => { throw new Error('Simulated ledger failure'); };
+    try { await assert.rejects(createExchange(customer, input(), actor), /Simulated ledger failure/); }
+    finally { ledger.postEntry = original; }
+    assert.equal(await balance('USD'),100); assert.equal(await balance('LYD'),0);
+    assert.equal(await Statement.countDocuments(),statementCount);
+    assert.equal(await JournalEntry.countDocuments(),entries);
+    assert.equal(await Exchange.countDocuments(),0);
+  });
+  test('statement edit/delete cannot change one exchange leg and regular deposit/withdraw paths cannot forge an exchange', async () => {
+    const { exchange } = await createExchange(customer,input(),actor);
+    const cloud = require.resolve('../utils/googleClould'), previous = require.cache[cloud];
+    require.cache[cloud] = { id:cloud, filename:cloud, loaded:true, exports:{ uploadToGoogleCloud:async()=>{throw new Error('Unexpected upload in exchange guard test');} } };
+    let wallet;
+    try { wallet = require('../controllers/wallet'); }
+    finally { if(previous)require.cache[cloud]=previous;else delete require.cache[cloud]; }
+    for (const action of ['updateStatement','deleteStatement']) {
+      let error;
+      await wallet[action]({ params:{ id:String(customer), statementId:String(exchange.toStatementId) }, body:{ amount:1 }, user:actor }, {}, e=>{error=e;});
+      assert.equal(error?.statusCode,400);
+    }
+    for (const action of ['addBalanceToWallet','useBalanceOfWallet']) {
+      let error;
+      await wallet[action]({params:{id:String(customer)},body:{actionType:'exchange',amount:10,currency:'USD'},user:actor},{},e=>{error=e;});
+      assert.equal(error?.statusCode,400);
+    }
+    assert.equal(await balance('USD'),0); assert.equal(await balance('LYD'),950);
+    assert.equal(await JournalEntry.countDocuments({eventKey:`WALLET_EXCHANGE:${exchange._id}`}),1);
+  });
+  test('daily employee review shows the paired exchange once with its journal instead of two unrelated wallet payments', async () => {
+    const { exchange } = await createExchange(customer,input(),actor);
+    const today = require('../accounting/services/dates').today();
+    const report = await require('../accounting/services/employeeOperations').list({from:today,to:today,kind:'wallet_exchange'});
+    assert.equal(report.total,1);
+    assert.equal(report.results[0].sourceModel,'WalletExchange');
+    assert.equal(String(report.results[0].sourceId),String(exchange._id));
+    assert.equal(report.results[0].entries.length,1);
+    assert.match(report.results[0].description,/950 LYD/);
   });
 });

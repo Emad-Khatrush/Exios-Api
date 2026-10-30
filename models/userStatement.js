@@ -1,7 +1,10 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const userStatementSchema = new Schema({
+  linkedCustomerRefundId: { type: Schema.Types.ObjectId, ref: 'AccountingCustomerRefund' },
+  linkedBankRefundLineId: { type: Schema.Types.ObjectId, ref: 'AccountingBankStatementLine' },
   user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   createdBy: {
     type: Schema.Types.ObjectId,
@@ -16,19 +19,37 @@ const userStatementSchema = new Schema({
   total: { type: Number, required: true },
   // Exchange rate used when an LYD payment was made
   rate: Number,
+  // Customer debt currency and conversion agreed at payment, independent of supplier FX.
+  serviceDebtSettlement: {
+    debtCurrency: String,
+    paymentCurrency: String,
+    paymentPerDebtUnit: Number,
+  },
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
   actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal', 'exchange'] },
+  // Any office of the system, or the two old bank values (offices are data, spec C4)
+  office: { type: String, validate: officeValidator(['almutahidaTrBank', 'bank']) },
+  // The account the money went into (or came out of), chosen on the deposit screen: a cash box,
+  // a bank or a partner's current account such as Wasl (spec 19.4). Without it, the office's box.
+  accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+  withdrawalSource: { type: String, enum: ['box', 'custody'] },
+  custodyEmployeeId: { type: Schema.Types.ObjectId, ref: 'User' },
+  matchingVersion: { type: Number, default: 0 },
   walletExchangeId: { type: Schema.Types.ObjectId, ref: 'WalletExchange', immutable: true },
   walletExchangeLeg: { type: String, enum: ['from', 'to'], immutable: true },
-  accountingSource: { model: String, id: Schema.Types.ObjectId },
-  office: { type: String, enum: ['tripoli', 'benghazi', 'misurata', 'turkey', 'china', 'almutahidaTrBank', 'bank'] },
   editHistory: [{
     editedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     editedAt: Date,
     // Previous values of the fields that were changed
     before: Schema.Types.Mixed,
   }],
+  // Set when the accounting section wrote this line itself (e.g. a netting credit), so its own
+  // journal entry is the only one and it is never posted again as a deposit
+  accountingSource: {
+    model: String,
+    id: Schema.Types.ObjectId,
+  }, 
   review: {
     receivedDate: Date,
     isAdminConfirmed: Boolean

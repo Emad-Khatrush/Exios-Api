@@ -1,6 +1,5 @@
-// Optional adapter: master has no accounting subsystem. No accounting tables are
-// created here until the real subsystem is present. Historical integration is
-// supplied and tested separately in docs/WALLET_EXCHANGE_ACCOUNTING.patch.
+// Paired wallet transfer: one journal shared by both statement events and replay.
+// Also remains compatible with installations where accounting is not present.
 const fs = require('fs');
 const path = require('path');
 const available = () => fs.existsSync(path.join(__dirname, '../accounting/services/config.js'));
@@ -16,7 +15,7 @@ async function postExchange(exchangeOrId, options = {}) {
     : await Exchange.findById(exchangeOrId).session(options.session);
   if (!exchange) throw new Error('Wallet exchange not found');
   const { settings, offices } = await require('../accounting/services/config').getConfig();
-  if (!options.isHistorical && !settings.liveEnabled) return { pending: true };
+  if (!options.isHistorical && !settings?.liveEnabled) return { pending: true };
   const { JournalEntry } = require('../accounting/models');
   const existing = await JournalEntry.findOne({ eventKey: `WALLET_EXCHANGE:${exchange._id}` }).session(options.session || null).lean();
   if (existing) return { entryId: existing._id };

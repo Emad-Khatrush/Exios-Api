@@ -1,10 +1,11 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const officeSchema = new Schema({
   office: {
     type: String,
-    enum: ['tripoli', 'benghazi', 'turkey']
+    validate: officeValidator(),
   },
   libyanDinar: {
     value: {

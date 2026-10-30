@@ -60,7 +60,7 @@ const tripsByPackage = () => {
   if (tripMapCache.promise && Date.now() - tripMapCache.at < TRIP_MAP_TTL) return tripMapCache.promise;
   const promise = Inventory.aggregate([
     { $match: { shippingType: { $in: ['air', 'sea'] }, inventoryType: { $ne: 'warehouseInventory' } } },
-    { $project: { _id: 0, shippedCountry: 1, seaType: 1, packageIds: '$orders.paymentList._id' } },
+    { $project: { _id: 0, shippedCountry: 1, seaType: { $ifNull: ['$seaType', { $toLower: { $ifNull: ['$seaLoadType', ''] } }] }, packageIds: '$orders.paymentList._id' } },
   ]).then((trips) => {
     const map = new Map();
     trips.forEach(({ packageIds, ...trip }) => (packageIds || []).forEach((id) => { if (id) map.set(String(id), trip); }));
@@ -102,7 +102,7 @@ const actualRows = async (start, end) => {
       } },
     ]),
     Inventory.aggregate([
-      { $match: { shippingType: 'sea', seaType: 'fcl', createdAt: range, inventoryPlace: { $in: GOAL_OFFICES } } },
+      { $match: { shippingType: 'sea', $or:[{seaType:'fcl'},{seaType:null,seaLoadType:'FCL'}], createdAt: range, inventoryPlace: { $in: GOAL_OFFICES } } },
       { $group: { _id: { day: dayOf('$createdAt'), office: '$inventoryPlace', country: '$shippedCountry' }, count: { $sum: 1 } } },
     ]),
   ]);

@@ -1,11 +1,12 @@
 const { Storage } = require("@google-cloud/storage");
+const { isQa } = require('./qaEnvironment');
 const { format } = require('util');
 const { v4: uuidv4 } = require('uuid');
 const { getRandomChars } = require('./messages')
 
 let projectId =  process.env.GOOGLE_PROJECT_NUMBER;
 
-const storage = new Storage({
+const storage = new Storage(isQa ? {} : {
   projectId,
   credentials: {
   "type": "service_account",
@@ -22,9 +23,10 @@ const storage = new Storage({
   },
 });
 
-const bucket = storage.bucket(process.env.GOOGLE_BUCKET_ID);
+const bucket = isQa ? null : storage.bucket(process.env.GOOGLE_BUCKET_ID);
 
 const uploadToGoogleCloud = async (file, folderName) => {
+  if (isQa) return require('./qaFiles').upload(file, folderName);
   try {
     const cloudFile  = await bucket.file(getRandomChars(10) + file.originalname);
     const blobStream = cloudFile.createWriteStream({
@@ -58,6 +60,7 @@ const uploadToGoogleCloud = async (file, folderName) => {
 
 // Removes an object previously returned by uploadToGoogleCloud, given its public URL.
 const deleteFromGoogleCloud = async (publicUrl) => {
+  if (isQa) return require('./qaFiles').remove(publicUrl);
   const prefix = `https://storage.googleapis.com/${bucket.name}/`;
   if (typeof publicUrl !== 'string' || !publicUrl.startsWith(prefix)) return;
   try {
@@ -67,4 +70,4 @@ const deleteFromGoogleCloud = async (publicUrl) => {
   }
 };
 
-module.exports = { uploadToGoogleCloud, deleteFromGoogleCloud };
+module.exports = { storage, uploadToGoogleCloud, deleteFromGoogleCloud };

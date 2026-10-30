@@ -1,7 +1,14 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const inventorySchema = new Schema({
+  accountingMutationVersion: { type: Number, default: 0 },
+  creationKey: String,
+  tripNumbering: {
+    type: new Schema({ ruleId: String, period: String, number: Number, year: String, nameTemplate: String }, { _id: false }),
+    default: undefined,
+  },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User'},
   orders: [],
   attachments: [{
@@ -10,7 +17,13 @@ const inventorySchema = new Schema({
     folder: String,
     bytes: String,
     fileType: String,
-    description: String
+    description: String,
+    originalName: String,
+    visibility: { type: String, enum: ['staff', 'management'], default: 'staff' },
+    storageKind: { type: String, enum: ['gridfs', 'legacy'] },
+    storageId: Schema.Types.ObjectId,
+    legacyStoragePath: String,
+    uploadedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   }],
   voyage: {
     type: String,
@@ -21,12 +34,12 @@ const inventorySchema = new Schema({
     type: String,
     required: true,
     // LY: goods already in Libya (office warehouses and internal shipping between offices)
-    enum: ['CN', 'UAE', 'TR', 'USA', 'UK', 'LY']
+    enum: ['CN', 'UAE', 'SA', 'TR', 'USA', 'UK', 'LY']
   },
   inventoryPlace: {
     type: String,
     required: true,
-    enum: ['tripoli', 'benghazi']
+    validate: officeValidator(),
   },
   inventoryFinishedDate: {
     type: Date,
@@ -56,11 +69,13 @@ const inventorySchema = new Schema({
     required: true,
     enum: ['air', 'sea', 'domestic'],
   },
+  // Explicit classification; old trips stay unknown rather than guessing from names.
+  seaLoadType: { type: String, enum: ['FCL', 'LCL', null], default: null },
   // Sea trips only: lcl = shared container (شحن مشترك), fcl = a full container for one customer
   // (شحن حاوية كاملة لعميل). Sales goals count LCL by CBM and FCL by containers.
   seaType: {
     type: String,
-    enum: ['lcl', 'fcl'],
+    enum: ['lcl', 'fcl', null],
   },
   isCaclulationDone: {
     type: Boolean,
@@ -95,6 +110,7 @@ const inventorySchema = new Schema({
 })
 
 // Create compound indexes
+inventorySchema.index({ creationKey: 1 }, { unique: true, partialFilterExpression: { creationKey: { $type: 'string' } } });
 inventorySchema.index({ 'orders.paymentList._id': 1, inventoryType: 1 });
 inventorySchema.index(
   { inventoryType: 1, status: 1, shippingType: 1, createdAt: -1 },

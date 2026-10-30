@@ -1,6 +1,7 @@
 if (process.env.NODE_ENV !== "production") {
   require('dotenv').config();
 }
+const { isQa } = require('./utils/qaEnvironment');
 // Optional override for environments whose default resolver rejects Atlas SRV queries.
 const mongoDnsServers = (process.env.MONGO_DNS_SERVERS || '')
   .split(',').map(server => server.trim()).filter(Boolean);
@@ -37,7 +38,6 @@ const Campaign = require('./models/campaign');
 const orders = require('./routes/orders');
 const users = require('./routes/users');
 const expenses = require('./routes/expenses');
-const incomes = require('./routes/incomes');
 const activities = require('./routes/activities');
 const offices = require('./routes/offices');
 const sendMessages = require('./routes/sendMessages');
@@ -53,6 +53,7 @@ const popupAds = require('./routes/popupAds');
 const analytics = require('./routes/analytics');
 const campaigns = require('./routes/campaigns');
 const companyNotes = require('./routes/companyNotes');
+const { routes: accountingRoutes, systemRoutes: accountingSystemRoutes, initAccounting } = require('./accounting');
 const goals = require('./routes/goals');
 const Redis = require('ioredis');
 
@@ -61,7 +62,9 @@ let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 let redisClient;
 
 // Use TLS for secure Redis connection (Redis Cloud requires TLS)
-if (process.env.REDIS_HOST) {
+if (isQa) {
+  redisClient = null;
+} else if (process.env.REDIS_HOST) {
   redisClient = new Redis({
     port: process.env.REDIS_PORT,
     host: process.env.REDIS_HOST,
@@ -73,11 +76,11 @@ if (process.env.REDIS_HOST) {
 }
 
 // Test Redis connection
-redisClient.on('connect', () => {
+redisClient?.on('connect', () => {
   console.log('Connected to Redis Cloud!');
 });
 
-redisClient.on('error', (err) => {
+redisClient?.on('error', (err) => {
   console.error('Redis connection error:', err);
 });
 
@@ -94,12 +97,28 @@ let isWhatsAppReady = false;
 let isInitializingWhatsApp = false; // guards against overlapping initialize() calls
 
 const app = express();
+app.get('/', (req, res) => res.json({ service: 'Exios API', environment: isQa ? 'qa' : 'production', databaseConnected: mongoose.connection.readyState === 1 }));
+app.get('/health', (req, res) => res.status(mongoose.connection.readyState === 1 ? 200 : 503).json({ ok: mongoose.connection.readyState === 1, environment: isQa ? 'qa' : 'production' }));
 
 // Bull queue with Redis client - shared module so controllers (e.g. campaign
 // delete, which cancels pending jobs) reference the same queue instance.
 const sendMessageQueue = require('./utils/messageQueue');
 
 const connectionUrl = process.env.MONGO_URL_2 || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/exios-admin?directConnection=true&serverSelectionTimeoutMS=2000&appName=mon'
+const isLocalAccountingTrial = process.env.EXIOS_LOCAL_ACCOUNTING_TRIAL === '1'
+  // A local trial database, or the local copy of the real data (never a remote one)
+  && /^mongodb:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/(?:exios-september-trial-\d{8}|exios-prod-copy)(?:\?|$)/.test(connectionUrl);
+if (isLocalAccountingTrial) process.env.BACKUP_BUCKET = '';
+if (isLocalAccountingTrial) app.get('/api/accounting/trial-status', async (req, res) => {
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return res.sendStatus(404);
+  if (mongoose.connection.readyState !== 1) return res.sendStatus(503);
+  try {
+    const { settings, count } = await require('./accounting/services/config').getConfig();
+    const { addDays } = require('./accounting/services/dates');
+    res.json({ database: mongoose.connection.db.databaseName, openingCountDay: count?.day || null,
+      operationalStartDate: count?.endOfDay ? addDays(count.day, 1) : count?.day || null, migrationDate: settings?.migrationDate });
+  } catch (_) { res.sendStatus(503); }
+});
 mongoose.connect(connectionUrl, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -108,6 +127,9 @@ mongoose.connect(connectionUrl, {
   process.exit(1);
 });
 
+// Accounting receives whole files as rows (a bank statement, a migration's cost list), larger than
+// the 100kb default; parsed here first, the general parser below leaves those requests alone
+app.use('/api/accounting', bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(morgan('tiny'));
@@ -157,6 +179,10 @@ app.use(cors());
 
 const db = mongoose.connection;
 db.on("error", console.error.bind(console, "connection error:"));
+if (isQa) db.once('open', () => {
+  require('./accounting/seed/qaServiceAccounts').ensureQaServiceAccounts()
+    .catch((error) => console.error('QA service account setup failed:', error.message));
+});
 
 const WHATSAPP_DATA_PATH = './.wwebjs_auth/';
 let whatsappStore; // created once DB is connected
@@ -226,6 +252,7 @@ function scheduleSnapshotRefresh() {
 // Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
 // require re-scanning the QR code.
 async function initializeWhatsAppClient() {
+  if (isLocalAccountingTrial || isQa) return;
   if (isShuttingDown) return;
   if (isInitializingWhatsApp) {
     console.log('WhatsApp client initialization already in progress, skipping.');
@@ -408,6 +435,7 @@ async function initializeWhatsAppClient() {
 
 db.once("open", () => {
   console.log('MongoDB connected');
+  initAccounting();
   require('./controllers/goals').prepareGoals();
   initializeWhatsAppClient();
 });
@@ -432,12 +460,15 @@ process.on('SIGINT', () => shutdownWhatsAppClient('SIGINT'));
 process.on('SIGUSR2', () => shutdownWhatsAppClient('SIGUSR2'));
 
 // render routes
+if (isQa) app.use('/api/qa-files', require('./utils/qaFiles').router);
+app.use('/api/accounting', accountingRoutes);
+// Trip costs, order purchases and office expenses entered from the system's own screens
+app.use('/api', accountingSystemRoutes);
 app.use('/api', users);
 app.use('/api', orders);
 app.use('/api', expenses);
 app.use('/api', activities);
 app.use('/api', offices);
-app.use('/api', incomes);
 app.use('/api', sendMessages);
 app.use('/api', resetToken);
 app.use('/api', tasks);
@@ -638,7 +669,7 @@ app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async 
   }
 });
 
-sendMessageQueue.process('resume-jobs', 1, async (job) => {
+if (!isLocalAccountingTrial && !isQa) sendMessageQueue.process('resume-jobs', 1, async (job) => {
   // Resume the queue
   await sendMessageQueue.resume();
   console.log('Queue resumed.');
@@ -667,7 +698,7 @@ async function getNextClientSlot() {
 
 // Schedules every message up front as a delayed job (persisted in Redis), so
 // a Heroku restart mid-campaign doesn't lose the remaining messages.
-sendMessageQueue.process('send-large-messages', 1, async (job) => {
+if (!isLocalAccountingTrial && !isQa) sendMessageQueue.process('send-large-messages', 1, async (job) => {
   const { imgUrl, content, users, campaignId } = job.data;
 
   let nextSlot = await getNextClientSlot();
@@ -738,7 +769,7 @@ async function updateCampaignProgress(campaignId, userId, status) {
   }
 }
 
-sendMessageQueue.process('send-message', 1, async (job) => {
+if (!isLocalAccountingTrial && !isQa) sendMessageQueue.process('send-message', 1, async (job) => {
   const { index, imgUrl, content, phone, customerId, campaign, campaignId, userId, retries = 0 } = job.data;
 
   try {

@@ -2,6 +2,8 @@ const express = require('express');
 
 const orders = require('../controllers/orders');
 const ordersControl = require('../controllers/ordersControl');
+const xTracking = require('../controllers/xTracking');
+const shippingBlock = require('../controllers/shippingBlock');
 const { protect, isAdmin, isClient, allowAdminsAndAccountants, allowAdminsAndEmployee } = require('../middleware/check-auth');
 const multer = require('multer');
 // cloudinary settings
@@ -14,6 +16,9 @@ const upload = multer({
 });
 
 const router  = express.Router();
+const allowDeliveryStaff = (req, res, next) => req.user?.roles?.isAccountant ? next() : allowAdminsAndEmployee(req, res, next);
+
+router.put('/order/:id/shipping-block', protect, allowDeliveryStaff, shippingBlock.update);
 
 // Admin Routes
 router.route('/invoices')
@@ -35,9 +40,12 @@ router.route('/currentOrdersTab')
 router.route('/orders/search')
       .get(protect, allowAdminsAndEmployee, orders.getOrdersBySearch)
 
-// X-Tracking: stages with counts, one-box search, office/method/service filters
+// X-Tracking: bounded order/tracking search, payment states and expandable package summaries.
 router.route('/orders/tracking')
-      .get(protect, allowAdminsAndEmployee, orders.getTrackingOrders)
+      .get(protect, allowAdminsAndEmployee, xTracking.list)
+
+router.route('/orders/tracking/:id/packages')
+      .get(protect, allowAdminsAndEmployee, xTracking.packages)
 
 router.route('/unsureOrder/add')
       .post(protect, allowAdminsAndEmployee, orders.createUnsureOrder);
@@ -54,7 +62,8 @@ router.route('/order/deleteFiles')
 
 router.route('/order/:id')
       .get(protect, allowAdminsAndEmployee, orders.getOrder)
-      .put(protect, allowAdminsAndEmployee, orders.updateOrder);
+      .put(protect, allowAdminsAndEmployee, orders.updateOrder)
+      .delete(protect, isAdmin, orders.deleteOrder);
 
 router.route('/order/:id/package')
       .put(protect, allowAdminsAndEmployee, orders.updateSinglePackage);
@@ -67,6 +76,9 @@ router.route('/order/:id/cancel')
 
 router.route('/order/:id/addActivity')
       .post(protect, allowAdminsAndEmployee, orders.createOrderActivity)
+
+router.route('/order/:id/activity/:activityId')
+      .delete(protect, isAdmin, orders.deleteOrderActivity)
 
 // X-Tracking > مراقبة الطلبيات: every open package with its stage and automatic checks (read-only)
 router.route('/orders/control')
@@ -89,10 +101,10 @@ router.route('/orders/:id/confirmItemsChanges')
       .put(protect, allowAdminsAndEmployee, orders.confirmItemsChanges)
 
 router.route('/user/:id/packages')
-      .get(protect, allowAdminsAndEmployee, orders.getUserPackagesOfOrdersAdmin)
+        .get(protect, allowDeliveryStaff, orders.getUserPackagesOfOrdersAdmin)
 
 router.route('/user/:id/markAsDelivered')
-      .post(protect, allowAdminsAndEmployee, orders.markPackagesAsDelivered)
+        .post(protect, allowDeliveryStaff, orders.markPackagesAsDelivered)
 
 router.route('/invoices/customer/:id')
       .get(protect, allowAdminsAndEmployee, orders.getInvoicesByCustomer);

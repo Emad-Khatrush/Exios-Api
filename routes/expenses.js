@@ -1,27 +1,15 @@
 const express = require('express');
 const expenses = require('../controllers/expenses');
 const { protect, allowAdminsAndEmployee } = require('../middleware/check-auth');
-const multer = require('multer');
-
-// cloudinary settings
-// const { storage } = require('../utils/cloudinary');
-const upload = multer();
 
 const router  = express.Router();
 
+// Old expenses are kept for reading (reports) and are posted by the historical migration.
+// New expenses are entered on the Expenses screen (/api/office-expenses), which posts them.
 router.route('/expenses')
-      .get(protect, allowAdminsAndEmployee, expenses.getExpenses)
-      .post(protect, allowAdminsAndEmployee, upload.array('files'), expenses.createExpense);
-
-      
-router.route('/expense/uploadFiles')
-      .post(protect, allowAdminsAndEmployee, upload.array('files'), expenses.uploadFiles);
-      
-router.route('/expense/deleteFiles')
-      .delete(protect, allowAdminsAndEmployee, expenses.deleteFiles);
+      .get(protect, allowAdminsAndEmployee, expenses.getExpenses);
 
 router.route('/expense/:id')
-      .get(protect, allowAdminsAndEmployee, expenses.getExpense)
-      .put(protect, allowAdminsAndEmployee, expenses.updateExpense);
+      .get(protect, allowAdminsAndEmployee, expenses.getExpense);
 
 module.exports = router;

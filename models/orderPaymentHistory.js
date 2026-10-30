@@ -2,6 +2,9 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const orderPaymentHistorySchema = new Schema({
+  deliveryInvoiceId: { type: Schema.Types.ObjectId, ref: 'Invoice', index: true },
+  deliveryPackageId: Schema.Types.ObjectId,
+  deliveryDebtId: { type: Schema.Types.ObjectId, ref: 'Balance' },
   customer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User', // Reference to the 'User' collection
@@ -49,7 +52,24 @@ const orderPaymentHistorySchema = new Schema({
     description: String
   }],
   list: [],
-  note: String
+  note: String,
+  // For wallet payments: the customer statement line that took the money, so cancelling the
+  // payment can reverse exactly that accounting entry
+  statementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
+  // A rate written later on an old dinar payment saved without one (accounting/services/paymentRate.js):
+  // such a rate may be corrected the same way
+  rateSetAt: Date,
+  rateSetBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  // Debts of the order that this payment paid down, so cancelling the payment reopens them:
+  // the debt, what was taken off it (in the debt's currency) and the line added to its history
+  debtPayments: [{
+    _id: false,
+    balance: { type: Schema.Types.ObjectId, ref: 'Balance' },
+    amount: Number,
+    historyId: Schema.Types.ObjectId,
+  }],
 }, { timestamps: true });
 
+orderPaymentHistorySchema.index({ order: 1, createdAt: -1 });
+orderPaymentHistorySchema.index({ statementId: 1 });
 module.exports = mongoose.model("OrderPaymentHistory", orderPaymentHistorySchema);

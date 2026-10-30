@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 const Schema = mongoose.Schema;
 
 const returnedPaymentsSchema = new Schema({
@@ -24,7 +25,7 @@ const returnedPaymentsSchema = new Schema({
   issuedOffice: {
     type: String,
     required: true,
-    enum: ['tripoli', 'benghazi']
+    validate: officeValidator(),
   },
   goodsSentDate: {
     type: Date,

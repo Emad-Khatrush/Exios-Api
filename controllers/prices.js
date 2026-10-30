@@ -1,4 +1,5 @@
 const ExchangeRate = require('../models/exchangeRate');
+const { recordSettingsRate } = require('../accounting/services/settingsRate');
 const ShipmentPrices = require('../models/shipmentPrices');
 const ErrorHandler = require('../utils/errorHandler');
 
@@ -117,11 +118,9 @@ module.exports.getExchangeRate = async (req, res, next) => {
 module.exports.updateExchangeRate = async (req, res, next) => {
   try {
     const exchangeRate = req.body.exchangeRate;
-    await ExchangeRate.updateOne({ _id: exchangeRate._id }, {
-      $set: {
-        rate: exchangeRate.rate
-      }
-      })
+    if (!(Number(exchangeRate?.rate) > 0)) return next(new ErrorHandler(400, 'The rate must be greater than zero'));
+    // The settings rate is the only dinar rate: saving it also writes today's accounting rate
+    await recordSettingsRate(exchangeRate.rate, { req });
     res.status(200).json({ updatedAt: new Date() });
   } catch (error) {
     return next(new ErrorHandler(404, error.message));

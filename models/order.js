@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const orderSchema = new Schema({
+  accountingMutationVersion: { type: Number, default: 0 },
   user: { type: Schema.Types.ObjectId, ref: 'User' },
   madeBy: { type: Schema.Types.ObjectId, ref: 'User' },
   orderId: {
@@ -95,7 +96,7 @@ const orderSchema = new Schema({
     },
     method: {
       type: String,
-      required: true,
+      required: function () { return this.isShipment; },
       enum: ['air', 'sea', 'unknown']
     },
     estimatedDelivery: Date,
@@ -117,6 +118,17 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false
   },
+  // A purchase invoice that is an Alipay transfer for the customer (yuan sent to their supplier):
+  // its sale and cost are remittance revenue and cost in accounting (spec 19.5)
+  isRemittance: {
+    type: Boolean,
+    default: false,
+  },
+  // Transactional write guard for concurrent supplier refunds capped by what the customer paid.
+  customerRefundVersion: {
+    type: Number,
+    default: 0,
+  },
   isPayment: {
     type: Boolean,
     default: false
@@ -133,10 +145,16 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false
   },
+  shippingBlocked: { type: Boolean, default: false },
+  shippingBlockReason: { type: String, maxlength: 500, default: '' },
+  shippingBlockedAt: Date,
+  shippingBlockedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   orderStatus: {
     type: Number,
     default: 0
   },
+  // Separate from edited notes and payments: they must not restart the stage's age.
+  orderStatusChangedAt: Date,
   isFinished: {
     type: Boolean,
     default: false
@@ -180,6 +198,11 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  // Deleted by an admin because it was created by mistake (spec 19.10): hidden from the whole
+  // system; accounting still shows it (its claims reversed) with a "deleted" badge
+  isDeleted: { type: Boolean, default: false },
+  deletedAt: Date,
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   cancelation: {
     date: {
       type: Date,
@@ -207,10 +230,26 @@ const orderSchema = new Schema({
     total: Number,
   },
   paymentList: [{
+    creditDeliveryInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+    shippingRecognitionFrom: Date,
+    // Set only by the audited free-shipping review, never by ordinary package edits.
+    freeShippingOffer: {
+      enabled: Boolean,
+      reason: String,
+      previousUnitPrice: Number,
+      appliedAt: Date,
+      effectiveFrom: Date,
+      appliedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    },
     link: {
       type: String,
       default: ''
     },
+    // The air or sea trip that carried this package, and the domestic trip that took it on to
+    // another office (accounting reads these; kept in step with the trips' package lists by
+    // accounting/services/tripLinks.js). Warehouses never set them.
+    tripId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', default: null },
+    domesticTripId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', default: null },
     status: {
       arrived: {
         type: Boolean,
@@ -271,6 +310,8 @@ const orderSchema = new Schema({
         type: String,
         default: ''
       },
+      // total is the CHARGEABLE weight: what the customer is billed on and the trip's cost is shared
+      // by. Charged by volume, it is the volumetric weight and the scale's weight is kept in actual.
       weight: {
         total: {
           type: Number,
@@ -279,6 +320,48 @@ const orderSchema = new Schema({
         measureUnit: {
           type: String,
           default: ''
+        },
+        actual: Number
+      },
+      // Charged by volume (spec v8): CBM typed or worked out from the dimensions (cm); weight.total =
+      // CBM x factor, unless an explicit chargeable-weight adjustment is saved.
+      volumetric: {
+        enabled: { type: Boolean, default: false },
+        cbm: Number,
+        length: Number,
+        width: Number,
+        height: Number,
+        factor: Number,
+        calculatedWeight: Number,
+        chargeableWeight: { type: Number, min: 0.01 }
+      },
+      // Transport to another office, charged on this package beside its shipping (spec v8): added to
+      // what the customer owes, revenue 410500 when delivered and paid
+      domesticFee: {
+        amount: Number,
+        currency: { type: String, enum: ['USD', 'LYD'] },
+        usd: Number
+      },
+      // Customs clearance sold with this package (owner's request 2026-10-03), e.g. a full container
+      // cleared for 2,500 LYD and charged 3,000 LYD: its own claim, revenue 410900 when delivered and
+      // paid. The agent's invoice is a supplier bill line of kind 'customs' on this package
+      customsFee: {
+        amount: Number,
+        currency: { type: String, enum: ['USD', 'LYD'] },
+        usd: Number
+      },
+      // Not collected for too long (spec v8): declared abandoned, then possibly sold
+      abandoned: {
+        status: { type: String, enum: ['abandoned', 'sold'] },
+        declaredAt: Date,
+        declaredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        sale: {
+          day: String,
+          amount: Number,
+          currency: String,
+          accountId: mongoose.Schema.Types.ObjectId,
+          usd: Number,
+          entryId: mongoose.Schema.Types.ObjectId
         }
       },
       originPrice: {
@@ -344,6 +427,53 @@ const orderSchema = new Schema({
   }]
 }, { timestamps: true })
 
+orderSchema.index({ 'paymentList.tripId': 1 });
+orderSchema.index({ isDeleted: 1 });
+orderSchema.index({ createdAt: -1, _id: -1 });
+orderSchema.index({ isCanceled: 1, unsureOrder: 1, createdAt: -1 });
+orderSchema.index({ 'paymentList.deliveredPackages.trackingNumber': 1 });
+
+orderSchema.pre('save', function trackStageChange() {
+  if (this.isNew) this.orderStatusChangedAt = this.createdAt || new Date();
+  else if (this.isModified('orderStatus')) this.orderStatusChangedAt = new Date();
+});
+orderSchema.pre('findOneAndUpdate', async function trackStageChange() {
+  const update = this.getUpdate();
+  if (!update || Array.isArray(update)) return;
+  const status = update.$set?.orderStatus ?? update.orderStatus;
+  if (status === undefined) return;
+  const fields = update.$set || update;
+  const old = await this.model.findOne(this.getFilter()).select('orderStatus orderStatusChangedAt').session(this.getOptions().session || null).lean();
+  if (!old) return;
+  if (Number(status) !== Number(old.orderStatus)) fields.orderStatusChangedAt = new Date();
+  else if (old.orderStatusChangedAt) fields.orderStatusChangedAt = old.orderStatusChangedAt;
+  else delete fields.orderStatusChangedAt;
+});
+orderSchema.pre('updateMany', function trackBulkStageChange() {
+  const update = this.getUpdate();
+  if (!Array.isArray(update)) return;
+  update.forEach(stage => {
+    if (stage.$set?.orderStatus === undefined) return;
+    stage.$set.orderStatusChangedAt = { $cond: [
+      { $ne: ['$orderStatus', stage.$set.orderStatus] }, '$$NOW',
+      { $ifNull: ['$orderStatusChangedAt', { $ifNull: [{ $max: '$activity.createdAt' }, '$createdAt'] }] },
+    ] };
+  });
+});
+
+// Deleted orders are left out of every query unless it asks for them with { withDeleted: true }
+// or names isDeleted itself
+function hideDeleted() {
+  if (this.getOptions().withDeleted || 'isDeleted' in this.getFilter()) return;
+  this.where({ isDeleted: { $ne: true } });
+}
+['find', 'findOne', 'countDocuments', 'distinct', 'findOneAndUpdate', 'updateOne', 'updateMany'].forEach((op) => orderSchema.pre(op, hideDeleted));
+orderSchema.pre('aggregate', function hideDeletedInPipeline() {
+  if (this.options?.withDeleted) return;
+  this.pipeline().unshift({ $match: { isDeleted: { $ne: true } } });
+});
+orderSchema.index({ 'paymentList.domesticTripId': 1 });
+orderSchema.index({ shippingBlocked: 1, isFinished: 1, createdAt: -1 }, { partialFilterExpression: { shippingBlocked: true } });
 // Date ranges read by the sales goals dashboard (sales by invoice date, packages by arrival date)
 orderSchema.index({ createdAt: 1 });
 orderSchema.index({ user: 1, createdAt: -1 });

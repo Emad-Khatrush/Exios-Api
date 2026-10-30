@@ -1,0 +1,105 @@
+
+
+MüşteriNumarası:10374879
+Kart Numarası:5472********1890
+Kart Limiti(TL):200.000,00
+VergiDairesi:BEYLİKDÜZÜVERGİDAİ
+VergiNumarası:3811030609
+HesapKesimTarihi:25 Eylül2026
+Son ÖdemeTarihi:05 Ekim2026
+DönemBorcu(TL):69.758,32
+AsgariÖdemeTutarı(TL):69.758,32
+GecikmeCezasıOranı:4,55
+Bir SonrakiHesapKesimTarihi:25 Ekim2026
+Bir SonrakiSon ÖdemeTarihi:04 Kasım2026
+TCMBtarafındanbelirlenengecikmecezasıoranları1 Ocak2026tarihiitibarıyladönemborcunuzagöre
+değişiklikgösterecektir.Mevcutoranlaragöre1 Ocak2026tarihindenitibarenBankamızbireyselkredikartları
+için aylıkgecikmecezasıoranları;dönemborcu30.000TL'ninaltındaise %3,55(Yıllık:42,60);30.000TL -
+180.000TL arasındaise %4,05(Yıllık:48,60);180.000TL'ninüzerindeise %4,55(Yıllık:54,60)olarak
+uygulanacaktır.Ticarikartlariçin bu oranlardönemborcundanbağımsızolarak4,55(Yıllık:54,60)olarak
+uygulanacaktır.
+İşlemTarihiAçıklamaTutar(TL)KalanTaksit/TutarWorldpuan
+DevirBakiyesi199.465,40
+5472********1890EXİOSİÇ VE DIŞ TİCA0 HARCAMALARI
+04 Eylül2026ÖDEMEİÇİN TEŞEKKÜREDERİZ+72.348,19
+07 Eylül2026ÖDEMEİÇİN TEŞEKKÜREDERİZ+127.117,21
+25 Eylül2026GecikmeTazminatı607,30
+HARCAMATOPLAMI607,300
+4345********6265EMADKAYAHARCAMALARI
+13 Eylül2026world.taobao.comLUXEMBOURGLU
+OrijinalİşlemTutarı:206,85USD
+10.222,47
+13 Eylül2026www.shein.comDubaiAE
+OrijinalİşlemTutarı:118,65USD
+5.849,09
+13 Eylül2026ODOODWCRAMILLIESBE
+OrijinalİşlemTutarı:99,00EUR,USD Karşılığı:115,33USD
+5.685,42
+20 Eylül2026MF*CreatwithmKuwaitKW
+OrijinalİşlemTutarı:17,30KWD,USD Karşılığı:564,38USD
+27.924,44
+HARCAMATOPLAMI49.681,420
+5472********9480EMADKAYAHARCAMALARI
+25 Ağustos2026GENCSOYDIS TIC VE TASIISTANBULTR300,00
+05 Eylül2026OdooMiddleEast DMCCDubaiARAR
+OrijinalİşlemTutarı:30,60USD
+1.507,25
+20 Eylül2026AMWALPAYAL GHUBRAMUOM
+OrijinalİşlemTutarı:137,00OMR,USD Karşılığı:355,96USD
+17.662,35
+HARCAMATOPLAMI19.469,600
+DevredenBakiyeDönemHareketleriÖdemelerDönemBorcunuz
+199.465,40
++
+69.758,32
+-
+199465,40
+=
+69.758,32
+KrediKartıEkstreniz
+EXİOSİÇ VE DIŞ TİCA0
+YAKUPLUMAH.GAZİEMİRCD. 12/13NO:12/13
+BEYLİKDÜZÜ
+34524BEYLİKDÜZÜISTANBUL
+DekontNumarası:217954
+İŞBUDEKONTVUK HÜKÜMLERİNEGÖREFATURAYERİNEDÜZENLENMİŞ
+BİR BELGEDİR.
+1
+AlbarakaTürkKatılımBankasıA.Ş.İnkılapMahallesiDr. AdnanBüyükdenizCd. No:6Ümraniye/İSTANBUL
+Tel: (0216)666 01 01 - Faks:(0216)666 16 00 www.albaraka.com.trTicaretSicil Numarası:206671/154214
+BüyükMükelleflerVergiDairesi0470008702
+/ 210374879
+
+HESAPÖZETİVE KREDİKARTIİLE İLGİLİAÇIKLAMALAR
+DönemBorcu:Hesapkesimtarihiitibarıylakredikartınızınborçbakiyesinigöstermektedir.
+HesapKesimTarihi:Kredikartıekstrenizinkesildiğitarihigöstermektedir.Birsonrakihesapkesimtarihiisebirsonrakiaykredikartı
+ekstrenizinkesileceğitarihigöstermektedir.Hesapkesimtarihiniziayda1 kere,yıldaenfazla3 keredeğiştirebilirsiniz.
+SonÖdemeTarihi:Ekstreborcunuzunödenmesigerekensontarihtir.Sonödemetarihi,haftasonuveyaresmitatiledenkgeldiğindebir
+sonrakiişgününesarkabilir.Birsonrakisonödemetarihiisebirsonrakiayayansıyacakborcunuzunödenmesigerekensontarihi
+göstermektedir.
+Worldpuan:BankamıztarafındanbelirlenenkredikartıharcamalarınayineBankamıztarafındanbelirlenenoranda/tutardaWorldpuanverilmesi
+halindehesapkesimtarihiitibarıylakazanılmışWorldpuanlarıgöstermektedir.WorldpuanTLKarşılığıisetoplamWorldpuanınBankamız
+tarafındanbelirlenecekTürkLirasıkarşılığıdır.
+KartLimiti:Kredikartıileyapacağınızpeşinvetaksitlialışverişleriçinkredikartınızatahsisedilenlimitigöstermektedir.
+MüşteriLimiti:Karthamilininşahsınaözeltahsisedilenüstlimitolup,karthamilinetahsisedilenbütünkredikartlarınınlimitleribumüşterilimiti
+dahilindeBankamızcabelirlenir.
+DevredenBakiye:Biröncekiekstrenizdekidönemborcunugöstermektedir.
+İşlemTarihi:Alışverişveödemeyaptığınıztarihigöstermektedir.
+GecikmeCezasıOranı:Dönemborcunuzunsonödemetarihinekadarödenmemesihalinde,ödenmemişdönemborcunuzasonödeme
+tarihindenitibarengünlükbakiyenizüzerindengecikmecezasıhesaplanır(KKDFveBSMVdahildir).
+DİĞERAÇIKLAMALAR
+Yurtdışıharcamalarınız,kartlısistemkuruluşlarınıntakassistemindenbizeulaştırıldığında,bankamızındövizsatışkurlarındanTL'ye
+çevrilerekkartınızaborçyansıtılır.Bututarakartlısistemkuruluşlarınatarafımızcaödenenücretvekomisyonlar,lisansbedellerivebunlara
+ilişkinvergilerdahiledilecektir.
+Asgariödemetutarıdönemborcunuzun%100'üdür.
+4445 666veya08502225 666numaralarıüzerinden7/24hizmetverenAloAlbaraka'yıarayarakvereceğinizbirtalimatla,ekstrenizin
+bildireceğinizbire-postaadresinedüzenliolarakgönderilmesinisağlayabilirsiniz.
+Ödemelerinizinasılyapabilirsiniz?
+1.KredikartıödemeleriniziAlbarakainternet/mobilşubesi,AloAlbaraka4445 666/ 08502225 666,AlbarakavePTTATM'leri,Albarakave
+PTTşubeleriaracılığıylayapabilirsiniz.
+2.Kredikartıödemelerinizinotomatikolarakhesabınızdantahsiledilmesiiçin4445 666veya08502225 666numaralarıüzerinden7/24hizmet
+verenAloAlbaraka'yıarayarak,internetşubemizüzerindenveyasizeenyakınşubemizebaşvuraraktalimatverebilirsiniz.
+AlbarakaTürkKatılımBankasıA.Ş.İnkılapMahallesiDr. AdnanBüyükdenizCd. No:6Ümraniye/İSTANBUL
+Tel: (0216)666 01 01 - Faks:(0216)666 16 00 www.albaraka.com.trTicaretSicil Numarası:206671/154214
+BüyükMükelleflerVergiDairesi0470008702
+2 / 210374879

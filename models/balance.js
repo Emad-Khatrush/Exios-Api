@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
+const { officeValidator } = require('../utils/offices');
 
 const balanceSchema = new mongoose.Schema({
+  deliveryInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', index: true },
+  deliveryPackageId: mongoose.Schema.Types.ObjectId,
+  deliveryClaimKeys: [String],
+  deliveryCanceledAt: Date,
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order', // Reference to the 'Order' collection
@@ -15,10 +20,11 @@ const balanceSchema = new mongoose.Schema({
     ref: 'User', // Reference to the 'User' collection
     required: true
   },
+  // Any office of the system (offices are data, spec C4)
   createdOffice: {
     type: String,
     required: true,
-    enum: ['benghazi', 'tripoli']
+    validate: officeValidator(),
   },
   balanceType: {
     type: String,
@@ -42,9 +48,11 @@ const balanceSchema = new mongoose.Schema({
     type: String,
     enum: ['invoice', 'receivedGoods', 'general'],
   },
+  // Missing on existing debts: retain their original funding treatment.
+  accountingKind: { type: String, enum: ['service_sale'] },
   status: {
     type: String,
-    enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost'],
+    enum: ['open', 'closed', 'waitingApproval', 'overdue', 'lost', 'canceled'],
     required: true,
     default: 'open'
   },
@@ -90,6 +98,13 @@ const balanceSchema = new mongoose.Schema({
     description: String
   }],
   debtPriority: String,
+  // Where the money of the debt came from (spec 19.8): 'cash' = paid out of a cash box or bank,
+  // 'partner' = paid for us by a partner on their current account (e.g. Aswaq), 'order' = a
+  // reminder of the order's own claim (no new entry). Old debts have none.
+  source: {
+    kind: { type: String, enum: ['cash', 'partner', 'order'] },
+    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'AccountingAccount' },
+  },
   // Set when an admin/accountant closes a debt by hand (e.g. 0.1$ left over).
   // The written-off remainder is moved to a separate 'lost' balance.
   manualClosure: {

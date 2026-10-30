@@ -1,3 +1,4 @@
+const { runInTransaction } = require('../accounting/services/transaction');
 const Inventory = require("../models/inventory");
 const Orders = require("../models/order");
 const ErrorHandler = require('../utils/errorHandler');
@@ -6,9 +7,21 @@ const { errorMessages } = require("../constants/errorTypes");
 const mongodb = require('mongodb');
 const Activities = require("../models/activities");
 const ReturnedPayments = require("../models/returnedPayments");
+const { emitAccountingEvent } = require('../accounting/services/events');
+const { tripDeletionBlockers } = require('../accounting/services/tripGuards');
+const { refreshTripPackages } = require('../accounting/services/tripLinks');
 const Users = require("../models/user");
 const PackageDeletion = require("../models/packageDeletion");
 const WarehouseCheck = require("../models/warehouseCheck");
+const tripNumbering = require('../utils/tripNumbering');
+const inventoryAttachments = require('../utils/inventoryAttachments');
+
+const creationKeyFor = (req, operation = 'trip') => {
+  const key = req.body?.creationRequestId;
+  if (key === undefined) return undefined;
+  if (typeof key !== 'string' || !/^[a-zA-Z0-9_-]{12,100}$/.test(key)) throw new ErrorHandler(400, 'Invalid trip creation request ID.');
+  return `${req.user._id}:${operation}:${key}`;
+};
 
 const { ObjectId } = mongodb;
 
@@ -20,9 +33,10 @@ module.exports.getFlightReport =async (req, res, next) => {
       return next(new ErrorHandler(400, 'Invalid flight or customer ID'));
     }
     const inventory = await Inventory.findById(id)
-      .select('voyage shippingType seaType shippedCountry inventoryPlace status arrivalDate inventoryFinishedDate createdAt odoReferenceCode note costPrice voyageAmount voyageCurrency isCaclulationDone expenses orders.paymentList._id')
+      .select('voyage shippingType seaType seaLoadType shippedCountry inventoryPlace status arrivalDate inventoryFinishedDate createdAt odoReferenceCode note costPrice voyageAmount voyageCurrency isCaclulationDone expenses orders.paymentList._id')
       .lean();
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    if (inventory.shippingType === 'sea' && !inventory.seaType && inventory.seaLoadType) inventory.seaType = inventory.seaLoadType.toLowerCase();
     const ids = [...new Set((inventory.orders || []).flatMap(order => {
       const packages = Array.isArray(order.paymentList) ? order.paymentList : [order.paymentList];
       return packages.map(pkg => pkg?._id).filter(Boolean).map(String);
@@ -51,7 +65,7 @@ module.exports.getFlightReport =async (req, res, next) => {
 
 module.exports.getInventory = async (req, res, next) => {
   try {
-    const { limit, skip, searchValue, searchType } = req.query;
+    const { limit, skip, searchValue, searchType, searchMode } = req.query;
 
     // Base query pipeline
     let query = [
@@ -82,29 +96,29 @@ module.exports.getInventory = async (req, res, next) => {
       }
     }
 
-    // Partial search: any part of a voyage, order ID or tracking number matches
-    // (the text index only matched whole words, so half a tracking number found nothing).
+    // Name search matches the voyage; number search matches tracking/order IDs.
     const search = String(searchValue || '').trim();
     if (search) {
       const pattern = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const trackingOnly = searchMode === 'tracking';
       const orderMatch = { $or: [{ orderId: pattern }, { 'paymentList.deliveredPackages.trackingNumber': pattern }] };
       // Packages found on the live orders, since the copies kept on the inventory can be outdated
-      const livePackages = await Orders.aggregate([
+      const livePackages = trackingOnly ? await Orders.aggregate([
         { $match: orderMatch },
         { $unwind: '$paymentList' },
         { $match: orderMatch },
         { $limit: 2000 },
         { $project: { _id: 0, id: '$paymentList._id' } },
-      ]);
+      ]) : [];
       query = [
         {
           $match: {
             inventoryType: 'inventoryGoods',
-            $or: [
-              { voyage: pattern },
+            $or: trackingOnly ? [
               { 'orders.orderId': pattern },
-              { 'orders.paymentList.deliveredPackages.trackingNumber': pattern },
               { 'orders.paymentList._id': { $in: livePackages.map((p) => p.id) } },
+            ] : [
+              { voyage: pattern },
             ],
           }
         },
@@ -220,14 +234,14 @@ module.exports.getInventory = async (req, res, next) => {
 
     // Return the response
     res.status(200).json({
-      results: inventory,
+      results: inventory.map(item => inventoryAttachments.serialize(item, req.user)),
       total: counts.all,
       countList: counts,
       limit: Number(limit),
       skip: Number(skip)
     });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
@@ -335,7 +349,7 @@ module.exports.getFlights = async (req, res, next) => {
       inventoryType: 'inventoryGoods',
       shippingType: FLIGHT_TYPES.includes(req.query.shippingType) ? req.query.shippingType : { $in: FLIGHT_TYPES },
     };
-    if (['tripoli', 'benghazi'].includes(req.query.office)) match.inventoryPlace = req.query.office;
+    if ((await require('../utils/offices').officeCodes()).includes(req.query.office)) match.inventoryPlace = req.query.office;
     const search = String(req.query.search || '').trim();
     if (search) match.voyage = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
@@ -388,27 +402,26 @@ module.exports.getFlights = async (req, res, next) => {
       },
     });
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
 
 module.exports.createInventory = async (req, res, next) => {
+  let uploadedAttachments = [];
+  let attachmentsCommitted = false;
   try {
-    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, seaType, note, costPrice, odoReferenceCode } = req.body;
-    const attachments = [];
-    if (req.files) {
-      for (let i = 0; i < req.files.length; i++) {
-        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-inventory");
-        attachments.push({
-          path: uploadedImg.publicUrl,
-          filename: uploadedImg.filename,
-          folder: uploadedImg.folder,
-          bytes: uploadedImg.bytes,
-          fileType: req.files[i].mimetype
-        });
-      }
+    const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, seaLoadType, note, costPrice, odoReferenceCode } = req.body;
+    const sea = require('../utils/tripSeaType').seaFields(req.body);
+    const creationKey = creationKeyFor(req);
+    if (creationKey) {
+      const existing = await Inventory.findOne({ creationKey });
+      if (existing) return res.status(200).json(inventoryAttachments.serialize(existing, req.user));
     }
+    const identity = !inventoryType || ['inventoryGoods', 'shippingVoyage'].includes(inventoryType) ? tripNumbering.scope(shippedCountry, shippingType, sea.seaLoadType) : null;
+    if (identity) await tripNumbering.ensureRule(identity);
+    const attachments = await inventoryAttachments.storeUploads(req);
+    uploadedAttachments = attachments;
 
     let odoCode = odoReferenceCode;
     if (!odoCode && shippedCountry === 'UAE') {
@@ -416,27 +429,48 @@ module.exports.createInventory = async (req, res, next) => {
       else if (shippingType === 'sea') odoCode = 243;
     }
 
-    const inventory = await Inventory.create({
-      createdBy: req.user,
-      attachments,
-      inventoryFinishedDate,
-      arrivalDate: arrivalDate || undefined,
-      voyageAmount,
-      voyage,
-      shippedCountry,
-      inventoryPlace,
-      voyageCurrency,
-      inventoryType,
-      shippingType,
-      seaType: shippingType === 'sea' && ['lcl', 'fcl'].includes(seaType) ? seaType : undefined,
-      note,
-      costPrice,
-      odoReferenceCode: odoCode
-    })
 
-    res.status(200).json(inventory);
+    const outcome = await runInTransaction(async (session) => {
+      if (creationKey) {
+        const existing = await Inventory.findOne({ creationKey }).session(session);
+        if (existing) return existing;
+      }
+      const inventoryId = new ObjectId();
+      const numbered = identity ? await tripNumbering.allocate(identity, inventoryId, req.user, session) : null;
+      const [inventory] = await Inventory.create([{
+        _id: inventoryId,
+        creationKey,
+        tripNumbering: numbered?.tripNumbering,
+        createdBy: req.user,
+        attachments,
+        inventoryFinishedDate,
+        arrivalDate: arrivalDate || undefined,
+        voyageAmount,
+        voyage: numbered?.voyage || String(voyage || '').trim(),
+        shippedCountry,
+        inventoryPlace,
+        voyageCurrency,
+        inventoryType,
+        shippingType,
+        ...sea,
+        note,
+        costPrice,
+        odoReferenceCode: odoCode
+      }], { session })
+
+      return inventory;
+    });
+    attachmentsCommitted = true;
+    const kept = new Set((outcome.attachments || []).map(file => String(file.storageId)));
+    await inventoryAttachments.discard(uploadedAttachments.filter(file => !kept.has(String(file.storageId))));
+    res.status(200).json(inventoryAttachments.serialize(outcome, req.user));
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    if (!attachmentsCommitted) await inventoryAttachments.discard(uploadedAttachments);
+    if (error.code === 11000 && req.body?.creationRequestId) {
+      const existing = await Inventory.findOne({ creationKey: creationKeyFor(req) }).catch(() => null);
+      if (existing) return res.status(200).json(inventoryAttachments.serialize(existing, req.user));
+    }
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -448,16 +482,16 @@ module.exports.getSingleInventory = async (req, res, next) => {
     const ordersIds = await Inventory.findById(req.params.id)
     .select("orders.paymentList._id")
     .lean();
-    
+
     const ids = (ordersIds?.orders || [])
       .map(o => o?.paymentList?._id)
       .filter(Boolean)
       .map(id => new ObjectId(id));
-    
+
     let orders = await Orders.aggregate([
       {
         $unwind: {
-          path: '$paymentList', 
+          path: '$paymentList',
           preserveNullAndEmptyArrays: true
         }
       },
@@ -476,7 +510,7 @@ module.exports.getSingleInventory = async (req, res, next) => {
 
     inventory.orders = orders;
 
-    res.status(200).json(inventory);
+    res.status(200).json(inventoryAttachments.serialize(inventory, req.user));
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
@@ -487,129 +521,25 @@ module.exports.getSingleInventory = async (req, res, next) => {
 // collection and are untouched, they just stop showing up under this voyage.
 module.exports.deleteInventory = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const inventory = await Inventory.findByIdAndDelete(id);
-    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    const outcome = await runInTransaction(async (session) => {
 
-    res.status(200).json({ message: 'Inventory deleted successfully' });
+      const { id } = req.params;
+      const existing = await Inventory.findById(id).select('inventoryType orders.paymentList._id expenses').lean().session(session);
+      if (!existing) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      // A trip with costs or packages is never deleted: its accounting history would be lost
+      const blockers = await tripDeletionBlockers(existing, { session });
+      if (blockers.length) throw new ErrorHandler(400, `This trip cannot be deleted: ${blockers.join('; ')}.`);
+      const inventory = await Inventory.findByIdAndDelete(id, { session });
+      if (!inventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      await emitAccountingEvent('trip', inventory._id, {}, req.user, { session });
+
+      return { message: 'Inventory deleted successfully' };
+    });
+    res.status(200).json(outcome);
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
-
-module.exports.addExpenseToInventory = async (req, res, next) => {
-  try {
-    const { inventoryId } = req.params; // e.g. /inventory/:inventoryId/expenses
-    const { description, amount, currency, rate, date } = req.body;
-
-    // 1️⃣ Find the inventory document
-    const inventory = await Inventory.findById(inventoryId);
-    if (!inventory) {
-      return res.status(404).json({ message: 'Inventory not found' });
-    }
-
-    // 2️⃣ Create the expense object
-    const expense = {
-      description,
-      amount,
-      currency,
-      rate: rate || 0,
-      date: date || new Date()
-    };
-
-    // 3️⃣ Push the expense to the expenses array
-    inventory.expenses.push(expense);
-
-    // 4️⃣ Save the document
-    await inventory.save();
-
-    // 5️⃣ Return updated inventory or expenses list
-    res.status(200).json({
-      message: 'Expense added successfully',
-      expenses: inventory.expenses
-    });
-
-  } catch (error) {
-    return next(new ErrorHandler(500, error.message));
-  }
-};
-
-module.exports.deleteExpenseOfInventory = async (req, res, next) => {
-  try {
-    const { inventoryId } = req.params;  // from URL
-    const { expenseId } = req.body;      // from request body
-
-    // 1. Find inventory by ID
-    const inventory = await Inventory.findById(inventoryId);
-    if (!inventory) {
-      return next(new ErrorHandler(404, 'Inventory not found'));
-    }
-
-    // 2. Remove expense from expenses array
-    const initialLength = inventory.expenses.length;
-    inventory.expenses = inventory.expenses.filter(exp => exp._id.toString() !== expenseId);
-
-    if (inventory.expenses.length === initialLength) {
-      return next(new ErrorHandler(404, 'Expense not found in this inventory'));
-    }
-
-    // 3. Save updated inventory
-    await inventory.save();
-
-    // 4. Return updated expenses list
-    res.status(200).json({
-      message: 'Expense deleted successfully',
-      expenses: inventory.expenses
-    });
-
-  } catch (error) {
-    return next(new ErrorHandler(500, error.message));
-  }
-};
-
-module.exports.updateExpenseOfInventory = async (req, res, next) => {
-  try {
-    const { inventoryId } = req.params; // from URL, e.g. /inventory/:inventoryId/expenses
-    const { editingId, description, amount, currency, date, rate } = req.body;
-
-    if (!editingId) {
-      return next(new ErrorHandler(400, 'editingId (expense id) is required'));
-    }
-
-    // Find the inventory by id
-    const inventory = await Inventory.findById(inventoryId);
-    if (!inventory) {
-      return next(new ErrorHandler(404, 'Inventory not found'));
-    }
-
-    // Find the expense by editingId inside expenses array
-    const expenseIndex = inventory.expenses.findIndex(exp => exp._id.toString() === editingId);
-    if (expenseIndex === -1) {
-      return next(new ErrorHandler(404, 'Expense not found'));
-    }
-
-    // Update the expense fields
-    inventory.expenses[expenseIndex] = {
-      ...inventory.expenses[expenseIndex]._doc, // preserve other fields
-      description,
-      amount,
-      currency,
-      date,
-      rate
-    };
-
-    // Save updated inventory
-    await inventory.save();
-
-    res.status(200).json({
-      message: 'Expense updated successfully',
-      expense: inventory.expenses[expenseIndex]
-    });
-
-  } catch (error) {
-    return next(new ErrorHandler(500, error.message));
-  }
-};
 
 module.exports.getInventoryOrders = async (req, res, next) => {
   try {
@@ -623,7 +553,7 @@ module.exports.getInventoryOrders = async (req, res, next) => {
     const orders = await Orders.aggregate([
       {
         $unwind: {
-          path: '$paymentList', 
+          path: '$paymentList',
           preserveNullAndEmptyArrays: true
         }
       },
@@ -653,7 +583,7 @@ module.exports.getInventoryOrders = async (req, res, next) => {
       }
     ]);
     if (!orders) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
-    
+
     res.status(200).json(orders);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
@@ -662,185 +592,139 @@ module.exports.getInventoryOrders = async (req, res, next) => {
 
 module.exports.addOrdersToTheInventory = async (req, res, next) => {
   try {
-    const paymentListIds = req.body.map(order => new ObjectId(order?.paymentList?._id));
-    const orders = await Orders.aggregate([
-      {
-        $unwind: '$paymentList'
-      },
-      {
-        $match: {
-          'paymentList._id': { $in: paymentListIds }
+    const outcome = await runInTransaction(async (session) => {
+
+      if (!Array.isArray(req.body) || !req.body.length) throw new ErrorHandler(400, 'Select packages');
+      const paymentListIds = [...new Set(req.body.map(order => String(order?.paymentList?._id)))].map(id => new ObjectId(id));
+      const orders = await Orders.aggregate([
+        {
+          $unwind: '$paymentList'
+        },
+        {
+          $match: {
+            'paymentList._id': { $in: paymentListIds },
+            isDeleted: { $ne: true },
+            isCanceled: { $ne: true }
+          }
         }
+      ]).session(session)
+
+      if (orders.length !== paymentListIds.length) throw new ErrorHandler(409, 'Some packages are no longer available');
+      for (const id of [...new Set(orders.map(order => String(order._id)))].sort()) {
+        await Orders.updateOne({ _id: id }, { $inc: { accountingMutationVersion: 1 } }, { session });
       }
-    ])
 
-    // ?office=tripoli|benghazi targets that office's warehouse, resolved the
-    // same way getWarehouseInventory does (newest one), instead of callers
-    // hardcoding an inventory id that breaks when the warehouse is recreated.
-    let inventoryId = req.query.id;
-    if (req.query.office) {
-      if (!WAREHOUSE_OFFICES.includes(req.query.office)) return next(new ErrorHandler(400, 'Unknown office'));
-      // Created on first use, so moving packages to an office with no warehouse yet works
-      const warehouse = await getOrCreateWarehouse(req.query.office, req.user);
-      inventoryId = warehouse._id;
-    }
+      // ?office=tripoli|benghazi targets that office's warehouse, resolved the
+      // same way getWarehouseInventory does (newest one), instead of callers
+      // hardcoding an inventory id that breaks when the warehouse is recreated.
+      let inventoryId = req.query.id;
+      if (req.query.office) {
+        if (!WAREHOUSE_OFFICES.includes(req.query.office)) throw new ErrorHandler(400, 'Unknown office');
+        // Created on first use, so moving packages to an office with no warehouse yet works
+        const warehouse = await getOrCreateWarehouse(req.query.office, req.user, { session });
+        inventoryId = warehouse._id;
+      }
 
-    // No upsert: a missing inventory must fail, not be silently recreated as
-    // a blank inventory holding these packages.
-    const inventory = await Inventory.findOneAndUpdate(
-      { _id: inventoryId },
-      {
-        $push: {
-          "orders": {
-            $each: orders.map(orderArray => orderArray)
+      // No upsert: a missing inventory must fail, not be silently recreated as
+      // a blank inventory holding these packages.
+      const savedInventory = await Inventory.findById(inventoryId).session(session);
+      if (!savedInventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      if (savedInventory.inventoryType !== 'warehouseInventory') {
+        const blocked = orders.filter(order => order.shippingBlocked);
+        if (blocked.length) throw new ErrorHandler(409, `Shipping is blocked for order(s): ${[...new Set(blocked.map(order => order.orderId))].join(', ')}. Remove the restriction before adding them to a trip.`);
+      }
+      const present = new Set((savedInventory.orders || []).map(order => String(order.paymentList?._id)));
+      const additions = orders.filter(order => !present.has(String(order.paymentList._id)));
+      const inventory = await Inventory.findOneAndUpdate(
+        { _id: inventoryId },
+        {
+          $push: {
+            "orders": {
+              $each: additions
+            }
+          },
+        },
+        { new: true, session }
+      )
+      .populate(['createdBy', 'orders'])
+
+      if (!inventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      // The packages' trip links follow the trip's list (accounting reads them)
+      await refreshTripPackages(inventory._id, { session });
+      await emitAccountingEvent('trip', inventory._id, {}, req.user, { session });
+      const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
+
+      let updatedOrders = await Orders.aggregate([
+        {
+          $unwind: {
+            path: '$paymentList',
+            preserveNullAndEmptyArrays: true
           }
         },
-      },
-      { new: true }
-    )
-    .populate(['createdBy', 'orders'])
-
-    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-    const ids = inventory.orders.map(order => new ObjectId(order.paymentList?._id));
-    
-    let updatedOrders = await Orders.aggregate([
-      {
-        $unwind: {
-          path: '$paymentList', 
-          preserveNullAndEmptyArrays: true
+        {
+          $match: {
+            'paymentList._id': { $in: ids }
+          }
+        },
+        {
+          $sort: {
+            orderId: -1
+          }
         }
-      },
-      {
-        $match: {
-          'paymentList._id': { $in: ids }
-        }
-      },
-      {
-        $sort: {
-          orderId: -1
-        }
-      }
-    ]);
-    updatedOrders = await Orders.populate(updatedOrders, [{ path: "madeBy" }, { path: "user" }, { path: "orders" }]);
+      ]).session(session);
+      updatedOrders = await Orders.populate(updatedOrders, [{ path: "madeBy" }, { path: "user" }, { path: "orders" }]);
 
-    inventory.orders = updatedOrders;
+      inventory.orders = updatedOrders;
 
-    res.status(200).json(inventory);
+      return inventory;
+    });
+    res.status(200).json(inventoryAttachments.serialize(outcome, req.user));
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
 module.exports.removeOrdersFromInventory = async (req, res, next) => {
   try {
-    const { body } = req;
-    const paymentList = body;
+    const outcome = await runInTransaction(async (session) => {
 
-    // See the comment on deleteWarehousePackage: Mongoose's query builder
-    // (findOneAndUpdate included) silently no-ops this $pull on real
-    // documents, so the raw driver is used here instead, then the updated
-    // document is re-fetched normally (with populate) for the response.
-    await Inventory.collection.updateOne(
-      { _id: new ObjectId(req.query.id) },
-      {
-        $pull: {
-          orders: {
-            $or: [
-              { "paymentList._id": { $in: paymentList.map(id => id) } },
-              { "paymentList._id": { $in: paymentList.map(id => new ObjectId(id)) } }
-            ]
+      const { body } = req;
+      const paymentList = body;
+
+      // See the comment on deleteWarehousePackage: Mongoose's query builder
+      // (findOneAndUpdate included) silently no-ops this $pull on real
+      // documents, so the raw driver is used here instead, then the updated
+      // document is re-fetched normally (with populate) for the response.
+      await Inventory.collection.updateOne(
+        { _id: new ObjectId(req.query.id) },
+        {
+          $pull: {
+            orders: {
+              $or: [
+                { "paymentList._id": { $in: paymentList.map(id => id) } },
+                { "paymentList._id": { $in: paymentList.map(id => new ObjectId(id)) } }
+              ]
+            }
           }
         }
-      }
-    );
+      , { session });
 
-    const inventory = await Inventory.findById(req.query.id).populate(['createdBy', 'orders']);
-    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+      const inventory = await Inventory.findById(req.query.id).populate(['createdBy', 'orders']).session(session);
+      if (!inventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      // The packages' trip links follow the trip's list (accounting reads them)
+      await refreshTripPackages(inventory._id, { session });
+      await emitAccountingEvent('trip', inventory._id, {}, req.user, { session });
 
-    res.status(200).json(inventory);
+      return inventory;
+    });
+    res.status(200).json(inventoryAttachments.serialize(outcome, req.user));
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
-module.exports.uploadFiles= async (req, res, next) => {
-  const { id } = req.body;
-
-  const images = [];
-  const changedFields = [];
-
-  if (req.files) {
-    for (let i = 0; i < req.files.length; i++) {
-      const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-inventory");
-      images.push({
-        path: uploadedImg.publicUrl,
-        filename: uploadedImg.filename,
-        folder: uploadedImg.folder,
-        bytes: uploadedImg.bytes,
-        fileType: req.files[i].mimetype
-      });
-      changedFields.push({
-        label: 'image',
-        value: 'image',
-        changedFrom: '',
-        changedTo: uploadedImg.publicUrl
-      })
-    }
-  }
-  
-  const inventory = await Inventory.findByIdAndUpdate(id, {
-    $push: { "attachments": images },
-  });
-  
-  await Activities.create({
-    user: req.user,
-    details: {
-      path: '/inventory',
-      status: 'added',
-      type: 'inventory',
-      actionName: 'image',
-      actionId: inventory._id
-    },
-    changedFields
-  })
-  res.status(200).json(inventory)
-}
-
-module.exports.deleteFiles = async (req, res, next) => {
-  try {
-    const inventory = await Inventory.findByIdAndUpdate(req.body.id, {
-      $pull: {
-        attachments: {
-          filename: req.body.image.filename
-        }
-      }
-    }, { new: true });
-
-    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
-
-    await Activities.create({
-      user: req.user,
-      details: {
-        path: '/inventory',
-        status: 'deleted',
-        type: 'inventory',
-        actionName: 'image',
-        actionId: inventory._id
-      },
-      changedFields: [{
-        label: 'image',
-        value: 'image',
-        changedFrom: req.body.image.path,
-        changedTo: ''
-      }]
-    })
-
-    res.status(200).json({ isSuccess: true });
-  } catch (error) {
-    console.log(error);
-    return next(new ErrorHandler(404, error.message));
-  }
-}
+module.exports.uploadFiles = inventoryAttachments.upload;
+module.exports.deleteFiles = inventoryAttachments.remove;
 
 const WAREHOUSE_OFFICES = ['tripoli', 'benghazi'];
 const WAREHOUSE_NAMES = { tripoli: 'مخزن طرابلس', benghazi: 'مخزن بنغازي' };
@@ -848,10 +732,12 @@ const WAREHOUSE_NAMES = { tripoli: 'مخزن طرابلس', benghazi: 'مخزن 
 // The office warehouse is the newest 'warehouseInventory' of that office. When an office has
 // none yet it is created here, so the warehouse page and "move to warehouse" never hit a 404.
 // The upsert is atomic, so two requests at the same time still end up with one warehouse.
-const getOrCreateWarehouse = async (office, user) => {
+const getOrCreateWarehouse = async (office, user, { session } = {}) => {
+  if (!session) return runInTransaction((activeSession) => getOrCreateWarehouse(office, user, { session: activeSession }));
+  await require('../accounting/services/counter').nextSeq(`WAREHOUSE:${office}`, session);
   const existing = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: office })
     .sort({ createdAt: -1 })
-    .select('_id');
+    .select('_id').session(session || null);
   if (existing) return existing;
 
   return Inventory.findOneAndUpdate(
@@ -868,7 +754,7 @@ const getOrCreateWarehouse = async (office, user) => {
         orders: [],
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, new: true, setDefaultsOnInsert: true, session }
   ).select('_id');
 };
 
@@ -886,7 +772,7 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     let orders = await Orders.aggregate([
       {
         $unwind: {
-          path: '$paymentList', 
+          path: '$paymentList',
           preserveNullAndEmptyArrays: true
         }
       },
@@ -903,7 +789,7 @@ module.exports.getWarehouseInventory = async (req, res, next) => {
     ]);
     orders = await Orders.populate(orders, [{ path: "madeBy" }, { path: "user" }]);
     inventory[0].orders = orders;
-    res.status(200).json(inventory);
+    res.status(200).json(inventory.map(item => inventoryAttachments.serialize(item, req.user)));
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }
@@ -966,7 +852,7 @@ module.exports.deleteWarehousePackage = async (req, res, next) => {
 
     res.status(200).json(deletion);
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
@@ -983,7 +869,7 @@ module.exports.getPackageDeletions = async (req, res, next) => {
 
     res.status(200).json(deletions);
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
@@ -1023,7 +909,7 @@ module.exports.submitWarehouseCheck = async (req, res, next) => {
     const populated = await check.populate('checkedBy', 'firstName lastName');
     res.status(201).json(populated);
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
@@ -1039,39 +925,46 @@ module.exports.getWarehouseChecks = async (req, res, next) => {
 
     res.status(200).json(checks);
   } catch (error) {
-    return next(new ErrorHandler(500, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 };
 
 module.exports.updateInventory = async (req, res, next) => {
   try {
-    const { id } = req.query;
-    if (!id) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    const outcome = await runInTransaction(async (session) => {
 
-    const update = { ...req.body };
+      const { id } = req.query;
+      if (!id) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
 
-    // LCL / FCL only means something on a sea trip
-    if (update.seaType !== undefined && !['lcl', 'fcl'].includes(update.seaType)) delete update.seaType;
-    const currentTrip = await Inventory.findById(id).select('shippingType seaType').lean();
-    if ((update.shippingType || currentTrip?.shippingType) !== 'sea') {
-      delete update.seaType;
-      if (currentTrip?.seaType) update.$unset = { seaType: 1 };
-    }
-
-    // The ready date (inventoryFinishedDate) is the day the inventory is marked finished (اكتملت).
-    // Set it here when the status changes to finished and no date was sent with it.
-    if (update.status === 'finished' && !update.inventoryFinishedDate) {
-      const current = await Inventory.findById(id).select('status');
-      if (current && current.status !== 'finished') {
-        update.inventoryFinishedDate = new Date();
+      const currentInventory = await Inventory.findById(id).session(session);
+      if (!currentInventory) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
+      const update = { ...req.body };
+      if (Object.keys(update).some(key => key.startsWith('$') || /^(tripNumbering|creationKey|attachments)(\.|$)/.test(key))) {
+        throw new ErrorHandler(400, 'Sequence details and attachments must be changed using their dedicated actions.');
       }
-    }
+      Object.assign(update, require('../utils/tripSeaType').seaFields(update, currentInventory));
+      // Package membership uses the dedicated add/remove operations.
+      if (update.orders !== undefined) throw new ErrorHandler(400, 'Use package add/remove actions to change trip packages');
 
-    const updatedInventory = await Inventory.updateOne({ _id: id }, update, { new: true });
+      // The ready date (inventoryFinishedDate) is the day the inventory is marked finished (اكتملت).
+      // Set it here when the status changes to finished and no date was sent with it.
+      if (update.status === 'finished' && !update.inventoryFinishedDate) {
+        const current = await Inventory.findById(id).select('status').session(session);
+        if (current && current.status !== 'finished') {
+          update.inventoryFinishedDate = new Date();
+        }
+      }
 
-    res.status(200).json(updatedInventory);
+      const updatedInventory = await Inventory.updateOne({ _id: id }, update, { new: true, session });
+      // The packages' trip links follow the trip's list (accounting reads them)
+      await refreshTripPackages(id, { session });
+      await emitAccountingEvent('trip', id, {}, req.user, { session });
+
+      return updatedInventory;
+    });
+    res.status(200).json(outcome);
   } catch (error) {
-    return next(new ErrorHandler(404, error.message));
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
 
@@ -1189,83 +1082,112 @@ module.exports.createReturnedPayment = async (req, res, next) => {
 // Creates a new domestic inventory holding them, then removes them from the warehouse.
 module.exports.createInternalShipping = async (req, res, next) => {
   try {
-    const { office } = req.params;
-    const { paymentListIds, voyage, destination, note } = req.body || {};
+    const identity = tripNumbering.scope('LY', 'domestic', null);
+    await tripNumbering.ensureRule(identity);
+    const creationKey = creationKeyFor(req, 'internal');
+    const outcome = await runInTransaction(async (session) => {
+      if (creationKey) {
+        const existing = await Inventory.findOne({ creationKey }).session(session);
+        if (existing) return { _id: existing._id, voyage: existing.voyage, movedCount: existing.orders.length };
+      }
 
-    if (!WAREHOUSE_OFFICES.includes(office)) return next(new ErrorHandler(400, 'Unknown office'));
-    if (!WAREHOUSE_OFFICES.includes(destination)) return next(new ErrorHandler(400, 'Choose the destination office'));
-    if (!String(voyage || '').trim()) return next(new ErrorHandler(400, 'Shipment name is required'));
-    if (!Array.isArray(paymentListIds) || paymentListIds.length === 0) {
-      return next(new ErrorHandler(400, 'Select at least one package'));
-    }
+      const { office } = req.params;
+      const { paymentListIds, voyage, destination, note } = req.body || {};
 
-    const warehouse = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: office }).sort({ createdAt: -1 });
-    if (!warehouse) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+      if (!WAREHOUSE_OFFICES.includes(office)) throw new ErrorHandler(400, 'Unknown office');
+      if (!WAREHOUSE_OFFICES.includes(destination)) throw new ErrorHandler(400, 'Choose the destination office');
+      if (!Array.isArray(paymentListIds) || paymentListIds.length === 0) {
+        throw new ErrorHandler(400, 'Select at least one package');
+      }
 
-    // Every selected package must still be in this warehouse (someone may have moved or deleted it meanwhile)
-    const inWarehouse = new Set((warehouse.orders || []).map(order => String(order.paymentList?._id)));
-    const requested = Array.from(new Set(paymentListIds.map(String)));
-    const missing = requested.filter(id => !inWarehouse.has(id));
-    if (missing.length > 0) {
-      return next(new ErrorHandler(409, `${missing.length} of the selected packages are no longer in this warehouse. Refresh the page and try again.`));
-    }
+      const warehouse = await Inventory.findOne({ inventoryType: 'warehouseInventory', inventoryPlace: office }).sort({ createdAt: -1 }).session(session);
+      if (!warehouse) throw new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND);
 
-    // Fresh copies of the packages, the same way packages are added to any inventory
-    const objectIds = requested.map(id => new ObjectId(id));
-    const orders = await Orders.aggregate([
-      { $unwind: '$paymentList' },
-      { $match: { 'paymentList._id': { $in: objectIds } } }
-    ]);
+      // Every selected package must still be in this warehouse (someone may have moved or deleted it meanwhile)
+      const inWarehouse = new Set((warehouse.orders || []).map(order => String(order.paymentList?._id)));
+      const requested = Array.from(new Set(paymentListIds.map(String)));
+      const missing = requested.filter(id => !inWarehouse.has(id));
+      if (missing.length > 0) {
+        throw new ErrorHandler(409, `${missing.length} of the selected packages are no longer in this warehouse. Refresh the page and try again.`);
+      }
 
-    const shipment = await Inventory.create({
-      createdBy: req.user,
-      inventoryType: 'inventoryGoods',
-      shippingType: 'domestic',
-      shippedCountry: 'LY',
-      inventoryPlace: destination,
-      voyage: String(voyage).trim(),
-      note: [`شحن داخلي من ${WAREHOUSE_NAMES[office]}`, String(note || '').trim()].filter(Boolean).join('\n'),
-      status: 'processing',
-      orders,
-    });
+      // Fresh copies of the packages, the same way packages are added to any inventory
+      const objectIds = requested.map(id => new ObjectId(id));
+      const orders = await Orders.aggregate([
+        { $unwind: '$paymentList' },
+        { $match: { 'paymentList._id': { $in: objectIds } } }
+      ]).session(session);
+      if (orders.length !== requested.length) throw new ErrorHandler(409, 'Some selected packages are missing');
+      const blocked = orders.filter(order => order.shippingBlocked);
+      if (blocked.length) throw new ErrorHandler(409, `Shipping is blocked for order(s): ${[...new Set(blocked.map(order => order.orderId))].join(', ')}. Remove the restriction before transporting them.`);
+      for (const id of [...new Set(orders.map(order => String(order._id)))].sort()) {
+        const locked = await Orders.updateOne({ _id: id, isDeleted: { $ne: true }, isCanceled: { $ne: true } }, { $inc: { accountingMutationVersion: 1 } }, { session });
+        if (locked.modifiedCount !== 1) throw new ErrorHandler(409, 'A selected order is no longer available');
+      }
 
-    // Raw driver $pull, see deleteWarehousePackage for why Mongoose can't be used here.
-    // If it fails, remove the new shipment so the packages are not in two places.
-    try {
-      await Inventory.collection.updateOne(
-        { _id: warehouse._id },
-        {
-          $pull: {
-            orders: {
-              $or: [
-                { 'paymentList._id': { $in: requested } },
-                { 'paymentList._id': { $in: objectIds } }
-              ]
+      const inventoryId = new ObjectId();
+      const numbered = await tripNumbering.allocate(identity, inventoryId, req.user, session);
+      if (!numbered && !String(voyage || '').trim()) throw new ErrorHandler(400, 'Shipment name is required');
+      const [shipment] = await Inventory.create([{
+        _id: inventoryId,
+        creationKey,
+        tripNumbering: numbered?.tripNumbering,
+        createdBy: req.user,
+        inventoryType: 'inventoryGoods',
+        shippingType: 'domestic',
+        shippedCountry: 'LY',
+        inventoryPlace: destination,
+        voyage: numbered?.voyage || String(voyage).trim(),
+        note: [`شحن داخلي من ${WAREHOUSE_NAMES[office]}`, String(note || '').trim()].filter(Boolean).join('\n'),
+        status: 'processing',
+        orders,
+      }], { session });
+
+      // Raw driver $pull, see deleteWarehousePackage for why Mongoose can't be used here.
+      // Any failure rolls back both the shipment and the warehouse change.
+      try {
+        await Inventory.collection.updateOne(
+          { _id: warehouse._id },
+          {
+            $pull: {
+              orders: {
+                $or: [
+                  { 'paymentList._id': { $in: requested } },
+                  { 'paymentList._id': { $in: objectIds } }
+                ]
+              }
             }
           }
-        }
-      );
-    } catch (error) {
-      await Inventory.deleteOne({ _id: shipment._id });
-      throw error;
-    }
+        , { session });
+      } catch (error) {
+        // The transaction rolls back the newly created shipment.
+        throw error;
+      }
 
-    await Activities.create({
-      user: req.user,
-      details: {
-        path: `/inventory/${shipment._id}/edit`,
-        status: 'added',
-        type: 'inventory',
-        actionId: String(shipment._id),
-      },
-      changedFields: [
-        { label: 'Internal shipping', value: `${requested.length} packages from ${office} to ${destination}` },
-      ],
+      await Activities.create([{
+        user: req.user,
+        details: {
+          path: `/inventory/${shipment._id}/edit`,
+          status: 'added',
+          type: 'inventory',
+          actionId: String(shipment._id),
+        },
+        changedFields: [
+          { label: 'Internal shipping', value: `${requested.length} packages from ${office} to ${destination}` },
+        ],
+      }], { session });
+
+      // The packages' trip links follow the trip's list (accounting reads them)
+      await refreshTripPackages(shipment._id, { session });
+      await emitAccountingEvent('trip', shipment._id, {}, req.user, { session });
+      return { _id: shipment._id, voyage: shipment.voyage, movedCount: requested.length };
     });
-
-    res.status(200).json({ _id: shipment._id, voyage: shipment.voyage, movedCount: requested.length });
+    res.status(200).json(outcome);
   } catch (error) {
-    console.log(error);
-    return next(new ErrorHandler(500, error.message));
+    if (error.code === 11000 && req.body?.creationRequestId) {
+      const existing = await Inventory.findOne({ creationKey: creationKeyFor(req, 'internal') }).catch(() => null);
+      if (existing) return res.status(200).json({ _id: existing._id, voyage: existing.voyage, movedCount: existing.orders.length });
+    }
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
   }
 }
