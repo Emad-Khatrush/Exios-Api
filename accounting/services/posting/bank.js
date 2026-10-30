@@ -1184,6 +1184,9 @@ async function guesser(accountId, settings = preferences()) {
     const other = (old.entryId.lines || []).find((l) => String(l.accountId) !== String(accountId));
     if (other) learned.set(key, { accountId: other.accountId, office: other.office });
   });
+  // Deployed profile provides exact-description fallbacks; live approved history wins.
+  const imported = await require('../../models/bankMatchingProfile').BankMatchingHint.find({ accountId }).lean();
+  for (const hint of imported) if (!learned.has(hint.description)) learned.set(hint.description, { accountId: hint.counterAccountId, office: hint.office });
   const learnedAccounts = new Map((await Account.find({ _id: { $in: [...learned.values()].map((v) => v.accountId) }, isActive: true }).select('code name').lean()).map((a) => [String(a._id), a]));
 
   return (line) => {

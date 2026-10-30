@@ -193,7 +193,7 @@ const CHECKS = {
     const { results } = await purchaseProfitability({});
     const items = results.filter((r) => r.stuckCost).map((r) => ({ label: r.orderNumber, usd: r.costInProgress, url: `/accounting/customer-invoices/${r.orderId}` }));
     return result('canceledOrderCosts', 'warn', 'طلب ملغى عليه تكلفة مورد معلّقة',
-      'دُفع للمورد على طلب أُلغي. سوِّها من صفحة الطلب في المحاسبة: ما أعاده المورد يُسجَّل «ريفاند» بمبلغ محفظة صفر، أو إشعار دائن على فاتورة المورد، أو تُنقل التكلفة لطلب آخر بقيد يدوي (130200 من الطلب الملغى إلى الطلب الجديد).',
+      'إلغاء طلبية العميل لا يلغي تكلفة المورد. افتح الطلبية لمراجعة فواتيرها: سجّل ما أعاده المورد كاسترداد دون إضافة جديدة لمحفظة العميل إذا سبق ردها، أو إشعارًا دائنًا، أو إعادة تصنيف موثقة بحسب الواقع. لا تُحذف التكلفة تلقائيًا.',
       items, '/accounting/reports?tab=purchases');
   },
 
@@ -327,14 +327,32 @@ const CHECKS = {
       UserStatement.find({ ...after, 'accountingSource.model': { $exists: false } }).select('_id description amount currency user createdAt').lean(),
       OrderPaymentHistory.find({ ...after, paymentType: 'cash' }).select('_id receivedAmount currency createdAt').lean(),
       Order.find({ ...after, unsureOrder: { $ne: true } }).select('_id orderId createdAt').lean(),
-      Balance.find({ ...after, balanceType: 'debt' }).select('_id notes createdAt').lean(),
+      Balance.find({ ...after, balanceType: 'debt' }).select('_id notes createdAt status sourceBalance owner currency initialAmount').lean(),
     ]);
     const recorded = new Set((await AccountingEvent.distinct('refId', { createdAt: { $gt: settings.cutoffAt } })).map(String));
+    const derived = debts.filter(d => d.status === 'lost' && d.sourceBalance);
+    const parents = new Map((await Balance.find({ _id: { $in: derived.map(d => d.sourceBalance) } })
+      .select('_id owner currency status manualClosure').lean()).map(d => [String(d._id), d]));
+    const completedWriteOffs = new Set((await AccountingEvent.distinct('refId', { type: 'balanceWriteOff',
+      refId: { $in: derived.map(d => d.sourceBalance) }, $or: [{ status: { $in: ['done', 'covered'] } }, { status: 'skipped', 'result.skipped': 'already posted' }] })).map(String));
+    const postedWriteOffs = new Set((await JournalEntry.find({ eventType: 'DEBT_WRITEOFF', status: 'posted', reversalOf: null,
+      'source.model': 'Balance', 'source.id': { $in: derived.map(d => d.sourceBalance) } }).select('source eventKey').lean())
+      .filter(e => e.eventKey === `DEBT_WRITEOFF:${e.source.id}`).map(e => String(e.source.id)));
+    // A derived loss is already represented by its parent's completed write-off, not a new debt event.
+    const coveredLoss = d => {
+      if (d.status !== 'lost' || !d.sourceBalance) return false;
+      const parent = parents.get(String(d.sourceBalance));
+      return parent?.status === 'closed' && String(parent.manualClosure?.lostBalance) === String(d._id)
+        && String(parent.owner) === String(d.owner) && parent.currency === d.currency
+        && Number(parent.manualClosure?.writtenOffAmount) > 0
+        && Number(parent.manualClosure.writtenOffAmount) === Number(d.initialAmount)
+        && completedWriteOffs.has(String(parent._id)) && postedWriteOffs.has(String(parent._id));
+    };
     const items = [
       ...statements.filter((s) => !recorded.has(String(s._id))).map((s) => ({ label: `كشف: ${s.description || ''} · ${s.amount} ${s.currency}`, day: s.createdAt, url: `/user/${s.user}` })),
       ...cashPayments.filter((p) => !recorded.has(String(p._id))).map((p) => ({ label: `دفع نقدي: ${p.receivedAmount} ${p.currency}`, day: p.createdAt })),
       ...orders.filter((o) => !recorded.has(String(o._id))).map((o) => ({ label: `طلب ${o.orderId}`, day: o.createdAt, url: `/invoice/${o._id}/edit` })),
-      ...debts.filter((d) => !recorded.has(String(d._id))).map((d) => ({ label: `دين: ${d.notes || ''}`, day: d.createdAt })),
+      ...debts.filter((d) => !recorded.has(String(d._id)) && !coveredLoss(d)).map((d) => ({ label: `دين: ${d.notes || ''}`, day: d.createdAt })),
     ];
     return result('liveCoverage', 'error', title, 'كل كشف ودفعة وطلب ودين بعد لحظة الانتقال يُسجَّل حدثاً للترحيل. افتح العملية واحفظها، أو أبلغ المبرمج.', items);
   },

@@ -1,0 +1,5437 @@
+{
+  "version": 1,
+  "accounts": [
+    {
+      "code": "110101",
+      "type": "asset",
+      "currency": "USD",
+      "isCash": true,
+      "office": "tripoli"
+    },
+    {
+      "code": "110103",
+      "type": "asset",
+      "currency": "USD",
+      "isCash": true,
+      "office": "benghazi"
+    },
+    {
+      "code": "110107",
+      "type": "asset",
+      "currency": "USD",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "110201",
+      "type": "asset",
+      "currency": "USD",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "110202",
+      "type": "asset",
+      "currency": "USD",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "110203",
+      "type": "asset",
+      "currency": "TRY",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "110204",
+      "type": "asset",
+      "currency": "TRY",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "110302",
+      "type": "asset",
+      "currency": "CNY",
+      "isCash": true,
+      "office": "china"
+    },
+    {
+      "code": "110401",
+      "type": "asset",
+      "currency": "USD",
+      "isCash": true,
+      "office": "tripoli"
+    },
+    {
+      "code": "160100",
+      "type": "asset",
+      "currency": "TRY",
+      "isCash": false,
+      "office": "turkey"
+    },
+    {
+      "code": "160200",
+      "type": "asset",
+      "currency": "TRY",
+      "isCash": false,
+      "office": "turkey"
+    },
+    {
+      "code": "219100",
+      "type": "liability",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "219200",
+      "type": "liability",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "250100",
+      "type": "liability",
+      "currency": "TRY",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "250200",
+      "type": "liability",
+      "currency": "TRY",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "260100",
+      "type": "liability",
+      "currency": "USD",
+      "isCash": true,
+      "office": "tripoli"
+    },
+    {
+      "code": "260200",
+      "type": "liability",
+      "currency": "TRY",
+      "isCash": true,
+      "office": "turkey"
+    },
+    {
+      "code": "340000",
+      "type": "equity",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "390000",
+      "type": "equity",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "510300",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "510400",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "530200",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "530400",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "531000",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "531100",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "531500",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "531600",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    },
+    {
+      "code": "531700",
+      "type": "expense",
+      "currency": "USD",
+      "isCash": false,
+      "office": ""
+    }
+  ],
+  "vendors": [
+    {
+      "name": "1688",
+      "seedKey": "merchant:1688",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "1688",
+        "1688.com"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "1688 com internet sgp",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "250100",
+          "merchant": "1688 com luxembourg lux",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 mt5ultra黑科技800w像素可反向充电仓m02智能眼镜看图识物ai翻译 数码电器",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 肛周护理喷雾 sonlh mnon 跨境久坐痔疮不适护理喷剂清爽喷雾 日用百货",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 潜水服3 5 7mm分体连帽迷彩伪装猎渔服加厚保暖自由潜冲浪湿衣cr 医疗健康",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 定妆高光粉饼修容色妆效钻石绚丽粉嫩细腻色彩自然闪粉多8g可选 美容美发",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 香薰蜡烛小众轻奢生日礼物居家卧室无烟礼盒装生日情人节伴手礼 商业服务",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 跨境现货水光浓彩唇膏fenty蕾哈娜新款星辰镜面唇釉唇蜜裸色口红 美容美发",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 祖马伊索龙蓝风铃全身香氛三件套龙身体乳沐浴250ml香水限量款 美容美发",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 跨境外贸现货欧美风女装秋季新款时尚潮流百搭扎染女士风衣外套 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 美式工装风大口袋轻奢高级质感绊带设计修身气质西装外套43418184 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 欧美跨境速卖通爆款潮流时尚百搭3色珠片饰小立领夹克外套 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 英国kurt geiger 新款千鸟格包烫钻百搭单肩斜挎鹰头包链条包彩钻 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 跨境皮鞋男秋冬季新款英伦软底男士休闲一脚蹬商务正装新郎结婚鞋 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 鹰头单鞋女平底鞋千鸟格烫钻新款kurt geiger广州一件代发 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 2026秋季新款低帮系带商务正装皮鞋男布洛克增高休闲男鞋一件代发 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 跨境爆款w895蓝牙耳机数显无线高音质超长续航入耳式通用降噪耳机 数码电器",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 工厂批发tws跨境爆款m10数显高音质895b入耳式游戏降噪q86无线f9 数码电器",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 跨境hk6一代高音质无线蓝牙耳机2026新款超长续航运动无线耳机 数码电器",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 2025夏季欧洲站时尚潮牌轻奢男t恤短袖星星烫钻网红小众半袖t体恤 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 新款无线入耳式蓝牙耳机a9pro彩屏降噪超长续航华强北运动耳机 数码电器",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 跨境爆款m10蓝牙耳机m19m20m28m30m25m90m5m32入耳式无线耳机 数码电器",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 艺术生通勤包复古文艺钢琴蕾丝双肩斜挎包简约质感公文小背包小号 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 可爱小猫刺绣德训鞋女秋季软底复古板鞋学生百搭休闲软底阿甘鞋 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 2026新款跨境tiktok欧美豹纹修身性感收腰长袖连衣裙 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 bbl人体模型大码假人模特展示架欧美全身服装店金色半身女装人台 服饰装扮",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110302",
+          "merchant": "1688平台商家 全款交易 欧美风女装2025春夏新款时尚性感长袖修身豹纹印花抽绳包臀连衣裙 服饰装扮",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "6thStreet",
+      "seedKey": "merchant:6thstreet",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "6thstreet"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "A TO Z",
+      "seedKey": "",
+      "bankNameKey": "a to z",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00478 giden havale odemesi",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co farwaniya block 1 90 street alhamid commercial floor 1 of",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00447 giden havale odemesi",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00431 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00425 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00413 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00401 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00398 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00381 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00367 giden havale odemesi",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "a to z international general trading co 203005326os00479 giden havale odemesi",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "A. M. A.",
+      "seedKey": "",
+      "bankNameKey": "a m a",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "a m a aboubakr 收钱码收款 商业服务",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Alibaba",
+      "seedKey": "merchant:alibaba",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "alibaba",
+        "alibaba.com"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "alibaba com luxembourg lux",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "AliExpress",
+      "seedKey": "merchant:aliexpress",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "aliexpress"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "aliexpress london gbr",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "AlQFILA",
+      "seedKey": "merchant:alqfila",
+      "bankNameKey": "",
+      "type": "service",
+      "defaultCurrency": "USD",
+      "bankPurpose": "yuan_purchase",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "alqfila",
+        "al qfila",
+        "alqafila",
+        "al qafila"
+      ],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "alqfila 收钱码收款 商业服务",
+          "counterAccountCode": "530200"
+        }
+      ]
+    },
+    {
+      "name": "Alrehabstore Riyadh SAU",
+      "seedKey": "",
+      "bankNameKey": "alrehabstore riyadh sau",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "alrehabstore riyadh sau",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Amazon",
+      "seedKey": "merchant:amazon",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "amazon",
+        "amzn"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "amazon mark seattle usa",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "250100",
+          "merchant": "amznmktplace nm55e71z4 london gbr",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "250100",
+          "merchant": "amznmktplace nf1x94wo4 london gbr",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "AMWAL PAY AL",
+      "seedKey": "",
+      "bankNameKey": "amwal pay al",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "amwal pay al ghubra omn",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "AMWALPAYAL GHUBRAMUOM",
+      "seedKey": "",
+      "bankNameKey": "amwalpayal ghubramuom",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250200",
+          "merchant": "amwalpayal ghubramuom",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "ANTHROPIC* CLAUDE SUB",
+      "seedKey": "",
+      "bankNameKey": "anthropic claude sub",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "anthropic claude sub san francisco usa",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Arabianoud Riyadh SAU",
+      "seedKey": "",
+      "bankNameKey": "arabianoud riyadh sau",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "arabianoud riyadh sau",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "A工作室 · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "a工作室 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "a工作室 收钱码收款 日用百货",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Banggood",
+      "seedKey": "merchant:banggood",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "banggood"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Bath and Body",
+      "seedKey": "",
+      "bankNameKey": "bath and body",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "bath and body works riyadh sau",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Boutiqaat",
+      "seedKey": "merchant:boutiqaat",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "boutiqaat"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "By *rren Kuwait",
+      "seedKey": "",
+      "bankNameKey": "by rren kuwait",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "by rren kuwait kwt",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Carrefour",
+      "seedKey": "merchant:carrefour",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "carrefour"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Cavalierperfumes Riyadh SAU",
+      "seedKey": "",
+      "bankNameKey": "cavalierperfumes riyadh sau",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "cavalierperfumes riyadh sau",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Centrepoint",
+      "seedKey": "merchant:centrepoint",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "centrepoint"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Chinavasion",
+      "seedKey": "merchant:chinavasion",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "chinavasion"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Desertcart",
+      "seedKey": "merchant:desertcart",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "desertcart"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "DHgate",
+      "seedKey": "merchant:dhgate",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "dhgate"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "eBay",
+      "seedKey": "merchant:ebay",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "ebay"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "ebay o 27 15188 84400 san jose usa",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "250100",
+          "merchant": "ebay o 25 15173 64467 san jose usa",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Esra Bahcali",
+      "seedKey": "merchant:esra-bahcali",
+      "bankNameKey": "",
+      "type": "service",
+      "defaultCurrency": "TRY",
+      "bankPurpose": "",
+      "bankAccountCode": "531700",
+      "bankOffice": "turkey",
+      "bankAliases": [
+        "esra bahcali"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "ETORKI MALIK FATHI",
+      "seedKey": "",
+      "bankNameKey": "etorki malik fathi",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "etorki malik fathi mahmud 收钱码收款 生活服务",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "eXtra",
+      "seedKey": "merchant:extra.com",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "extra.com",
+        "united electronics"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Eyewa",
+      "seedKey": "merchant:eyewa",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "eyewa"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Geekbuying",
+      "seedKey": "merchant:geekbuying",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "geekbuying"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "GENCSOY",
+      "seedKey": "",
+      "bankNameKey": "gencsoy",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250200",
+          "merchant": "gencsoydis tic ve tasiistanbultr",
+          "counterAccountCode": "531600"
+        }
+      ]
+    },
+    {
+      "name": "Ghalati Jeddah SAU",
+      "seedKey": "",
+      "bankNameKey": "ghalati jeddah sau",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "ghalati jeddah sau",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Global Sources",
+      "seedKey": "merchant:globalsources.com",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "globalsources.com",
+        "global sources"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Golden Scent",
+      "seedKey": "merchant:goldenscent",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "goldenscent",
+        "golden scent"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Google",
+      "seedKey": "",
+      "bankNameKey": "google",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "google cloud dublin irl",
+          "counterAccountCode": "531100"
+        },
+        {
+          "accountCode": "250100",
+          "merchant": "google cloud cc google com irl",
+          "counterAccountCode": "531100"
+        }
+      ]
+    },
+    {
+      "name": "Guangzhou Shiyi Watch",
+      "seedKey": "",
+      "bankNameKey": "guangzhou shiyi watch",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "guangzhou shiyi watch co ltd 203005326os00460 giden havale odemesi",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Hepsiburada",
+      "seedKey": "merchant:hepsiburada",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "hepsiburada"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "HEROKU* SAN FRANCISCO",
+      "seedKey": "",
+      "bankNameKey": "heroku san francisco",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "heroku san francisco usa",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "HONGKONG SHINEKOO INTERNATIONAL",
+      "seedKey": "",
+      "bankNameKey": "hongkong shinekoo international",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "hongkong shinekoo international trade co limited 203005326os00463 giden havale odemesi",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "iHerb",
+      "seedKey": "merchant:iherb",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "iherb"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "IKEA",
+      "seedKey": "merchant:ikea",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "ikea",
+        "ikea.cn"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Jarir",
+      "seedKey": "merchant:jarir",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "jarir"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "JD.com",
+      "seedKey": "merchant:jd.com",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "jd.com",
+        "jingdong"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Jumbo",
+      "seedKey": "merchant:jumbo.ae",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "jumbo.ae",
+        "jumbo electronics"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Lam*t Al Zenah",
+      "seedKey": "",
+      "bankNameKey": "lam t al zenah",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "lam t al zenah qiblah kwt",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "LightInTheBox",
+      "seedKey": "merchant:lightinthebox",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "lightinthebox"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Louis · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "louis 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "louis 收钱码收款 教育培训",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Lulu",
+      "seedKey": "merchant:luluhypermarket",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "luluhypermarket",
+        "lulu hypermarket"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Made-in-China",
+      "seedKey": "merchant:made-in-china.com",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "made-in-china.com"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Max Fashion",
+      "seedKey": "merchant:maxfashion",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "maxfashion"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "MF**alqees Line Kuwait",
+      "seedKey": "",
+      "bankNameKey": "mf alqees line kuwait",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "mf alqees line kuwait kwt",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "MF**asmeyah AlHarbi Fa",
+      "seedKey": "",
+      "bankNameKey": "mf asmeyah alharbi fa",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "mf asmeyah alharbi fa kuwait kwt",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "MF**UST*LADY FOR LADIE",
+      "seedKey": "",
+      "bankNameKey": "mf ust lady for ladie",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "mf ust lady for ladie kuwait kwt",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "MF*CreatwithmKuwaitKW",
+      "seedKey": "",
+      "bankNameKey": "mf creatwithmkuwaitkw",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250200",
+          "merchant": "mf creatwithmkuwaitkw",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "Moaili · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "moaili 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "moaili 收钱码收款 商业服务",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "MUHABİR BANKA MASRAF",
+      "seedKey": "",
+      "bankNameKey": "muhabir banka masraf",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "muhabir banka masraf tahsilati 53 10374879 3 hesaba virman",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Namshi",
+      "seedKey": "merchant:namshi",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "namshi"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Nice One",
+      "seedKey": "merchant:niceone",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "niceone"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Noon",
+      "seedKey": "merchant:noon",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "noon"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Odoo",
+      "seedKey": "",
+      "bankNameKey": "odoo",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250200",
+          "merchant": "odoodwcramilliesbe",
+          "counterAccountCode": "531100"
+        },
+        {
+          "accountCode": "250200",
+          "merchant": "odoomiddleeast dmccdubaiarar",
+          "counterAccountCode": "531100"
+        }
+      ]
+    },
+    {
+      "name": "Ounass",
+      "seedKey": "merchant:ounass",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "ounass"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "PAYMOB AL GHUBRA",
+      "seedKey": "",
+      "bankNameKey": "paymob al ghubra",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "paymob al ghubra omn",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Pinduoduo",
+      "seedKey": "merchant:pinduoduo",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "pinduoduo"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Ruian Mingbao Import",
+      "seedKey": "",
+      "bankNameKey": "ruian mingbao import",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "ruian mingbao import and export co ltd 203005326os00448 giden havale odemesi",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Sharaf DG",
+      "seedKey": "merchant:sharafdg",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "sharafdg",
+        "sharaf dg"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Shein",
+      "seedKey": "merchant:shein",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "shein"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "www shein com dubai are",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "250200",
+          "merchant": "www shein comdubaiae",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Sivvi",
+      "seedKey": "merchant:sivvi",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "sivvi"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "sky · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "sky 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "sky 收钱码收款 商业服务",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Splash",
+      "seedKey": "merchant:splashfashions",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "splashfashions"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Styli",
+      "seedKey": "merchant:styli",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "styli"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Taobao",
+      "seedKey": "merchant:taobao",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "taobao",
+        "world.taobao.com"
+      ],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "world taobao com luxembourg lux",
+          "counterAccountCode": null
+        },
+        {
+          "accountCode": "250200",
+          "merchant": "world taobao comluxembourglu",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Taw9eel",
+      "seedKey": "merchant:taw9eel",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "taw9eel"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Temu",
+      "seedKey": "merchant:temu",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "temu"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Tmall",
+      "seedKey": "merchant:tmall",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "tmall"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Tomtop",
+      "seedKey": "merchant:tomtop",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "tomtop"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Trendyol",
+      "seedKey": "merchant:trendyol",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "trendyol"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Ubuy",
+      "seedKey": "merchant:ubuy",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "ubuy"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "Walmart",
+      "seedKey": "merchant:walmart",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "walmart"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "WANGDU COUNTY S.PETER",
+      "seedKey": "",
+      "bankNameKey": "wangdu county s peter",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "wangdu county s peter shoes co ltd 203005326os00450 giden havale odemesi",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "Xcite",
+      "seedKey": "merchant:xcite",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "xcite"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "YalukII",
+      "seedKey": "merchant:yalukii",
+      "bankNameKey": "",
+      "type": "service",
+      "defaultCurrency": "CNY",
+      "bankPurpose": "china_services",
+      "bankAccountCode": "531700",
+      "bankOffice": "china",
+      "bankAliases": [
+        "yalukii",
+        "yalukll",
+        "yaluk ii",
+        "yaluk ll",
+        "yaluk"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "YesStyle",
+      "seedKey": "merchant:yesstyle",
+      "bankNameKey": "",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [
+        "yesstyle"
+      ],
+      "mappings": []
+    },
+    {
+      "name": "YUMI TRADING HONGKONG",
+      "seedKey": "",
+      "bankNameKey": "yumi trading hongkong",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "yumi trading hongkong co limited 203005326os00446 giden havale odemesi",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "zbooni.com marketplace Dubai",
+      "seedKey": "",
+      "bankNameKey": "zbooni com marketplace dubai",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250100",
+          "merchant": "zbooni com marketplace dubai are",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "بطاقة البركة الائتمانية - ليرة",
+      "seedKey": "",
+      "bankNameKey": "بطاقة البركة الاي تمانية ليرة",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "250200",
+          "merchant": "gecikmetazminati",
+          "counterAccountCode": "530400"
+        }
+      ]
+    },
+    {
+      "name": "بنك البركه التركي - دولار",
+      "seedKey": "",
+      "bankNameKey": "بنك البركه التركي دولار",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00463 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00460 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00450 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00431 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00425 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00413 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00398 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00381 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00446 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00447 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00401 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00367 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "203005326os00479 swift masrafi",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110202",
+          "merchant": "muhabir masraf 53 10374879 3 hesaba virman",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "حواله عبر Alipay",
+      "seedKey": "",
+      "bankNameKey": "حواله عبر alipay",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": []
+    },
+    {
+      "name": "مجموعه حوالات عبر",
+      "seedKey": "",
+      "bankNameKey": "مجموعه حوالات عبر",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110401",
+          "merchant": "مجموعه حوالات عبر alipay بقيمة 9 285 11 000 20 285 تم الحساب بسعر صرف 6 62 تركيا",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110401",
+          "merchant": "مجموعه حوالات عبر alipay بقيمة 15 400 16 260 9 750 41 410 تم الحساب بسعر صرف 6 56",
+          "counterAccountCode": "510400"
+        },
+        {
+          "accountCode": "110401",
+          "merchant": "مجموعه حوالات عبر alipay بقيمة 10 000 1 800 11 800 تم الحساب بسعر صرف 6 54",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "مصرف المتحدة - تركيا",
+      "seedKey": "",
+      "bankNameKey": "مصرف المتحدة تركيا",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110201",
+          "merchant": "4 كااش بيدهcom 141",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110201",
+          "merchant": "com 1414 1260",
+          "counterAccountCode": "530400"
+        },
+        {
+          "accountCode": "110201",
+          "merchant": "com 1414 1207",
+          "counterAccountCode": "530400"
+        }
+      ]
+    },
+    {
+      "name": "مورد خدمات - المتحدة 1207",
+      "seedKey": "",
+      "bankNameKey": "مورد خدمات المتحدة 1207",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110201",
+          "merchant": "1414 1207",
+          "counterAccountCode": "531700"
+        }
+      ]
+    },
+    {
+      "name": "مورد خدمات - المتحدة 1260",
+      "seedKey": "",
+      "bankNameKey": "مورد خدمات المتحدة 1260",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110201",
+          "merchant": "1414 1260",
+          "counterAccountCode": "531700"
+        }
+      ]
+    },
+    {
+      "name": "不染 · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "不染 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "不染 收钱码收款 服饰装扮",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "周 · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "周 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "周 收钱码收款 日用百货",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "响洲电子 · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "响洲电子 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "响洲电子 收钱码收款 数码电器",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "春雪 · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "春雪 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "春雪 收钱码收款 数码电器",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "杭州阿里巴巴供应链管理有限公司 · 全款交易：官方货运配送服务",
+      "seedKey": "",
+      "bankNameKey": "杭州阿里巴巴供应链管理有限公司 全款交易 官方货运配送服务",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "杭州阿里巴巴供应链管理有限公司 全款交易 官方货运配送服务 生活服务",
+          "counterAccountCode": "510400"
+        }
+      ]
+    },
+    {
+      "name": "记明 · 收款",
+      "seedKey": "",
+      "bankNameKey": "记明 收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "记明 收款 转账红包",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "阿芳化妆品 · 收钱码收款",
+      "seedKey": "",
+      "bankNameKey": "阿芳化妆品 收钱码收款",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "阿芳化妆品 收钱码收款 美容美发",
+          "counterAccountCode": null
+        }
+      ]
+    },
+    {
+      "name": "鸿顺集运 · 经营码交易",
+      "seedKey": "",
+      "bankNameKey": "鸿顺集运 经营码交易",
+      "type": "supplier",
+      "defaultCurrency": "USD",
+      "bankPurpose": "",
+      "bankAccountCode": "",
+      "bankOffice": "",
+      "bankAliases": [],
+      "mappings": [
+        {
+          "accountCode": "110302",
+          "merchant": "鸿顺集运 经营码交易 生活服务",
+          "counterAccountCode": "510300"
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "accountCode": "110201",
+      "keyword": "1414",
+      "direction": "out",
+      "counterAccountCode": "531700",
+      "office": "",
+      "priority": 0,
+      "vendorName": "مورد خدمات - المتحدة {party:1414}"
+    },
+    {
+      "accountCode": "110201",
+      "keyword": "com",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 2,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": "110201",
+      "keyword": "دخول طرابلس",
+      "direction": "in",
+      "counterAccountCode": "110101",
+      "office": "turkey",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "110202",
+      "keyword": "ortaklik",
+      "direction": "any",
+      "counterAccountCode": "110201",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "110202",
+      "keyword": "sirket yetkilisi",
+      "direction": "any",
+      "counterAccountCode": "110201",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "110202",
+      "keyword": "usd satış",
+      "direction": "any",
+      "counterAccountCode": "110203",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "110204",
+      "keyword": "fast para transferi",
+      "direction": "any",
+      "counterAccountCode": "110203",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "110204",
+      "keyword": "kredi kartı borç ödemesi",
+      "direction": "any",
+      "counterAccountCode": "250100",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "110401",
+      "keyword": "استلام من طرابلس",
+      "direction": "in",
+      "counterAccountCode": "110101",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "250100",
+      "keyword": "kredi kartı borç ödeme",
+      "direction": "any",
+      "counterAccountCode": "110204",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": "250200",
+      "keyword": "ödeme için teşekkür ederiz",
+      "direction": "any",
+      "counterAccountCode": "110203",
+      "office": "",
+      "priority": 1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "1688.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "1688"
+    },
+    {
+      "accountCode": null,
+      "keyword": "1688",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "1688"
+    },
+    {
+      "accountCode": null,
+      "keyword": "6thstreet",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "6thStreet"
+    },
+    {
+      "accountCode": null,
+      "keyword": "abu dhabi",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "adobe",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Adobe"
+    },
+    {
+      "accountCode": null,
+      "keyword": "alibaba.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Alibaba"
+    },
+    {
+      "accountCode": null,
+      "keyword": "alibaba",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Alibaba"
+    },
+    {
+      "accountCode": null,
+      "keyword": "aliexpress",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "AliExpress"
+    },
+    {
+      "accountCode": null,
+      "keyword": "amazon",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Amazon"
+    },
+    {
+      "accountCode": null,
+      "keyword": "amwal pay",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "amzn",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Amazon"
+    },
+    {
+      "accountCode": null,
+      "keyword": "apple com",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Apple"
+    },
+    {
+      "accountCode": null,
+      "keyword": "are",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "banggood",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Banggood"
+    },
+    {
+      "accountCode": null,
+      "keyword": "booking com",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Booking.com"
+    },
+    {
+      "accountCode": null,
+      "keyword": "boutiqaat",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Boutiqaat"
+    },
+    {
+      "accountCode": null,
+      "keyword": "bsmv",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "canva",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Canva"
+    },
+    {
+      "accountCode": null,
+      "keyword": "carrefour",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Carrefour"
+    },
+    {
+      "accountCode": null,
+      "keyword": "centrepoint",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Centrepoint"
+    },
+    {
+      "accountCode": null,
+      "keyword": "chinavasion",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Chinavasion"
+    },
+    {
+      "accountCode": null,
+      "keyword": "desertcart",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Desertcart"
+    },
+    {
+      "accountCode": null,
+      "keyword": "dhgate",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "DHgate"
+    },
+    {
+      "accountCode": null,
+      "keyword": "dubai",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "ebay",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "eBay"
+    },
+    {
+      "accountCode": null,
+      "keyword": "eft ucreti",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "emirates",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Emirates"
+    },
+    {
+      "accountCode": null,
+      "keyword": "esra bahcali",
+      "direction": "any",
+      "counterAccountCode": "531700",
+      "office": "turkey",
+      "priority": 0,
+      "vendorName": "Esra Bahcali"
+    },
+    {
+      "accountCode": null,
+      "keyword": "extra.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "eXtra"
+    },
+    {
+      "accountCode": null,
+      "keyword": "eyewa",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Eyewa"
+    },
+    {
+      "accountCode": null,
+      "keyword": "facebk",
+      "direction": "any",
+      "counterAccountCode": "531000",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Meta"
+    },
+    {
+      "accountCode": null,
+      "keyword": "facebook",
+      "direction": "any",
+      "counterAccountCode": "531000",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Meta"
+    },
+    {
+      "accountCode": null,
+      "keyword": "flydubai",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "flydubai"
+    },
+    {
+      "accountCode": null,
+      "keyword": "gecikme tazminati",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "geekbuying",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Geekbuying"
+    },
+    {
+      "accountCode": null,
+      "keyword": "gencsoy",
+      "direction": "any",
+      "counterAccountCode": "531600",
+      "office": "",
+      "priority": 0,
+      "vendorName": "GENCSOY"
+    },
+    {
+      "accountCode": null,
+      "keyword": "giden havale",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "github",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "GitHub"
+    },
+    {
+      "accountCode": null,
+      "keyword": "global sources",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Global Sources"
+    },
+    {
+      "accountCode": null,
+      "keyword": "globalsources.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Global Sources"
+    },
+    {
+      "accountCode": null,
+      "keyword": "godaddy",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "GoDaddy"
+    },
+    {
+      "accountCode": null,
+      "keyword": "golden scent",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Golden Scent"
+    },
+    {
+      "accountCode": null,
+      "keyword": "goldenscent",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Golden Scent"
+    },
+    {
+      "accountCode": null,
+      "keyword": "google",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Google"
+    },
+    {
+      "accountCode": null,
+      "keyword": "havale ucreti",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "hepsiburada",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Hepsiburada"
+    },
+    {
+      "accountCode": null,
+      "keyword": "hostinger",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Hostinger"
+    },
+    {
+      "accountCode": null,
+      "keyword": "iherb",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "iHerb"
+    },
+    {
+      "accountCode": null,
+      "keyword": "ikea.cn",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "IKEA"
+    },
+    {
+      "accountCode": null,
+      "keyword": "ikea",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "IKEA"
+    },
+    {
+      "accountCode": null,
+      "keyword": "import and export",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "instagram",
+      "direction": "any",
+      "counterAccountCode": "531000",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Meta"
+    },
+    {
+      "accountCode": null,
+      "keyword": "ispark",
+      "direction": "any",
+      "counterAccountCode": "531600",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "jarir",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Jarir"
+    },
+    {
+      "accountCode": null,
+      "keyword": "jd.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "JD.com"
+    },
+    {
+      "accountCode": null,
+      "keyword": "jeddah",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "jingdong",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "JD.com"
+    },
+    {
+      "accountCode": null,
+      "keyword": "jumbo electronics",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Jumbo"
+    },
+    {
+      "accountCode": null,
+      "keyword": "jumbo.ae",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Jumbo"
+    },
+    {
+      "accountCode": null,
+      "keyword": "kaspersky",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Kaspersky"
+    },
+    {
+      "accountCode": null,
+      "keyword": "komisyon",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "kuwait",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "kwt",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "lightinthebox",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "LightInTheBox"
+    },
+    {
+      "accountCode": null,
+      "keyword": "limited",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "ltd",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "lulu hypermarket",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Lulu"
+    },
+    {
+      "accountCode": null,
+      "keyword": "luluhypermarket",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Lulu"
+    },
+    {
+      "accountCode": null,
+      "keyword": "made-in-china.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Made-in-China"
+    },
+    {
+      "accountCode": null,
+      "keyword": "makkah",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "masraf tahsilati",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "maxfashion",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Max Fashion"
+    },
+    {
+      "accountCode": null,
+      "keyword": "meta",
+      "direction": "any",
+      "counterAccountCode": "531000",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Meta"
+    },
+    {
+      "accountCode": null,
+      "keyword": "mf",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "microsoft",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Microsoft"
+    },
+    {
+      "accountCode": null,
+      "keyword": "muhabir",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "myfatoorah",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "namecheap",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Namecheap"
+    },
+    {
+      "accountCode": null,
+      "keyword": "namshi",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Namshi"
+    },
+    {
+      "accountCode": null,
+      "keyword": "nexway",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "niceone",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Nice One"
+    },
+    {
+      "accountCode": null,
+      "keyword": "noon",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Noon"
+    },
+    {
+      "accountCode": null,
+      "keyword": "odoo",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Odoo"
+    },
+    {
+      "accountCode": null,
+      "keyword": "openai",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "OpenAI"
+    },
+    {
+      "accountCode": null,
+      "keyword": "ortaklik",
+      "direction": "any",
+      "counterAccountCode": "340000",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "otopark",
+      "direction": "any",
+      "counterAccountCode": "531600",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "ounass",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Ounass"
+    },
+    {
+      "accountCode": null,
+      "keyword": "parking",
+      "direction": "any",
+      "counterAccountCode": "531600",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "pegasus",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Pegasus"
+    },
+    {
+      "accountCode": null,
+      "keyword": "pinduoduo",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Pinduoduo"
+    },
+    {
+      "accountCode": null,
+      "keyword": "qatar airways",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Qatar Airways"
+    },
+    {
+      "accountCode": null,
+      "keyword": "riyadh",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "salla",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "sau",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "sharaf dg",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Sharaf DG"
+    },
+    {
+      "accountCode": null,
+      "keyword": "sharafdg",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Sharaf DG"
+    },
+    {
+      "accountCode": null,
+      "keyword": "sharjah",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "shein",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Shein"
+    },
+    {
+      "accountCode": null,
+      "keyword": "sirket yetkilisi",
+      "direction": "any",
+      "counterAccountCode": "340000",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "sivvi",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Sivvi"
+    },
+    {
+      "accountCode": null,
+      "keyword": "snapchat",
+      "direction": "any",
+      "counterAccountCode": "531000",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Snapchat"
+    },
+    {
+      "accountCode": null,
+      "keyword": "splashfashions",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Splash"
+    },
+    {
+      "accountCode": null,
+      "keyword": "styli",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Styli"
+    },
+    {
+      "accountCode": null,
+      "keyword": "swift masrafi",
+      "direction": "any",
+      "counterAccountCode": "530400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "@bank"
+    },
+    {
+      "accountCode": null,
+      "keyword": "taobao",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Taobao"
+    },
+    {
+      "accountCode": null,
+      "keyword": "tap",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "taw9eel",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Taw9eel"
+    },
+    {
+      "accountCode": null,
+      "keyword": "temu",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Temu"
+    },
+    {
+      "accountCode": null,
+      "keyword": "thy",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Turkish Airlines"
+    },
+    {
+      "accountCode": null,
+      "keyword": "tiktok",
+      "direction": "any",
+      "counterAccountCode": "531000",
+      "office": "",
+      "priority": 0,
+      "vendorName": "TikTok"
+    },
+    {
+      "accountCode": null,
+      "keyword": "tmall",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Tmall"
+    },
+    {
+      "accountCode": null,
+      "keyword": "tomtop",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Tomtop"
+    },
+    {
+      "accountCode": null,
+      "keyword": "trading",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "trendyol",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Trendyol"
+    },
+    {
+      "accountCode": null,
+      "keyword": "turkish airlines",
+      "direction": "any",
+      "counterAccountCode": "531500",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Turkish Airlines"
+    },
+    {
+      "accountCode": null,
+      "keyword": "uae",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": -1,
+      "vendorName": ""
+    },
+    {
+      "accountCode": null,
+      "keyword": "ubuy",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Ubuy"
+    },
+    {
+      "accountCode": null,
+      "keyword": "united electronics",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "eXtra"
+    },
+    {
+      "accountCode": null,
+      "keyword": "walmart",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Walmart"
+    },
+    {
+      "accountCode": null,
+      "keyword": "world.taobao.com",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Taobao"
+    },
+    {
+      "accountCode": null,
+      "keyword": "xcite",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Xcite"
+    },
+    {
+      "accountCode": null,
+      "keyword": "yaluk ii",
+      "direction": "any",
+      "counterAccountCode": "531700",
+      "office": "china",
+      "priority": 0,
+      "vendorName": "YalukII"
+    },
+    {
+      "accountCode": null,
+      "keyword": "yaluk ll",
+      "direction": "any",
+      "counterAccountCode": "531700",
+      "office": "china",
+      "priority": 0,
+      "vendorName": "YalukII"
+    },
+    {
+      "accountCode": null,
+      "keyword": "yaluk",
+      "direction": "any",
+      "counterAccountCode": "531700",
+      "office": "china",
+      "priority": 0,
+      "vendorName": "YalukII"
+    },
+    {
+      "accountCode": null,
+      "keyword": "yalukii",
+      "direction": "any",
+      "counterAccountCode": "531700",
+      "office": "china",
+      "priority": 0,
+      "vendorName": "YalukII"
+    },
+    {
+      "accountCode": null,
+      "keyword": "yalukll",
+      "direction": "any",
+      "counterAccountCode": "531700",
+      "office": "china",
+      "priority": 0,
+      "vendorName": "YalukII"
+    },
+    {
+      "accountCode": null,
+      "keyword": "yesstyle",
+      "direction": "any",
+      "counterAccountCode": "510400",
+      "office": "",
+      "priority": 0,
+      "vendorName": "YesStyle"
+    },
+    {
+      "accountCode": null,
+      "keyword": "zoom",
+      "direction": "any",
+      "counterAccountCode": "531100",
+      "office": "",
+      "priority": 0,
+      "vendorName": "Zoom"
+    }
+  ],
+  "history": [
+    {
+      "accountCode": "110201",
+      "description": "1414 1207",
+      "counterAccountCode": "531700",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110201",
+      "description": "1414 1260",
+      "counterAccountCode": "531700",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110201",
+      "description": "4 كااش بيدهcom 141",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110201",
+      "description": "com 1414 1207",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110201",
+      "description": "com 1414 1260",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110201",
+      "description": "دخول طرابلس 1414 اشاري 409",
+      "counterAccountCode": "110101",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110201",
+      "description": "كااش بيده 1414",
+      "counterAccountCode": "110107",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110201",
+      "description": "لجبل الذهبي 811 ا 1414",
+      "counterAccountCode": "110103",
+      "office": "benghazi"
+    },
+    {
+      "accountCode": "110202",
+      "description": "117206 17 try karsiligi 2500 00 usd satis kur 46 88247",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "169924 16 try karsiligi 3500 00 usd satis kur 48 54976",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "18094 06 try karsiligi 387 50 usd satis kur 46 69434",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "18824 40 try karsiligi 400 00 usd satis kur 47 06100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "193428 80 try karsiligi 4000 00 usd satis kur 48 35720",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00367 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00381 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00398 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00401 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00413 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00425 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00431 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00446 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00447 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00450 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00460 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00463 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "203005326os00479 swift masrafi",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "205667 75 try karsiligi 4300 00 usd satis kur 47 82971",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "234798 20 try karsiligi 4900 00 usd satis kur 47 91800",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "23504 42 try karsiligi 500 00 usd satis kur 47 00884",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "23530 50 try karsiligi 500 00 usd satis kur 47 06100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "23625 50 try karsiligi 500 00 usd satis kur 47 25100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "23643 82 try karsiligi 500 00 usd satis kur 47 28764",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "24335 65 try karsiligi 500 00 usd satis kur 48 67130",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "282989 34 try karsiligi 6000 00 usd satis kur 47 16489",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "294028 74 try karsiligi 6243 75 usd satis kur 47 09169",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "32200 65 try karsiligi 675 00 usd satis kur 47 70466",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "32527 61 try karsiligi 676 75 usd satis kur 48 06444",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "331485 07 try karsiligi 7000 00 usd satis kur 47 35501",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "33860 06 try karsiligi 697 68 usd satis kur 48 53236",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "38867 81 try karsiligi 800 00 usd satis kur 48 58476",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "4725 10 try karsiligi 100 00 usd satis kur 47 25100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "47333 33 try karsiligi 1000 00 usd satis kur 47 33333",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "48184 03 try karsiligi 1000 00 usd satis kur 48 18403",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "48517 38 try karsiligi 1000 00 usd satis kur 48 51738",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "48734 41 try karsiligi 1000 00 usd satis kur 48 73441",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "4889 18 try karsiligi 100 00 usd satis kur 48 89182",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "53000 00 try karsiligi 1096 07 usd satis kur 48 35438",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "57145 67 try karsiligi 1200 00 usd satis kur 47 62139",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "70903 62 try karsiligi 1500 00 usd satis kur 47 26908",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "70931 19 try karsiligi 1500 00 usd satis kur 47 28746",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "71257 68 try karsiligi 1500 00 usd satis kur 47 50512",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "71840 21 try karsiligi 1500 00 usd satis kur 47 89347",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "7197 15 try karsiligi 150 00 usd satis kur 47 98100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "72348 19 try karsiligi 1500 00 usd satis kur 48 23213",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "72634 40 try karsiligi 1500 00 usd satis kur 48 42293",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "73417 40 try karsiligi 1500 00 usd satis kur 48 94493",
+      "counterAccountCode": "110203",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "73604 05 try karsiligi 1500 00 usd satis kur 49 06937",
+      "counterAccountCode": "110203",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "84806 38 try karsiligi 1732 00 usd satis kur 48 96442",
+      "counterAccountCode": "110203",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "8522 71 try karsiligi 179 12 usd satis kur 47 58100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "91232 77 try karsiligi 1900 00 usd satis kur 48 01725",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "9412 20 try karsiligi 200 00 usd satis kur 47 06100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "9450 20 try karsiligi 200 00 usd satis kur 47 25100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "9583 61 try karsiligi 200 00 usd satis kur 47 91804",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "95998 64 try karsiligi 2000 00 usd satis kur 47 99932",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "97099 48 try karsiligi 2000 00 usd satis kur 48 54974",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "97439 68 try karsiligi 2000 00 usd satis kur 48 71984",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "97784 52 try karsiligi 2000 00 usd satis kur 48 89226",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "98139 38 try karsiligi 2000 00 usd satis kur 49 06969",
+      "counterAccountCode": "110203",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00367 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00381 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00398 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00401 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00413 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00425 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00431 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "a to z international general trading co 203005326os00479 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "havale ali s ali khatroush 3 sahis tarafindan kasadan havale",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "hongkong shinekoo international trade co limited 203005326os00463 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "muhabir masraf 53 10374879 3 hesaba virman",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110202",
+      "description": "yumi trading hongkong co limited 203005326os00446 giden havale odemesi",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "117206 17 try karsiligi 2500 00 usd satis kur 46 88247",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "169924 16 try karsiligi 3500 00 usd satis kur 48 54976",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "18094 06 try karsiligi 387 50 usd satis kur 46 69434",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "18824 40 try karsiligi 400 00 usd satis kur 47 06100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "193428 80 try karsiligi 4000 00 usd satis kur 48 35720",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "205667 75 try karsiligi 4300 00 usd satis kur 47 82971",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "234798 20 try karsiligi 4900 00 usd satis kur 47 91800",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "23504 42 try karsiligi 500 00 usd satis kur 47 00884",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "23530 50 try karsiligi 500 00 usd satis kur 47 06100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "23625 50 try karsiligi 500 00 usd satis kur 47 25100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "23643 82 try karsiligi 500 00 usd satis kur 47 28764",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "24335 65 try karsiligi 500 00 usd satis kur 48 67130",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "282989 34 try karsiligi 6000 00 usd satis kur 47 16489",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "294028 74 try karsiligi 6243 75 usd satis kur 47 09169",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "32200 65 try karsiligi 675 00 usd satis kur 47 70466",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "32527 61 try karsiligi 676 75 usd satis kur 48 06444",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "331485 07 try karsiligi 7000 00 usd satis kur 47 35501",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "33860 06 try karsiligi 697 68 usd satis kur 48 53236",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "38867 81 try karsiligi 800 00 usd satis kur 48 58476",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "4725 10 try karsiligi 100 00 usd satis kur 47 25100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "47333 33 try karsiligi 1000 00 usd satis kur 47 33333",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "48184 03 try karsiligi 1000 00 usd satis kur 48 18403",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "48517 38 try karsiligi 1000 00 usd satis kur 48 51738",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "48734 41 try karsiligi 1000 00 usd satis kur 48 73441",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "4889 18 try karsiligi 100 00 usd satis kur 48 89182",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "53000 00 try karsiligi 1096 07 usd satis kur 48 35438",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "5472 1890 nolu kredi kartina yapilan hesaptan odeme",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "5472 9480 nolu kredi kartina yapilan hesaptan odeme",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "57145 67 try karsiligi 1200 00 usd satis kur 47 62139",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "70903 62 try karsiligi 1500 00 usd satis kur 47 26908",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "70931 19 try karsiligi 1500 00 usd satis kur 47 28746",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "71257 68 try karsiligi 1500 00 usd satis kur 47 50512",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "71840 21 try karsiligi 1500 00 usd satis kur 47 89347",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "7197 15 try karsiligi 150 00 usd satis kur 47 98100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "72348 19 try karsiligi 1500 00 usd satis kur 48 23213",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "72634 40 try karsiligi 1500 00 usd satis kur 48 42293",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "8522 71 try karsiligi 179 12 usd satis kur 47 58100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "91232 77 try karsiligi 1900 00 usd satis kur 48 01725",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "9412 20 try karsiligi 200 00 usd satis kur 47 06100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "9450 20 try karsiligi 200 00 usd satis kur 47 25100",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "9583 61 try karsiligi 200 00 usd satis kur 47 91804",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "95998 64 try karsiligi 2000 00 usd satis kur 47 99932",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "97099 48 try karsiligi 2000 00 usd satis kur 48 54974",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "97439 68 try karsiligi 2000 00 usd satis kur 48 71984",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "97784 52 try karsiligi 2000 00 usd satis kur 48 89226",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "fon alis 139pay x 7 174081 rbv albaraka portfoy kisa vadeli kira sertifikalari katilim tl fonu",
+      "counterAccountCode": "160100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "katilma hesabi acilisi exios ic ve dis ticaret limited sirketi hesap sahibi hesap acma",
+      "counterAccountCode": "160200",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 15625 exios ic ve dis ticaret limited sirket ack 131234 91 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 17705 exios ic ve dis ticaret limited sirket ack 205667 75 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4000066 exios ic ve dis ticaret limited sirket ack 7197 15 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4014854 exios ic ve dis ticaret limited sirket ack 29220 00 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4019743 exios ic ve dis ticaret limited sirket ack 9412 20 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4019750 exios ic ve dis ticaret limited sirket ack 66311 59 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4024988 exios ic ve dis ticaret limited sirket ack 38867 81 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4025159 exios ic ve dis ticaret limited sirket ack 97439 68 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4025641 exios ic ve dis ticaret limited sirket ack 32527 61 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4032615 exios ic ve dis ticaret limited sirket ack 90000 00 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4033872 exios ic ve dis ticaret limited sirket ack 73417 40 try gon albaraka alici banka 205",
+      "counterAccountCode": "110204",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4037145 exios ic ve dis ticaret limited sirket ack 95000 00 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4037565 exios ic ve dis ticaret limited sirket ack 8522 71 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4039637 exios ic ve dis ticaret limited sirket ack 32200 65 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4044529 exios ic ve dis ticaret limited sirket ack 4725 10 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4045140 exios ic ve dis ticaret limited sirket ack 80000 00 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4046383 exios ic ve dis ticaret limited sirket ack 95000 00 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4046455 exios ic ve dis ticaret limited sirket ack 31819 09 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4046870 exios ic ve dis ticaret limited sirket ack 18824 40 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4047642 exios ic ve dis ticaret limited sirket ack 57145 67 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4049946 exios ic ve dis ticaret limited sirket ack 71257 68 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4054211 exios ic ve dis ticaret limited sirket ack 91232 77 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4056157 exios ic ve dis ticaret limited sirket ack 72634 40 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4056207 yusuf alahmar ack 59500 72 try gon albaraka alici banka 205",
+      "counterAccountCode": "260200",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4057458 exios ic ve dis ticaret limited sirket ack 33860 06 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4058514 exios ic ve dis ticaret limited sirket ack 95998 64 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4060933 exios ic ve dis ticaret limited sirket ack 100676 50 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4061095 exios ic ve dis ticaret limited sirket ack 23625 50 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4062266 exios ic ve dis ticaret limited sirket ack 84806 38 try gon albaraka alici banka 205",
+      "counterAccountCode": "110204",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4063622 exios ic ve dis ticaret limited sirket ack 95000 77 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4063665 exios ic ve dis ticaret limited sirket ack 50000 00 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4063700 exios ic ve dis ticaret limited sirket ack 89797 43 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4063916 exios ic ve dis ticaret limited sirket ack 9583 61 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4070173 exios ic ve dis ticaret limited sirket ack 48517 38 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4074445 exios ic ve dis ticaret limited sirket ack 24335 65 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4077662 exios ic ve dis ticaret limited sirket ack 48184 03 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4082253 exios ic ve dis ticaret limited sirket ack 180474 16 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4083637 exios ic ve dis ticaret limited sirket ack 71840 21 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4086267 exios ic ve dis ticaret limited sirket ack 48734 41 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4093518 exios ic ve dis ticaret limited sirket ack 97099 48 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 4104431 exios ic ve dis ticaret limited sirket ack 47333 33 try gon albaraka alici banka 205",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 9437243 exios ic ve dis ticaret limited sirketi aciklama gonbanka 205 fastref 2526240 fast otom",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110203",
+      "description": "sn 9477249 exios ic ve dis ticaret limited sirketi aciklama gonbanka 205 fastref 2523961 fast otom",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110204",
+      "description": "fast para transferi gonderen emadkaya",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110204",
+      "description": "fast para transferi gonderen exiosicvedisticaretlimitedsirketi",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110204",
+      "description": "kredi karti borc odemesi kart 5271",
+      "counterAccountCode": "250100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 2025夏季欧洲站时尚潮牌轻奢男t恤短袖星星烫钻网红小众半袖t体恤 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 2026新款跨境tiktok欧美豹纹修身性感收腰长袖连衣裙 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 2026秋季新款低帮系带商务正装皮鞋男布洛克增高休闲男鞋一件代发 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 bbl人体模型大码假人模特展示架欧美全身服装店金色半身女装人台 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 mt5ultra黑科技800w像素可反向充电仓m02智能眼镜看图识物ai翻译 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 可爱小猫刺绣德训鞋女秋季软底复古板鞋学生百搭休闲软底阿甘鞋 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 定妆高光粉饼修容色妆效钻石绚丽粉嫩细腻色彩自然闪粉多8g可选 美容美发",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 工厂批发tws跨境爆款m10数显高音质895b入耳式游戏降噪q86无线f9 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 新款无线入耳式蓝牙耳机a9pro彩屏降噪超长续航华强北运动耳机 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 欧美跨境速卖通爆款潮流时尚百搭3色珠片饰小立领夹克外套 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 欧美风女装2025春夏新款时尚性感长袖修身豹纹印花抽绳包臀连衣裙 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 潜水服3 5 7mm分体连帽迷彩伪装猎渔服加厚保暖自由潜冲浪湿衣cr 医疗健康",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 祖马伊索龙蓝风铃全身香氛三件套龙身体乳沐浴250ml香水限量款 美容美发",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 美式工装风大口袋轻奢高级质感绊带设计修身气质西装外套43418184 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 艺术生通勤包复古文艺钢琴蕾丝双肩斜挎包简约质感公文小背包小号 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 英国kurt geiger 新款千鸟格包烫钻百搭单肩斜挎鹰头包链条包彩钻 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 跨境hk6一代高音质无线蓝牙耳机2026新款超长续航运动无线耳机 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 跨境外贸现货欧美风女装秋季新款时尚潮流百搭扎染女士风衣外套 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 跨境爆款m10蓝牙耳机m19m20m28m30m25m90m5m32入耳式无线耳机 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 跨境爆款w895蓝牙耳机数显无线高音质超长续航入耳式通用降噪耳机 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 跨境现货水光浓彩唇膏fenty蕾哈娜新款星辰镜面唇釉唇蜜裸色口红 美容美发",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 跨境皮鞋男秋冬季新款英伦软底男士休闲一脚蹬商务正装新郎结婚鞋 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 香薰蜡烛小众轻奢生日礼物居家卧室无烟礼盒装生日情人节伴手礼 商业服务",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 全款交易 鹰头单鞋女平底鞋千鸟格烫钻新款kurt geiger广州一件代发 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "1688平台商家 退款 可爱小猫刺绣德训鞋女秋季软底复古板鞋学生百搭休闲软底阿甘鞋 退款",
+      "counterAccountCode": "219100",
+      "office": ""
+    },
+    {
+      "accountCode": "110302",
+      "description": "a m a aboubakr 收钱码收款 商业服务",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "ahmed 收款 转账红包",
+      "counterAccountCode": "219200",
+      "office": ""
+    },
+    {
+      "accountCode": "110302",
+      "description": "alqfila 收钱码收款 商业服务",
+      "counterAccountCode": "530200",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "不染 收钱码收款 服饰装扮",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "刘星 退款 mt5ultra黑科技800w像素可反向充电仓m02智能眼镜看图识物ai翻译 退款",
+      "counterAccountCode": "219100",
+      "office": ""
+    },
+    {
+      "accountCode": "110302",
+      "description": "春雪 收钱码收款 数码电器",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "杭州阿里巴巴供应链管理有限公司 全款交易 官方货运配送服务 生活服务",
+      "counterAccountCode": "510400",
+      "office": "china"
+    },
+    {
+      "accountCode": "110302",
+      "description": "江志宏 退款 鹰头单鞋女平底鞋千鸟格烫钻新款kurt geiger广州一件代发 退款",
+      "counterAccountCode": "219100",
+      "office": ""
+    },
+    {
+      "accountCode": "110302",
+      "description": "鸿顺集运 经营码交易 生活服务",
+      "counterAccountCode": "510300",
+      "office": "china"
+    },
+    {
+      "accountCode": "110401",
+      "description": "استلام من طرابلس",
+      "counterAccountCode": "390000",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110401",
+      "description": "ايداع في طرابلس",
+      "counterAccountCode": "390000",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110401",
+      "description": "ايداع في مكتب تركيا",
+      "counterAccountCode": "390000",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110401",
+      "description": "حواله عبر alipay بقيمة 26 179 تم الحساب بسعر صرف 6 56",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110401",
+      "description": "مجموعه حوالات عبر alipay بقيمة 10 000 1 800 11 800 تم الحساب بسعر صرف 6 54",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110401",
+      "description": "مجموعه حوالات عبر alipay بقيمة 15 400 16 260 9 750 41 410 تم الحساب بسعر صرف 6 56",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "110401",
+      "description": "مجموعه حوالات عبر alipay بقيمة 9 285 11 000 20 285 تم الحساب بسعر صرف 6 62 تركيا",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com internet sgp 137 76 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 1 062 23 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 1 253 42 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 13 36 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 148 03 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 26 69 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 261 88 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 3 55 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 3 62 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 4 24 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 58 63 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 7 54 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 9 59 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "1688 com luxembourg lux 93 46 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alibaba com luxembourg lux 10 30 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alibaba com luxembourg lux 133 89 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alibaba com luxembourg lux 148 31 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alibaba com luxembourg lux 35 85 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alibaba com luxembourg lux 5 15 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alibaba com luxembourg lux 8 24 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "alrehabstore riyadh sau 1 024 72 saudi riyal",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "amazon mark seattle usa 60 79 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "amznmktplace london gbr 352 27 us dollar",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "amznmktplace nf1x94wo4 london gbr 691 21 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "amznmktplace nm55e71z4 london gbr 352 27 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "anthropic claude sub san francisco usa 20 00 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "arabianoud riyadh sau 384 01 saudi riyal",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "cavalierperfumes riyadh sau 1 078 02 saudi riyal",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "ebay o 25 15173 64467 san jose usa 13 95 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "ebay o 27 15188 84400 san jose usa 17 98 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "ghalati jeddah sau 568 76 saudi riyal",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "google cloud cc google com irl 502 13 turk lirasi",
+      "counterAccountCode": "531100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "google cloud dublin irl 200 00 turk lirasi",
+      "counterAccountCode": "531100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "google cloud dublin irl 84 64 turk lirasi",
+      "counterAccountCode": "531100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "heroku san francisco usa 64 00 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "kredi karti borc odeme",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "mf alqees line kuwait kwt 69 14 kuwaiti dinar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "mf asmeyah alharbi fa kuwait kwt 406 00 kuwaiti dinar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "mf asmeyah alharbi fa kuwait kwt 54 00 kuwaiti dinar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "mf ust lady for ladie kuwait kwt 98 00 kuwaiti dinar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "paymob al ghubra omn 101 27 rial omani",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250100",
+      "description": "www shein com dubai are 158 49 us dollar",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250200",
+      "description": "gecikmetazminati",
+      "counterAccountCode": "530400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250200",
+      "description": "gencsoydis tic ve tasiistanbultr",
+      "counterAccountCode": "531600",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250200",
+      "description": "mf creatwithmkuwaitkw 17 30 kwd 564 38 usd",
+      "counterAccountCode": "510400",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250200",
+      "description": "odemeicin tesekkurederiz",
+      "counterAccountCode": "390000",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250200",
+      "description": "odoodwcramilliesbe 99 00 eur 115 33 usd",
+      "counterAccountCode": "531100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "250200",
+      "description": "odoomiddleeast dmccdubaiarar 30 60 usd",
+      "counterAccountCode": "531100",
+      "office": "turkey"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00042 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00065 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00083 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00087 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00094 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00118 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00134 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00154 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00212 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00259 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00302 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00314 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00329 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00332 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00336 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00360 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00378 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00417 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00483 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00489 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00514 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00522 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00539 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00543 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00549 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00568 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00589 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00601 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00604 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00632 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00711 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00728 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00763 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00786 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00791 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00808 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00814 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00836 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00860 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00889 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00904 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00912 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00929 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00938 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00949 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00955 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00983 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 00994 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01017 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01031 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01038 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01047 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01051 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01061 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01072 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01078 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01103 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01110 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01122 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01148 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01171 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01192 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01197 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01219 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01247 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01254 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01263 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01290 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01304 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01320 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01326 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01340 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01347 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01355 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01366 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01387 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01395 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    },
+    {
+      "accountCode": "260100",
+      "description": "2026 01399 خدمية فاتورة",
+      "counterAccountCode": "510400",
+      "office": "tripoli"
+    }
+  ]
+}

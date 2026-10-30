@@ -21,6 +21,7 @@ function causeOf(entry) {
   if (entry.eventType === 'VENDOR_PAYMENT' || entry.eventType === 'BILL') return 'تكلفة قديمة دُفعت من خزينة غير معروفة';
   if (entry.eventType === 'MIGRATION_ADJUST') return entry.description?.includes('محفظة') ? 'فرق بين رصيد محفظة وتاريخ حركاتها' : 'تسوية ترحيل';
   if (entry.eventType === 'CASH_PAYMENT') return 'دفع نقدي على طلب بلا خزينة محددة';
+  if (entry.eventType === 'MANUAL') return 'قيد يدوي في حساب المعلّق';
   return 'أخرى';
 }
 
@@ -84,7 +85,7 @@ async function listOpen({ cause, search, from, to, limit = 500 } = {}) {
   const closed = await JournalEntry.findOne({ eventKey: /^SUSPENSE_CLOSE:/, status: 'posted' }).select('migrationRunId').lean();
   const match = {
     'lines.accountId': suspense._id, status: 'posted', reversalOf: { $exists: false },
-    eventKey: { $not: /^(MANUAL|CANCEL|SUSPENSE_CLOSE):/ },
+    eventKey: { $not: /^(MANUAL:SETTLE:|CANCEL:|SUSPENSE_CLOSE:)/ },
     // History folded into the opening balance at migration is no longer open
     ...(closed && { migrationRunId: { $ne: closed.migrationRunId } }),
   };
@@ -124,10 +125,15 @@ async function listOpen({ cause, search, from, to, limit = 500 } = {}) {
     && (!term || `${item.number} ${item.description}`.toLowerCase().includes(term)));
   const page = filtered.slice(0, Math.min(Number(limit) || 500, 2000));
   const users = new Map((await User.find({ _id: { $in: page.map((i) => i.partnerId).filter(Boolean) } }).select('firstName lastName customerId').lean()).map((u) => [String(u._id), u]));
+  const ledgerNet = (await JournalEntry.aggregate([
+    { $match: { 'lines.accountId': suspense._id } }, { $unwind: '$lines' }, { $match: { 'lines.accountId': suspense._id } },
+    { $group: { _id: null, net: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+  ]))[0]?.net || 0;
+  const net = items.reduce((sum, item) => sum + item.debit - item.credit, 0);
   return {
     results: page.map((item) => ({ ...item, partner: users.get(String(item.partnerId)) || null })),
     total: filtered.length,
-    net: items.reduce((sum, item) => sum + item.debit - item.credit, 0),
+    net, ledgerNet, unlistedNet: from || to ? null : ledgerNet - net,
     count: items.length,
     groups: [...groups.values()].sort((a, b) => b.count - a.count),
     closedAtMigration: !!closed,
@@ -143,6 +149,8 @@ async function settleItem(id, { accountId, partnerId, arKey, office, day, note }
   const entry = await JournalEntry.findById(entryId).session(session).lean();
   const line = entry?.lines?.[Number(index)];
   if (!entry || entry.status !== 'posted' || !line || String(line.accountId) !== String(suspense._id)) throw fail('البند غير موجود في حساب المعلّق');
+  if (entry.reversalOf || /^(MANUAL:SETTLE:|CANCEL:|SUSPENSE_CLOSE:)/.test(entry.eventKey)) throw fail('هذا قيد تسوية أو إلغاء؛ اختر الحركة الأصلية المفتوحة');
+  await JournalEntry.updateOne({ _id: entry._id }, { $inc: { suspenseSettlementVersion: 1 } }, { session });
   if ((await settledIds(session)).has(`${entryId}:${Number(index)}`)) throw fail('البند سُوّي مسبقاً');
   if ((await resolvedWalletCorrections(suspense._id, session)).has(String(entryId))) throw fail('هذا البند عولج تلقائيًا ضمن تسوية المحفظة؛ حدّث القائمة');
   if ((await resolvedHistoricalBankSettlements(suspense._id, session)).has(String(entryId))) throw fail('هذا البند عولج مع إقفال السداد التاريخي؛ حدّث القائمة');

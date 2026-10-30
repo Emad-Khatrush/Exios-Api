@@ -102,9 +102,11 @@ async function orderSummary(orderId) {
     if (packageId && is(row, 'cost_customs')) claim(customsFeeKey(orderId, packageId)).cost += row.net;
     if (among(row, ['purchase_cost_wip', 'customs_cost_wip'])) purchaseCostInProgress += row.net;
   });
-  if (claims.has(purchaseKey(orderId))) claims.get(purchaseKey(orderId)).cost = purchaseCost;
+  // A completed zero-price purchase can still incur real costs and a loss.
+  if (claims.has(purchaseKey(orderId)) || purchaseCost) claim(purchaseKey(orderId)).cost = purchaseCost;
 
   const packages = new Map((order.paymentList || []).map((pkg) => [String(pkg._id), pkg]));
+  const { byKey: writtenOff } = await require('./writeOffBalances').writeOffBalances([order._id]);
   const list = [...claims.values()].map((item) => {
     const [first, , packageId] = item.arKey.split(':');
     // The transport fee of a package is its own claim beside the shipping (spec v8)
@@ -112,16 +114,17 @@ async function orderSummary(orderId) {
     const pkg = packages.get(packageId);
     return {
       ...item, kind, packageId: packageId || null, tracking: pkg?.deliveredPackages?.trackingNumber, delivered: ['SHP', 'DOM', 'CUS'].includes(kind) ? !!pkg?.status?.received : null,
-      paid: item.billed - item.open, profit: item.recognized - item.cost,
+      writtenOff: writtenOff.get(item.arKey) || 0,
+      paid: item.billed - item.open - (writtenOff.get(item.arKey) || 0), profit: item.recognized - item.cost,
     };
   }).sort((a, b) => a.kind.localeCompare(b.kind));
   const total = (field) => list.reduce((sum, item) => sum + item[field], 0);
 
   return {
-    order: { _id: order._id, orderId: order.orderId, user: order.user, isCanceled: !!order.isCanceled, isPayment: !!order.isPayment },
+    order: { _id: order._id, orderId: order.orderId, user: order.user, isCanceled: !!(order.isCanceled || order.isDeleted), isPayment: !!order.isPayment },
     claims: list,
     totals: {
-      billed: total('billed'), paid: total('paid'), open: total('open'), recognized: total('recognized'), deferred: total('deferred'),
+      billed: total('billed'), paid: total('paid'), writtenOff: total('writtenOff'), open: total('open'), recognized: total('recognized'), deferred: total('deferred'),
       cost: total('cost'), profit: total('recognized') - total('cost'), costInProgress: purchaseCostInProgress,
     },
     bills: await billsFor('orderId', order._id),
@@ -232,15 +235,18 @@ async function tripSummary(tripId) {
 
   const list = [...packages.values()].sort((a, b) => String(a.orderNumber).localeCompare(String(b.orderNumber)));
   const revenue = list.reduce((sum, p) => sum + p.revenue, 0);
+  const costReview = await require('../accountingReview').tripCostStatus(tripId);
+  const undelivered = list.filter(p => !p.isCanceled && !p.delivered).length;
   return {
     trip: { _id: trip._id, voyage: trip.voyage, shippingType: trip.shippingType, status: trip.status, inventoryType: trip.inventoryType },
-    // Air and sea trips share their cost by weight; a domestic trip's cost is a lump-sum expense
-    allocationBase: international ? 'weight' : 'none', international,
+    allocationBase: 'weight', international,
+    costReview,
+    profitStatus: costReview.complete && !undelivered && !costInProgress ? 'reviewed' : 'provisional',
     totals: {
       revenue, cost, profit: revenue - cost, margin: revenue ? Math.round(((revenue - cost) / revenue) * 1000) / 10 : null,
       collected: list.reduce((sum, p) => sum + p.collected, 0), open: list.reduce((sum, p) => sum + Math.max(0, p.open), 0),
       deferred: list.reduce((sum, p) => sum + p.deferred, 0), costInProgress, totalCost: cost + costInProgress,
-      packages: list.length, recognizedPackages: list.filter((p) => p.revenue > 0).length,
+      packages: list.length, recognizedPackages: list.filter((p) => p.revenue > 0).length, undeliveredPackages: undelivered,
     },
     packages: list,
     bills: await billsFor('tripId', trip._id),

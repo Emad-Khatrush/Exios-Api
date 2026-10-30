@@ -55,6 +55,8 @@ const journalEntrySchema = new Schema({
   bankSourceAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   // Contention point for concurrent nettings against the same customer receivable claim.
   claimAllocationVersion: { type: Number, default: 0 },
+  // Serialize concurrent settlements of the same suspense entry inside transactions.
+  suspenseSettlementVersion: { type: Number, default: 0 },
   // Contention point for concurrent repayments against the company loan balance.
   loanAllocationVersion: { type: Number, default: 0 },
   totalDebit: Number,

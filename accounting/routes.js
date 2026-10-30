@@ -27,6 +27,36 @@ router.use(protect, loadAccess);
 const ANY = can(...KEYS);
 const P = Object.fromEntries(KEYS.map((key) => [key, can(key)]));
 
+// Standalone historical cash analysis: never posts to wallets or the ledger.
+const historicalCash = () => require('./services/historicalCash');
+const historicalUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, fieldSize: 2 * 1024 * 1024, files: 1, fields: 1 } });
+const historicalFile = (req, res, next) => historicalUpload.single('file')(req, res, error => next(error
+  ? new (require('../utils/errorHandler'))(400, 'تعذر رفع الملف. الحد الأقصى 5 MB للملف و1000 حركة في الكشف.') : undefined));
+const historicalInput = req => {
+  if (!req.body?.payload) return req.body || {};
+  try { return JSON.parse(req.body.payload); } catch (_) { throw new (require('../utils/errorHandler'))(400, 'بيانات الاستيراد غير صالحة.'); }
+};
+router.get('/historical-cash/options', can('reports', 'treasury'), handle(async (req, res) => res.json(await historicalCash().options())));
+router.get('/historical-cash', can('reports', 'treasury'), handle(async (req, res) => res.json(await historicalCash().list(req.query))));
+router.post('/historical-cash/source-review', P.closing, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/historicalCashSources').review(req.body || {}, { session, req })))));
+router.post('/historical-cash/preview', P.treasury, historicalFile, handle(async (req, res) => {
+  const input = historicalInput(req);
+  res.json(await historicalCash().preview(input, req.file, { excludeId: input.batchId }));
+}));
+router.post('/historical-cash', P.treasury, historicalFile, handle(async (req, res) => {
+  const input = historicalInput(req);
+  res.status(201).json(await require('./services/transaction').runInTransaction(session => historicalCash().save(input, req.file, { session, req, batchId: input.batchId })));
+}));
+router.get('/historical-cash/:id/source', can('reports', 'treasury'), handle(async (req, res) => {
+  const file = await historicalCash().source(req.params.id);
+  res.set('Content-Type', 'application/octet-stream');
+  res.set('Content-Disposition', `attachment; filename="historical-source"; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+  res.send(file.data);
+}));
+router.get('/historical-cash/:id', can('reports', 'treasury'), handle(async (req, res) => res.json(await historicalCash().detail(req.params.id))));
+router.post('/historical-cash/:id/review', P.closing, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => historicalCash().changeStatus(req.params.id, req.body || {}, { session, req })))));
+router.post('/historical-cash/:id/void', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => historicalCash().changeStatus(req.params.id, { ...req.body, action: 'void' }, { session, req })))));
+
 // Who may do what (the owner manages it)
 router.get('/access/me', access.me);
 router.get('/access/members', ownerOnly, access.members);
@@ -68,6 +98,8 @@ router.put('/settings/office-accounts', P.setup, settings.updateOfficeAccounts);
 router.put('/settings/event-journals', P.setup, settings.updateEventJournals);
 
 router.route('/accounts').get(ANY, accounts.list).post(P.setup, accounts.create);
+router.get('/orders/:id/legacy-purchases', can('reports', 'purchases'), handle(async (req, res) => res.json(await require('./services/legacyPurchaseApproval').list(req.params.id))));
+router.post('/orders/:id/legacy-purchases/:itemId/approve', P.purchases, handle(async (req, res) => res.json(await financialTx()(session => require('./services/legacyPurchaseApproval').approve(req.params.id, req.params.itemId, req.body || {}, { session, req })))));
 router.route('/accounts/:id').get(ANY, accounts.get).patch(P.setup, accounts.update).delete(P.setup, accounts.remove);
 router.post('/accounts/:id/archive', P.setup, accounts.archive);
 router.post('/accounts/:id/unarchive', P.setup, accounts.unarchive);
@@ -140,6 +172,14 @@ const reviewTx = fn => require('./services/transaction').runInTransaction(fn);
 // Daily work: the day's review, the open backlog in one list, cash counts and the daily close reports
 const dailyWork = () => require('./services/dailyWork');
 const DAILY_VIEW = can('reports', 'treasury'), DAILY_WORK = can('treasury', 'closing');
+router.get('/daily-work/operations/options', DAILY_VIEW, handle(async (req, res) => {
+  const { offices } = await require('./services/config').getConfig();
+  const users = await require('../models/user').find({ $or: [{ 'roles.isEmployee': true }, { 'roles.isAdmin': true }, { 'roles.isAccountant': true }] })
+    .select('firstName lastName').sort({ firstName: 1 }).lean();
+  res.json({ users, offices: [...offices.values()].map(o => ({ code: o.code, name: o.name })) });
+}));
+router.get('/daily-work/operations', DAILY_VIEW, handle(async (req, res) => res.json(await require('./services/employeeOperations').list(req.query))));
+router.post('/daily-work/operations/review', DAILY_WORK, handle(async (req, res) => res.json(await reviewTx(session => require('./services/employeeOperations').review(req.body, req, session)))));
 router.get('/daily-work/today', DAILY_VIEW, handle(async (req, res) => res.json(await dailyWork().today(req.query))));
 router.get('/daily-work/backlog', DAILY_VIEW, handle(async (req, res) => {
   const { all, ...report } = await dailyWork().backlog(req.query);

@@ -102,12 +102,12 @@ test('scenario 1: dollar shipment paid in dinars, recognised only on delivery', 
   expect(big).toBe(0);
 });
 
-test('scenario 2: delivered before paid stays deferred, recognised on payment', async () => {
+test('scenario 2: delivered before paid earns revenue, payment only settles the receivable', async () => {
   const user = await newCustomer();
   const order = await newOrder({ user, packages: [{ weight: 30, price: 10, received: true }] });
   const [pkg] = order.packageIds;
   await sync(order._id);
-  expect(await balanceOf('410100')).toBe(0);
+  expect(await balanceOf('410100')).toBe(-30000);
   expect(await open(arKey(order._id, pkg))).toBe(30000);
 
   await post(await deposit(user, 300, 'USD'));
@@ -179,6 +179,8 @@ test('scenario 5: trip profit with partial recognition, a late cost and the rest
 test('scenario 6 end: purchase invoice paid in full recognises sale and supplier costs', async () => {
   const user = await newCustomer();
   const order = await newOrder({ user, isPayment: true, totalInvoice: 500 });
+  // Payment alone no longer completes the purchase service.
+  await Order.updateOne({ _id: order._id }, { $set: { orderStatus: 1 } });
   const supplier = await Vendor.create({ name: 'مورد', type: 'supplier' });
   await tx((session) => payables.createBill({ vendorId: supplier._id, day: '2026-01-03', currency: 'USD', lines: [
     { description: 'بضاعة', amount: 430, target: 'order', orderId: order._id },

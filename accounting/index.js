@@ -17,6 +17,12 @@ async function initAccounting() {
     console.error('[accounting] default setup failed:', error.message);
   }
   try {
+    const result = await require('./services/bankMatchingProfile').apply(require('./seed/bankMatchingProfile.json'), { dryRun: false });
+    if (!result.empty) console.log(`[accounting] bank matching profile ${result.alreadyApplied ? 'already applied' : 'applied'}:`, JSON.stringify(result));
+  } catch (error) {
+    console.error('[accounting] bank matching profile NOT applied; existing configuration preserved:', error.message);
+  }
+  try {
     await require('./services/settingsRate').syncSettingsRate();
   } catch (error) {
     console.error('[accounting] could not align the settings rate:', error.message);

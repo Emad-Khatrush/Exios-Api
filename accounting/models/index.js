@@ -269,4 +269,6 @@ module.exports = {
   Counter,
   AuditLog,
   JOURNAL_TYPES,
+  ...require('./historicalCash'),
+  ...require('./bankMatchingProfile'),
 };

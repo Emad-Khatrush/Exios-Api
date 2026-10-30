@@ -71,4 +71,5 @@ const orderPaymentHistorySchema = new Schema({
 }, { timestamps: true });
 
 orderPaymentHistorySchema.index({ order: 1, createdAt: -1 });
+orderPaymentHistorySchema.index({ statementId: 1 });
 module.exports = mongoose.model("OrderPaymentHistory", orderPaymentHistorySchema);

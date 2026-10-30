@@ -13,19 +13,20 @@ const ErrorHandler = require('../../utils/errorHandler');
 
 async function review({ session } = {}) {
   const orders = await Order.find({ isCanceled: { $ne: true }, unsureOrder: { $ne: true }, 'paymentList.status.received': true })
-    .select('orderId createdAt paymentList._id paymentList.tripId paymentList.domesticTripId paymentList.status.received paymentList.deliveredPackages.trackingNumber').session(session || null).lean();
+    .select('orderId createdAt paymentList._id paymentList.tripId paymentList.domesticTripId paymentList.status.received paymentList.freeShippingOffer paymentList.deliveredPackages').session(session || null).lean();
   const delivered = new Map();
   orders.forEach(order => order.paymentList.forEach(pkg => {
-    if (pkg.status?.received) delivered.set(String(pkg._id), { orderId: order._id, orderNumber: order.orderId, date: order.createdAt, packageId: pkg._id, tripId: pkg.tripId, domesticTripId: pkg.domesticTripId, tracking: pkg.deliveredPackages?.trackingNumber });
+    if (pkg.status?.received) delivered.set(String(pkg._id), { orderId: order._id, orderNumber: order.orderId, date: order.createdAt, packageId: pkg._id, tripId: pkg.tripId, domesticTripId: pkg.domesticTripId, tracking: pkg.deliveredPackages?.trackingNumber, zeroCharge: require('./claims/keys').packageChargeCents(pkg) === 0 });
   }));
   const deferred = await resolveAccount('deferred_shipping_revenue');
   const match = { 'lines.accountId': deferred._id, 'lines.packageId': { $in: [...delivered.values()].map(pkg => pkg.packageId) }, 'lines.arKey': /^SHP:/ };
   const amounts = delivered.size ? await JournalEntry.aggregate([
     { $match: match }, { $unwind: '$lines' }, { $match: match },
     { $group: { _id: '$lines.packageId', amount: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
-    { $match: { amount: { $gt: 0 } } },
   ]).session(session || null) : [];
-  const rows = amounts.map(item => ({ ...delivered.get(String(item._id)), revenueToRecognize: item.amount }))
+  const remaining = new Map(amounts.map(item => [String(item._id), item.amount]));
+  let rows = [...delivered.values()].filter(item => remaining.has(String(item.packageId)) || item.zeroCharge)
+    .map(item => ({ ...item, revenueToRecognize: Math.max(remaining.get(String(item.packageId)) || 0, 0) }))
     .sort((a, b) => String(a.packageId).localeCompare(String(b.packageId)));
   if (rows.length) {
     const costRoles = ['trip_cost_wip', 'cost_shipping_air', 'cost_shipping_sea', 'cost_shipping_domestic', 'cost_purchase_invoices', 'customs_cost_wip'];
@@ -49,6 +50,9 @@ async function review({ session } = {}) {
       row.profitImpact = row.revenueToRecognize - row.costToRecognize;
     }
   }
+  // Cost-only differences (including free shipping) also need review. An already
+  // recognised sale is not posted again just to release the remaining trip cost.
+  rows = rows.filter(row => row.revenueToRecognize > 0 || row.costToRecognize !== 0);
   const fingerprint = crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex');
   return { rows, fingerprint, packages: rows.length, orders: new Set(rows.map(row => String(row.orderId))).size,
     revenueToRecognize: rows.reduce((sum, row) => sum + row.revenueToRecognize, 0),
@@ -73,7 +77,7 @@ async function apply(input, req) {
         $inc: { accountingMutationVersion: 1 },
         $set: { 'paymentList.$[delivered].shippingRecognitionFrom': new Date(day) },
       }, { session, arrayFilters: [{ 'delivered.status.received': true, 'delivered.shippingRecognitionFrom': { $exists: false } }] });
-      const result = await syncOrder(id, { session, user: req.user, date: day });
+      const result = await syncOrder(id, { session, user: req.user, date: day, shippingRecognitionOnly: true });
       entries += result.posted || 0;
     }
     await logAudit({ req, action: 'shipping.recognition.reconcile', model: 'Order', after: {

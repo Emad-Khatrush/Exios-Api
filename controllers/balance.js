@@ -55,6 +55,7 @@ module.exports.getBalances = async (req, res, next) => {
       }
     ]))[0]?.results
     debts = await Balance.populate(debts, [{ path: "order" }, { path: "owner" }, { path: "createdBy" }, { path: "manualClosure.closedBy", select: "firstName lastName" }]);
+    await require('../accounting/services/reports/writeOffBalances').annotateDebts(debts);
 
     const credits = await Balance.find({ balanceType: 'credit' }).populate(['owner', 'order', 'createdBy']);
     let countList = (await Balance.aggregate([
@@ -519,6 +520,7 @@ module.exports.searchForDebt = async (req, res, next) => {
     )
     let debts = (await Balance.aggregate(query))[0]?.results;
     debts = await Balance.populate(debts, [{ path: "owner" }, { path: "order" }, { path: "createdBy" }, { path: "manualClosure.closedBy", select: "firstName lastName" }]);
+    await require('../accounting/services/reports/writeOffBalances').annotateDebts(debts);
 
     res.status(200).json(debts);
   } catch (error) {
@@ -668,7 +670,8 @@ module.exports.deleteBalance = async (req, res, next) => {
 module.exports.getDebtOfUser = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const debts = await Balance.find({ owner: userId, status: 'open' });
+    const debts = await Balance.find({ owner: userId, status: 'open' }).lean();
+    await require('../accounting/services/reports/writeOffBalances').annotateDebts(debts);
     if (!debts) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
 
     res.status(200).json(debts);

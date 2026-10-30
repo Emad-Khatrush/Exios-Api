@@ -150,6 +150,7 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
 
   const users = new Map((await User.find({ _id: { $in: [...new Set(orders.map((o) => String(o.user)).filter((id) => mongoose.isValidObjectId(id)))] } }).select(USER_FIELDS).lean()).map((u) => [String(u._id), u]));
 
+  const { byOrder: writeOffs } = await require('./writeOffBalances').writeOffBalances(orders.map(o => o._id));
   let list = orders.map((order) => {
     const books = ledger.get(String(order._id));
     const open = sum(books, ['customer_receivable']);
@@ -157,26 +158,27 @@ async function customerInvoices({ search, kind, status, office, from, to, userId
     const deferred = -sum(books, DEFERRED) || 0;
     const cost = sum(books, COST);
     const costInProgress = sum(books, WIP);
-    const billed = recognized + deferred;
-    const paid = billed - open;
+    const writtenOff = writeOffs.get(String(order._id)) || 0;
+    const billed = recognized + deferred + writtenOff;
+    const paid = billed - open - writtenOff;
     const shipping = (order.paymentList || []).reduce((total, pkg) => total + require('../claims/keys').packageChargeCents(pkg) / 100 + Number(pkg.deliveredPackages?.domesticFee?.usd || 0) + Number(pkg.deliveredPackages?.customsFee?.usd || 0), 0);
     let state = 'none';
     if (order.isDeleted) state = 'deleted';
     else if (order.isCanceled) state = 'canceled';
-    else if (books) state = open > 0 ? (paid > 0 ? 'partial' : 'unpaid') : billed > 0 ? 'paid' : 'none';
+    else if (books) state = writtenOff > 0 ? 'written_off' : open > 0 ? (paid > 0 ? 'partial' : 'unpaid') : billed > 0 ? 'paid' : 'none';
     return {
       _id: order._id, orderNumber: order.orderId, date: order.createdAt, office: order.placedAt,
       kind: order.isPayment ? 'purchase' : 'shipment', isShipment: !!order.isShipment, unsure: !!order.unsureOrder, confirmed: !!order.invoiceConfirmed,
       customerName: order.customerInfo?.fullName, userId: order.user, customer: users.get(String(order.user)) || null,
       invoice: Math.round(Number(order.isPayment ? order.totalInvoice || 0 : 0) * 100), shipping: Math.round(shipping * 100),
-      billed, paid, open, recognized, deferred, cost, costInProgress, profit: recognized - cost, status: state,
+      billed, paid, writtenOff, open, recognized, deferred, cost, costInProgress, profit: recognized - cost, status: state,
     };
   });
   if (status && status !== 'canceled' && status !== 'deleted') list = list.filter((row) => row.status === status);
   const total = (field) => list.reduce((s, row) => s + row[field], 0);
   return {
     totals: {
-      count: list.length, billed: total('billed'), paid: total('paid'), open: total('open'), recognized: total('recognized'),
+      count: list.length, billed: total('billed'), paid: total('paid'), writtenOff: total('writtenOff'), open: total('open'), recognized: total('recognized'),
       deferred: total('deferred'), cost: total('cost'), profit: total('profit'),
     },
     results: list.slice(0, limit), truncated: list.length > limit || orders.length === 2000,

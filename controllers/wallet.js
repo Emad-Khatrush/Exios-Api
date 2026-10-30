@@ -188,6 +188,20 @@ module.exports.getLatestStatements = async (req, res, next) => {
       .lean()
       .exec();
 
+    // Resolve the operation's purpose from its linked payments in one batch.
+    const paymentStatementIds = statements.filter(s => s.calculationType === '-').map(s => s._id);
+    if (paymentStatementIds.length) {
+      const payments = await OrderPaymentHistory.find({ statementId: { $in: paymentStatementIds } })
+        .select('statementId category').lean();
+      const categories = new Map();
+      for (const payment of payments) {
+        const key = String(payment.statementId);
+        if (!categories.has(key)) categories.set(key, new Set());
+        categories.get(key).add(payment.category);
+      }
+      for (const statement of statements) statement.paymentCategories = [...(categories.get(String(statement._id)) || [])];
+    }
+
     // 3. ربط كل عملية دفع شحن بكود أودو الخاص برحلتها
     if (req.query.includeOdoCode === 'true' && statements.length > 0) {
       await attachOdooCodes(statements);

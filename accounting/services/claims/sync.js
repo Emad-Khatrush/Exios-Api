@@ -254,8 +254,14 @@ async function syncOrder(orderId, options = {}) {
     }));
   }
   const keys = new Set([...desired.keys(), ...state.billed.keys()]);
+  const shippingRecognitionOnly = options.shippingRecognitionOnly === true;
+  if (shippingRecognitionOnly) {
+    for (const key of keys) {
+      if (!key.startsWith('SHP:') || !packages.get(key.split(':')[2])?.status?.received) keys.delete(key);
+    }
+  }
 
-  for (const key of keys) {
+  for (const key of shippingRecognitionOnly ? [] : keys) {
     const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
     const want = desired.get(key) || 0;
     const have = state.billed.get(key) || 0;
@@ -284,7 +290,7 @@ async function syncOrder(orderId, options = {}) {
   // so the order reads as if it had been entered for the new customer from the start. Whatever
   // that leaves on the old customer is moved by one entry dated today.
   // (a paid claim nets to zero on the old customer but its entries still move)
-  if (partnerId && [...state.arByPartner.values()].some((byPartner) => [...byPartner.keys()].some((other) => other && other !== String(partnerId)))) {
+  if (!shippingRecognitionOnly && partnerId && [...state.arByPartner.values()].some((byPartner) => [...byPartner.keys()].some((other) => other && other !== String(partnerId)))) {
     const moved = await repartnerEntries(order, partnerId, ctx);
     posted.push(...moved);
     if (moved.length) {
@@ -292,7 +298,7 @@ async function syncOrder(orderId, options = {}) {
       state.arByPartner = fresh.arByPartner;
     }
   }
-  if (partnerId) {
+  if (!shippingRecognitionOnly && partnerId) {
     for (const [key, byPartner] of state.arByPartner) {
       for (const [other, balance] of byPartner) {
         if (!balance || other === String(partnerId) || !other) continue;
@@ -309,7 +315,7 @@ async function syncOrder(orderId, options = {}) {
 
   // ---- 2b. A payment on a written-off claim takes the write-off back (spec 19.7): the claim is
   // owed again by what was paid, so the payment settles it and the revenue rises by it
-  if (active) {
+  if (!shippingRecognitionOnly && active) {
     for (const [key, written] of state.writtenOff) {
       const over = -(state.ar.get(key) || 0);
       const back = Math.min(written, over);
@@ -329,7 +335,7 @@ async function syncOrder(orderId, options = {}) {
   // because a payment covered several packages or dinars were turned into dollars at the payment's
   // rate, is closed against the rounding account, so the customer owes nothing and has no credit
   const ROUNDING_CENTS = 5;
-  if (active && partnerId) {
+  if (!shippingRecognitionOnly && active && partnerId) {
     for (const key of keys) {
       const open = state.ar.get(key) || 0;
       const paidOn = (state.billed.get(key) || 0) - open - Math.max(state.writtenOff.get(key) || 0, 0);
@@ -348,7 +354,7 @@ async function syncOrder(orderId, options = {}) {
   // recognised: what was recognised moves to the accounts of its kind, so the Alipay screen and
   // the purchase invoices each show their own revenue and cost (spec 19.5)
   // (a negative amount too: a supplier refund bigger than the cost recorded leaves a negative cost)
-  if (order.isPayment) {
+  if (!shippingRecognitionOnly && order.isPayment) {
     const key = purchaseKey(order._id);
     const [revenueTo, revenueFrom] = order.isRemittance ? [a.revenue_remittance, a.revenue_purchase_invoices] : [a.revenue_purchase_invoices, a.revenue_remittance];
     const byAccount = state.recognized.get(key);
@@ -372,12 +378,29 @@ async function syncOrder(orderId, options = {}) {
     }
   }
 
-  // ---- 3. Shipping is earned at delivery; purchase invoices keep their instalment policy ----
+  // ---- 3. Recognise completed services independently of collection ----
+  // Purchase status 1 is "purchased" (getOrderSteps); later statuses also mean the
+  // purchase service is complete. Invoice confirmation and timeline text do not.
+  // Historical replay and Alipay remittances retain their original policy.
+  const purchaseAccrual = !ctx.isHistorical && !order.isRemittance;
+  const purchaseCompleted = active && (order.isFinished === true || Number(order.orderStatus) >= 1);
   // A written-off claim counts as settled; its revenue is only what was paid
   const recognizedNow = new Map();
   const writtenOffKeys = new Set();
   const eventDay = toDay(ctx.date);
   const recognitionDay = !ctx.isHistorical && settings.lockDate && eventDay <= settings.lockDate ? addDays(settings.lockDate, 1) : eventDay;
+  if (!ctx.isHistorical && active && !options.orderAt) {
+    const transitions = [...packages.values()].filter(pkg => pkg.status?.received &&
+      (!pkg.shippingRecognitionFrom || toDay(pkg.shippingRecognitionFrom) > recognitionDay));
+    if (transitions.length) {
+      // Keep the effective date for any later historical replay. Old delivered
+      // packages move forward on today's open day; their history is not rewritten.
+      await Order.updateOne({ _id: order._id }, {
+        $set: { 'paymentList.$[delivered].shippingRecognitionFrom': new Date(recognitionDay) },
+        $inc: { accountingMutationVersion: 1 },
+      }, { session: ctx.session, arrayFilters: [{ 'delivered._id': { $in: transitions.map(pkg => pkg._id) } }] });
+    }
+  }
   for (const key of keys) {
     const packageId = key.startsWith('SHP:') ? key.split(':')[2] : null;
     const pkg = packageId && packages.get(packageId);
@@ -388,13 +411,14 @@ async function syncOrder(orderId, options = {}) {
     const delivered = packageId ? !!pkg?.status?.received || (active && abandoned.has(packageId)) : true;
     // Delivery completes the shipping service regardless of collection. Unpaid amounts remain
     // on the same receivable. Payments made later never trigger a second shipping sale.
-    // Purchase invoices retain their existing instalment policy.
     const open = Math.max(state.ar.get(key) || 0, 0);
-    // New deliveries use one accrual policy. Older unpaid deliveries keep their existing
-    // books until explicitly reviewed; their transition date prevents rewriting history.
-    const shippingAccrual = packageId && (pkg?.creditDeliveryInvoiceId ||
+    // Every live delivery earns the full service regardless of payment path. Historical
+    // replay keeps its original policy unless a dated transition was explicitly recorded.
+    const shippingAccrual = packageId && (!ctx.isHistorical || pkg?.creditDeliveryInvoiceId ||
       (pkg?.shippingRecognitionFrom && toDay(pkg.shippingRecognitionFrom) <= recognitionDay));
-    const want = billed <= 0 || !delivered ? 0 : paid || shippingAccrual ? billed : (packageId ? 0 : Math.max(billed - open, 0));
+    const want = !packageId && purchaseAccrual
+      ? (purchaseCompleted ? Math.max(billed, 0) : 0)
+      : billed <= 0 || !delivered ? 0 : paid || shippingAccrual ? billed : (packageId ? 0 : Math.max(billed - open, 0));
     if (packageId && active && abandoned.has(packageId)) writtenOffKeys.add(shipmentKey(order._id, packageId));
     const byAccount = state.recognized.get(key) || new Map();
     const have = [...byAccount.values()].reduce((s, v) => s + v, 0);
@@ -438,13 +462,15 @@ async function syncOrder(orderId, options = {}) {
 
   // ---- 4. Costs follow their revenue ----
   // The whole cost of a written-off claim is recognised, even when nothing of it was paid
-  // The purchase cost is recognised in the proportion of the invoice recognised (all of it once
-  // paid in full, or when the claim is written off)
+  // Live purchases expense their full recorded cost when purchased, including
+  // zero-price/loss orders. Collection, rounding tolerance and write-offs must
+  // never prorate this cost. Historical replay/remittances keep the old rule.
   const purchaseBilled = state.billed.get(purchaseKey(order._id)) || 0;
-  const purchaseShare = writtenOffKeys.has(purchaseKey(order._id)) ? 1
+  const purchaseShare = purchaseAccrual ? (purchaseCompleted ? 1 : 0)
+    : writtenOffKeys.has(purchaseKey(order._id)) ? 1
     : purchaseBilled > 0 ? Math.min((recognizedNow.get(purchaseKey(order._id)) || 0) / purchaseBilled, 1) : 0;
   const purchaseWant = Math.round(state.purchaseCostTotal * purchaseShare);
-  if (purchaseWant !== state.purchaseCostRecognized) {
+  if (!shippingRecognitionOnly && purchaseWant !== state.purchaseCostRecognized) {
     const dims = { orderId: order._id, office, arKey: purchaseKey(order._id) };
     // New cost follows the order's kind; cost taken back leaves the account that holds it
     const costAccount = purchaseWant > state.purchaseCostRecognized
@@ -460,11 +486,12 @@ async function syncOrder(orderId, options = {}) {
   const packageIds = new Set([...packages.keys(), ...[...state.shipCost.keys()].map((k) => k.split('|')[0])]);
   for (const packageId of packageIds) {
     const pkg = packages.get(packageId);
+    if (shippingRecognitionOnly && !pkg?.status?.received) continue;
     // Free shipping (owner's offer with purchases, 2026-10-03): the package is weighed but priced at
     // zero, so it has no revenue to wait for. Its share of the trip is a cost of the order once
     // delivered: of the purchase invoice when the order has one, else of the shipping
     const free = active && !!pkg && !!pkg.status?.received && packageCharge(pkg) === 0 && Number(pkg.deliveredPackages?.weight?.total) > 0;
-    const recognized = free || recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
+    const recognized = (!ctx.isHistorical && active && !!pkg?.status?.received) || free || recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
     const trip = await internationalTrip(pkg, ctx);
     // The air or sea trip that carried it, and the domestic trip that took it on (spec v8)
     const tripIds = new Set([
@@ -498,6 +525,7 @@ async function syncOrder(orderId, options = {}) {
   // waiting, like a purchase cost, until the accountant settles it.
   for (const [packageId, cost] of state.customsCost) {
     const pkg = packages.get(packageId);
+    if (shippingRecognitionOnly && !pkg?.status?.received) continue;
     const key = customsFeeKey(order._id, packageId);
     const sold = (state.billed.get(key) || 0) > 0;
     const recognized = active && (recognizedNow.get(key) > 0 || writtenOffKeys.has(key) || (!sold && !!pkg?.status?.received));

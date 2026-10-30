@@ -124,6 +124,15 @@ async function certifyTrip(tripId, input, { session, req }) {
   return { complete: true };
 }
 
+async function tripCostStatus(tripId, { session } = {}) {
+  const snapshot = (await tripSnapshots([tripId], { session })).get(String(tripId));
+  const certificate = await TripCostReview.findOne({ tripId }).session(session || null).lean();
+  const hasDraftBills = !!snapshot?.bills.some(b => b.status === 'draft');
+  const complete = !!snapshot && !hasDraftBills && snapshot.cost >= 0 && certificate?.fingerprint === snapshot.fingerprint;
+  return { complete, hasDraftBills, changedSinceReview: !!certificate && !complete,
+    reviewedAt: certificate?.reviewedAt || null };
+}
+
 async function queue(input = {}, { session } = {}) {
   const period = await range(input);
   const day = { ...(period.from && { $gte: period.from }), $lte: period.to };
@@ -224,9 +233,29 @@ async function queue(input = {}, { session } = {}) {
   const packageIds = entries.flatMap(e => e.lines.filter(l => Object.values(shipmentRoles).includes(id(l.accountId)) && (l.credit || 0) > (l.debit || 0)).map(l => l.packageId)).filter(Boolean);
   const shipmentOrders = await Order.find({ 'paymentList._id': { $in: packageIds } }).select('paymentList._id paymentList.tripId paymentList.domesticTripId').session(session || null).lean();
   const packages = shipmentOrders.flatMap(o => o.paymentList).filter(p => packageIds.some(i => id(i) === id(p)));
-  const tripIds = [...new Set(packages.flatMap(p => [id(p.tripId), id(p.domesticTripId)]).filter(mongoose.isValidObjectId))];
+  // Include WIP carried into month end even when this month had no new sale.
+  // Measuring service progress is an accountant's contract-based judgement;
+  // never infer a completion percentage from cash receipts or elapsed days.
+  let carriedTrips = [];
+  const monthEnd = require('./posting/schedules').monthEnd(period.to.slice(0, 7));
+  if (period.to === monthEnd && period.to < today()) {
+    const { trip_cost_wip: wipId } = await roleIds(['trip_cost_wip']);
+    const wip = new mongoose.Types.ObjectId(wipId);
+    carriedTrips = await JournalEntry.aggregate([
+      { $match: { day: { $lte: period.to }, 'lines.accountId': wip } },
+      { $unwind: '$lines' }, { $match: { 'lines.accountId': wip, 'lines.tripId': { $ne: null } } },
+      { $group: { _id: '$lines.tripId', amount: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } } } },
+      { $match: { amount: { $gt: 0 } } },
+    ]).session(session || null);
+  }
+  const tripIds = [...new Set([...packages.flatMap(p => [id(p.tripId), id(p.domesticTripId)]), ...carriedTrips.map(t => id(t._id))].filter(mongoose.isValidObjectId))];
   const tripCosts = await tripSnapshots(tripIds, { session });
   for (const [tripId, snapshot] of tripCosts) {
+    const carried = carriedTrips.find(t => id(t._id) === tripId);
+    if (carried) add({ key: `tripProgress:${tripId}:${period.to}`, category: 'cost', blocking: false,
+      title: 'رحلة قيد التنفيذ عند إقفال الشهر: راجع إنجاز الخدمة والتكاليف المستحقة',
+      description: `${snapshot.trip.voyage} · تكلفة قيد التنفيذ ${(carried.amount / 100).toFixed(2)} USD. راجع عقد الشحن ومدى إنجاز الخدمة، وسجل أي قيد استحقاق معتمد؛ السداد لا يحدد نسبة الإنجاز.`,
+      reviewTripId: tripId, url: `/inventory/${tripId}/edit`, snapshot: [period.to, carried.amount, snapshot.fingerprint] });
     const certificate = tripReviews.find(r => id(r.tripId) === tripId);
     if (certificate?.fingerprint !== snapshot.fingerprint) add({ key: `tripCost:${tripId}`, category: 'cost', title: snapshot.cost <= 0 ? 'رحلة بإيراد دون تكلفة مؤكدة' : 'اكتمال تكلفة الرحلة لم يُراجع',
       description: `${snapshot.trip.voyage} · التكلفة المسجلة ${(snapshot.cost / 100).toFixed(2)} USD`, tripId, zeroCost: snapshot.cost <= 0,
@@ -340,4 +369,4 @@ async function approveMonth(month, { session, req }) {
   await logAudit({ req, action: 'period.approve', model: 'AccountingPeriodApproval', after: { month, fingerprint: report.fingerprint } }, session);
   return { approved: true, month };
 }
-module.exports = { queue, certifyCost, certifyTrip, certifyBank, orderSnapshot, updateTask, approvalStatus, approveMonth };
+module.exports = { queue, certifyCost, certifyTrip, tripCostStatus, certifyBank, orderSnapshot, updateTask, approvalStatus, approveMonth };

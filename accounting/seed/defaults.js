@@ -58,6 +58,8 @@ const ACCOUNTS = [
   a('110203', 'بنك البركه التركي - ليره', 'Albaraka bank TL', 'asset', '1102', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('110204', 'بنك الكويت ترك - ليره', 'Kuveyt Türk BANK TRY', 'asset', '1102', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('110205', 'بنك الكويت ترك - دولار', 'Kuveyt Türk BANK USD', 'asset', '1102', { currency: 'USD', isCash: true, cashKind: 'bank', office: 'turkey' }),
+  a('110207', 'بنك Garanti - دولار', 'Garanti bank - USD', 'asset', '1102', { currency: 'USD', isCash: true, cashKind: 'bank', office: 'turkey' }),
+  a('110208', 'بنك Garanti - ليرة', 'Garanti bank - TRY', 'asset', '1102', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   g('1103', 'المحافظ الإلكترونية', 'E-wallets', 'asset', '11'),
   a('110301', 'Alipay شركة 1', 'Alipay company 1', 'asset', '1103', { currency: 'CNY', isCash: true, cashKind: 'ewallet', office: 'china' }),
   a('110302', 'Alipay شركة 2', 'Alipay company 2', 'asset', '1103', { currency: 'CNY', isCash: true, cashKind: 'ewallet', office: 'china' }),
@@ -119,6 +121,7 @@ const ACCOUNTS = [
   g('25', 'بطاقات الائتمان', 'Credit cards', 'liability', '2'),
   a('250100', 'بطاقة كويت ترك الائتمانية - ليرة', 'Kuveyt Turk credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('250200', 'بطاقة البركة الائتمانية - ليرة', 'Albaraka credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
+  a('250300', 'بطاقة Garanti الائتمانية - ليرة', 'Garanti credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   // A partner who pays for us on their account (spec 19.4): what we owe them by their statement.
   // Aswaq ships from the UAE and Saudi Arabia and pays purchases and taxes for us; we settle in
   // cash dollars. A friend whose card buys for us (a purchase funder) gets an account like it.
