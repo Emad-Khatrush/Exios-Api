@@ -143,7 +143,8 @@ function packageView(p) {
   const d = p.deliveredPackages || {};
   return { _id: p._id, tripId: p.tripId, trackingNumber: d.trackingNumber, arrivedAt: d.arrivedAt,
     weight: d.weight, chargeCents: packageChargeCents(p), received: !!p.status?.received,
-    arrivedLibya: !!p.status?.arrivedLibya, arrived: !!p.status?.arrived, mark: p.mark };
+    arrivedLibya: !!p.status?.arrivedLibya, arrived: !!p.status?.arrived, mark: p.mark,
+    images: (p.images || []).filter(image => image.path).map(({ _id, path, filename, fileType }) => ({ _id, path, filename, fileType })) };
 }
 
 exports.list = async (req, res, next) => {
@@ -208,11 +209,16 @@ exports.list = async (req, res, next) => {
       isPayment: 1, isShipment: 1, unsureOrder: 1, hasProblem: 1, shippingBlocked: 1, shippingBlockReason: 1, orderNote: 1, isFinished: 1, orderStatus: 1,
       createdAt: 1, lastActivityAt: 1, ageIsEstimated: 1, billedCents: 1, purchaseCents: 1, openCents: 1, paymentState: 1, moneySource: 1,
       packageCount: { $size: { $ifNull: ['$paymentList', []] } },
+      images: { $map: { input: { $filter: { input: { $ifNull: ['$images', []] }, as: 'image', cond: { $eq: ['$$image.category', 'invoice'] } } }, as: 'image', in: {
+        _id: '$$image._id', path: '$$image.path', filename: '$$image.filename', fileType: '$$image.fileType',
+      } } },
       paymentList: { $map: { input: { $ifNull: ['$paymentList', []] }, as: 'p', in: {
         _id: '$$p._id', tripId: '$$p.tripId', status: '$$p.status', mark: '$$p.mark', deliveredPackages: {
           trackingNumber: '$$p.deliveredPackages.trackingNumber', arrivedAt: '$$p.deliveredPackages.arrivedAt',
           weight: '$$p.deliveredPackages.weight', exiosPrice: '$$p.deliveredPackages.exiosPrice',
-        },
+        }, images: { $map: { input: { $ifNull: ['$$p.images', []] }, as: 'image', in: {
+          _id: '$$image._id', path: '$$image.path', filename: '$$image.filename', fileType: '$$image.fileType',
+        } } },
       } } },
     } };
     const countRules = {
@@ -280,7 +286,7 @@ exports.packages = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) throw new ErrorHandler(400, 'رقم الطلبية غير صحيح');
     const order = await Order.findOne({ _id: req.params.id, isCanceled: { $ne: true } })
-      .select('paymentList._id paymentList.tripId paymentList.status paymentList.mark paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.arrivedAt paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean();
+      .select('paymentList._id paymentList.tripId paymentList.status paymentList.mark paymentList.images paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.arrivedAt paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice').lean();
     if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
     const packages = (order.paymentList || []).sort((a, b) => (new Date(b.deliveredPackages?.arrivedAt || 0).getTime() || 0) - (new Date(a.deliveredPackages?.arrivedAt || 0).getTime() || 0) || String(b._id).localeCompare(String(a._id))).map(packageView);
     await attachTrips([{ packages }]);

@@ -3,7 +3,7 @@ const Order = require('../../models/order');
 const User = require('../../models/user');
 const Inventory = require('../../models/inventory');
 const { AccountingSettings, JournalEntry } = require('../models');
-const { list } = require('../../controllers/xTracking');
+const { list, packages: listPackages } = require('../../controllers/xTracking');
 const { getTapTypeQuery } = require('../../middleware/helper');
 
 let ar;
@@ -23,6 +23,29 @@ async function claim(o, billed = 10000, open = billed) {
   ]);
 }
 const fetch = query => new Promise((resolve, reject) => list({ query }, { json: resolve }, reject));
+
+test('tracking returns admin pictures and parcel pictures on both listing paths without client receipts', async () => {
+  await order('PHOTOS', { images: [
+    { path: 'https://example.com/admin.jpg', category: 'invoice' },
+    { path: 'https://example.com/receipt.jpg', category: 'receipts' },
+  ], paymentList: [{ images: [{ path: 'https://example.com/parcel.jpg', description: 'internal metadata' }], deliveredPackages: { trackingNumber: 'PHOTO-TRACK' } }] });
+  for (const query of [{}, { quick: 'true' }]) {
+    const result = await fetch(query);
+    expect(result.orders[0].images.map(image => image.path)).toEqual(['https://example.com/admin.jpg']);
+    expect(result.orders[0].packages[0].images.map(image => image.path)).toEqual(['https://example.com/parcel.jpg']);
+    expect(result.orders[0].packages[0].images[0].description).toBeUndefined();
+  }
+});
+
+test('expanding parcels keeps each parcel pictures and supports old parcels without pictures', async () => {
+  const record = await order('EXPAND-PHOTOS', { paymentList: [
+    { images: [{ path: 'https://example.com/extra.jpg' }], deliveredPackages: { trackingNumber: 'WITH-PHOTO' } },
+    { deliveredPackages: { trackingNumber: 'NO-PHOTO' } },
+  ] });
+  const result = await new Promise((resolve, reject) => listPackages({ params: { id: String(record._id) } }, { json: resolve }, reject));
+  expect(result.packages.find(p => p.trackingNumber === 'WITH-PHOTO').images[0].path).toBe('https://example.com/extra.jpg');
+  expect(result.packages.find(p => p.trackingNumber === 'NO-PHOTO').images).toEqual([]);
+});
 
 test('waiting purchase uses exactly the original Unpaid stage, regardless of receivable balance', async () => {
   const waiting = await order('WAIT', { orderStatus: 0 }); await claim(waiting, 10000, 0);
