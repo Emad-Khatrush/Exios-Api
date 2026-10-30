@@ -25,6 +25,44 @@ const creationKeyFor = (req, operation = 'trip') => {
 
 const { ObjectId } = mongodb;
 
+module.exports.getFlightReport =async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { customerId } = req.query;
+    if (!ObjectId.isValid(id) || (customerId && (typeof customerId !== 'string' || !ObjectId.isValid(customerId)))) {
+      return next(new ErrorHandler(400, 'Invalid flight or customer ID'));
+    }
+    const inventory = await Inventory.findById(id)
+      .select('voyage shippingType seaType seaLoadType shippedCountry inventoryPlace status arrivalDate inventoryFinishedDate createdAt odoReferenceCode note costPrice voyageAmount voyageCurrency isCaclulationDone expenses orders.paymentList._id')
+      .lean();
+    if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
+    if (inventory.shippingType === 'sea' && !inventory.seaType && inventory.seaLoadType) inventory.seaType = inventory.seaLoadType.toLowerCase();
+    const ids = [...new Set((inventory.orders || []).flatMap(order => {
+      const packages = Array.isArray(order.paymentList) ? order.paymentList : [order.paymentList];
+      return packages.map(pkg => pkg?._id).filter(Boolean).map(String);
+    }))].filter(ObjectId.isValid).map(value => new ObjectId(value));
+    const match = { 'paymentList._id': { $in: ids } };
+    if (customerId) match.user = new ObjectId(customerId);
+    let orders = ids.length ? await Orders.aggregate([
+      { $match: match },
+      { $unwind: '$paymentList' },
+      { $match: { 'paymentList._id': { $in: ids } } },
+      { $sort: { orderId: 1, 'paymentList._id': 1 } },
+      { $project: { orderId: 1, customerInfo: 1, user: 1, shipment: 1, paymentList: 1 } },
+    ]) : [];
+    orders = await Orders.populate(orders, { path: 'user', select: 'customerId firstName lastName phone' });
+    delete inventory.orders;
+    // The customer report never shows the flight's costs, so don't send them.
+    if (customerId) ['costPrice', 'voyageAmount', 'voyageCurrency', 'expenses'].forEach(key => delete inventory[key]);
+    // The admin panel renders this data and prints it to PDF in the browser.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.status(200).json({ inventory, orders });
+  } catch (error) {
+    console.error('Flight report failed:', { flightId: req.params.id, message: error.message });
+    return next(new ErrorHandler(500, 'Could not load the flight report'));
+  }
+};
+
 module.exports.getInventory = async (req, res, next) => {
   try {
     const { limit, skip, searchValue, searchType, searchMode } = req.query;
@@ -374,13 +412,13 @@ module.exports.createInventory = async (req, res, next) => {
   let attachmentsCommitted = false;
   try {
     const { inventoryFinishedDate, arrivalDate, voyage, voyageAmount, voyageCurrency, shippedCountry, inventoryPlace, inventoryType, shippingType, seaLoadType, note, costPrice, odoReferenceCode } = req.body;
-    if (seaLoadType && !['FCL', 'LCL'].includes(seaLoadType)) throw new ErrorHandler(400, 'Invalid sea load type');
+    const sea = require('../utils/tripSeaType').seaFields(req.body);
     const creationKey = creationKeyFor(req);
     if (creationKey) {
       const existing = await Inventory.findOne({ creationKey });
       if (existing) return res.status(200).json(inventoryAttachments.serialize(existing, req.user));
     }
-    const identity = !inventoryType || ['inventoryGoods', 'shippingVoyage'].includes(inventoryType) ? tripNumbering.scope(shippedCountry, shippingType, seaLoadType) : null;
+    const identity = !inventoryType || ['inventoryGoods', 'shippingVoyage'].includes(inventoryType) ? tripNumbering.scope(shippedCountry, shippingType, sea.seaLoadType) : null;
     if (identity) await tripNumbering.ensureRule(identity);
     const attachments = await inventoryAttachments.storeUploads(req);
     uploadedAttachments = attachments;
@@ -414,7 +452,7 @@ module.exports.createInventory = async (req, res, next) => {
         voyageCurrency,
         inventoryType,
         shippingType,
-        seaLoadType: shippingType === 'sea' ? seaLoadType || null : null,
+        ...sea,
         note,
         costPrice,
         odoReferenceCode: odoCode
@@ -904,9 +942,7 @@ module.exports.updateInventory = async (req, res, next) => {
       if (Object.keys(update).some(key => key.startsWith('$') || /^(tripNumbering|creationKey|attachments)(\.|$)/.test(key))) {
         throw new ErrorHandler(400, 'Sequence details and attachments must be changed using their dedicated actions.');
       }
-      if (update.seaLoadType && !['FCL', 'LCL'].includes(update.seaLoadType)) throw new ErrorHandler(400, 'Invalid sea load type');
-      if ((update.shippingType || currentInventory.shippingType) !== 'sea') update.seaLoadType = null;
-      else if (update.seaLoadType === '') update.seaLoadType = null;
+      Object.assign(update, require('../utils/tripSeaType').seaFields(update, currentInventory));
       // Package membership uses the dedicated add/remove operations.
       if (update.orders !== undefined) throw new ErrorHandler(400, 'Use package add/remove actions to change trip packages');
 

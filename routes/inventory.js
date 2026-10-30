@@ -51,6 +51,9 @@ router.route('/inventory/deletions')
 router.route('/inventory/:id/packages/:paymentListId')
     .delete(protect, allowAdminsAndEmployee, inventory.deleteWarehousePackage)
 
+router.route('/inventory/:id/report')
+    .get(protect, allowAdminsAndEmployee, inventory.getFlightReport)
+
 router.route('/inventory/:id')
     .get(protect, fileAccessRoles, inventory.getSingleInventory)
     .delete(protect, isAdmin, inventory.deleteInventory)

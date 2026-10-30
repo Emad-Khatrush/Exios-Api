@@ -14,7 +14,8 @@
     "postinstall": "npx puppeteer browsers install chrome",
     "accounting:setup": "node accounting/scripts/setup.js",
     "db:backup": "node accounting/scripts/backup.js",
-    "db:restore-local": "node accounting/scripts/restoreLocal.js"
+    "db:restore-local": "node accounting/scripts/restoreLocal.js",
+    "test:wallet-exchange": "node --test tests/walletExchange.check.cjs tests/walletExchangeAccounting.check.cjs"
   },
   "keywords": [],
   "author": "",

@@ -163,21 +163,7 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
           }
         },
         { $sort: { createdAt: -1 } },
-        // Lookup user to match the populate('user') behavior
-        {
-          $lookup: {
-            from: 'users', // Replace with your exact users collection name if different
-            localField: 'user',
-            foreignField: '_id',
-            as: 'user'
-          }
-        },
-        {
-          $unwind: {
-            path: '$user',
-            preserveNullAndEmptyArrays: true
-          }
-        }
+        { $project: { _id: 1, orderId: 1, createdAt: 1, paymentList: 1 } }
       ]);
     } else {
       // This view is per package, not per order: a delivered package belongs in "finished"
@@ -187,7 +173,7 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
         : { ...tabTypeQuery, user: id };
 
       orders = await Orders.find(query)
-        .populate('user')
+        .select('_id orderId createdAt paymentList')
         .sort({ createdAt: -1 })
         .lean(); // .lean() is CRITICAL here for memory performance on large datasets
 
@@ -219,11 +205,20 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
         'orders.paymentList._id': { $in: packageIds },
         inventoryType: 'inventoryGoods',
         shippingType: { $ne: 'domestic' }
-      }).select('-attachments').lean();
+      }).select('_id voyage shippingType inventoryPlace orders.paymentList._id').lean();
 
       // --- 4. MAP INVENTORY IN MEMORY (CRASH-PROOF) ---
       const inventoryMap = {};
+      const requestedPackageIds = new Set(packageIds.map(id => id.toString()));
       for (const inv of inventories) {
+        // Never attach the inventory document: its orders contain other customers'
+        // packages and would be repeated once for every package in the response.
+        const flight = {
+          _id: inv._id,
+          voyage: inv.voyage,
+          shippingType: inv.shippingType,
+          inventoryPlace: inv.inventoryPlace,
+        };
         if (Array.isArray(inv.orders)) {
           for (const invOrder of inv.orders) {
 
@@ -233,8 +228,8 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
               : (invOrder.paymentList ? [invOrder.paymentList] : []);
 
             for (const invPkg of pList) {
-              if (invPkg && invPkg._id) {
-                inventoryMap[invPkg._id.toString()] = inv;
+              if (invPkg && invPkg._id && requestedPackageIds.has(invPkg._id.toString())) {
+                inventoryMap[invPkg._id.toString()] = flight;
               }
             }
           }

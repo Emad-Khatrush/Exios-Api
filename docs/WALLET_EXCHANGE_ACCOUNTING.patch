@@ -1,0 +1,8 @@
+diff --git a/accounting/services/posting/operations.js b/accounting/services/posting/operations.js
+index 48d4df4..dc7ac41 100644
+--- a/accounting/services/posting/operations.js
++++ b/accounting/services/posting/operations.js
+@@ -207,2 +207,3 @@ async function postStatement(statementId, options = {}) {
+   if (!statement) return { skipped: 'statement not found' };
++  if (statement.walletExchangeId) return require('../../../utils/walletExchangeAccounting').postExchange(statement.walletExchangeId, options);
+   if (statement.accountingSource?.model) return { skipped: 'posted by accounting itself' };

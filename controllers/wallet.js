@@ -225,11 +225,12 @@ module.exports.getLatestStatements = async (req, res, next) => {
       // Same rule as the customer statement: only cash/bank deposits and cash withdrawals
       // are real money. Refunds, compensation and cancellations only credit the wallet.
       const flowOf = ({ type, actionType, paymentType }) => {
+        if (actionType === 'exchange') return type === '-' ? 'exchangeOut' : 'exchangeIn';
         if (type === '-') return actionType === 'withdrawal' || paymentType === 'withdrawal' ? 'cashOut' : 'spent';
         return ['refund', 'compensation', 'cancellation', 'wallet'].includes(actionType) ? 'credit' : 'cashIn';
       };
       const empty = () => ({ USD: 0, LYD: 0, count: 0 });
-      summary = { count: totalCount, cashIn: empty(), credit: empty(), spent: empty(), cashOut: empty() };
+      summary = { count: totalCount, cashIn: empty(), credit: empty(), spent: empty(), cashOut: empty(), exchangeIn: empty(), exchangeOut: empty() };
       groups.forEach(({ _id, amount, count }) => {
         const bucket = summary[flowOf(_id)];
         if (_id.currency === 'USD' || _id.currency === 'LYD') bucket[_id.currency] += amount || 0;
@@ -269,6 +270,7 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, actionType, office } = req.body;
+    if (actionType === 'exchange') throw new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل طرفي التحويل معًا');
     const amountValue = positiveWalletAmount(amount);
     await assertOpenPeriod(req.user, createdAt || new Date());
     // The account the money went into, when chosen (a bank, or a partner's current account such as Wasl)
@@ -585,6 +587,7 @@ module.exports.deleteStatement = async (req, res, next) => {
 
       const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session).populate('createdBy', 'firstName lastName');
       if (!statement) throw new ErrorHandler(404, 'Statement not found');
+      if (statement.walletExchangeId || statement.actionType === 'exchange') throw new ErrorHandler(400, 'لا يمكن حذف طرف منفرد من عملية صرافة');
       if (statement.linkedCustomerRefundId || statement.linkedBankRefundLineId) throw new ErrorHandler(400, 'هذه الحركة مرتبطة باسترداد مورد؛ فك الربط قبل حذفها');
       // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
       const withdrawal = isWithdrawal(statement);
@@ -656,6 +659,7 @@ module.exports.updateStatement = async (req, res, next) => {
 
       const statement = await UserStatement.findOne({ _id: statementId, user: id }).session(session);
       if (!statement) throw new ErrorHandler(404, 'Statement not found');
+      if (statement.walletExchangeId || statement.actionType === 'exchange' || req.body.actionType === 'exchange') throw new ErrorHandler(400, 'لا يمكن تعديل طرف منفرد من عملية صرافة');
       if (statement.linkedCustomerRefundId || statement.linkedBankRefundLineId) throw new ErrorHandler(400, 'هذه الحركة مرتبطة باسترداد مورد؛ فك الربط قبل تعديلها');
       if (isWithdrawal(statement)) return updateWithdrawal(statement, req.body, req, session);
       // Outgoing payments are linked to orders and debts, only incoming ones can be changed here
@@ -936,6 +940,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
+    if (actionType === 'exchange') throw new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل طرفي التحويل معًا');
     const withdrawalSource = req.body.withdrawalSource || 'box';
     if (actionType === 'withdrawal' && !['box', 'custody'].includes(withdrawalSource)) throw new ErrorHandler(400, 'اختر مصدر السحب النقدي');
     if (actionType === 'withdrawal' && withdrawalSource === 'custody') {

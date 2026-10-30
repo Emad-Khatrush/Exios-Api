@@ -27,7 +27,7 @@ const userStatementSchema = new Schema({
   },
   paymentType: { type: String, enum: ['wallet', 'debt', 'cash', 'bank', 'withdrawal'], required: true },
   calculationType: { type: String, enum: ['+', '-'], required: true },
-  actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal'] },
+  actionType: { type: String, enum: ['cash', 'compensation', 'refund', 'cancellation', 'wallet', 'bank', 'withdrawal', 'exchange'] },
   // Any office of the system, or the two old bank values (offices are data, spec C4)
   office: { type: String, validate: officeValidator(['almutahidaTrBank', 'bank']) },
   // The account the money went into (or came out of), chosen on the deposit screen: a cash box,
@@ -36,6 +36,8 @@ const userStatementSchema = new Schema({
   withdrawalSource: { type: String, enum: ['box', 'custody'] },
   custodyEmployeeId: { type: Schema.Types.ObjectId, ref: 'User' },
   matchingVersion: { type: Number, default: 0 },
+  walletExchangeId: { type: Schema.Types.ObjectId, ref: 'WalletExchange', immutable: true },
+  walletExchangeLeg: { type: String, enum: ['from', 'to'], immutable: true },
   editHistory: [{
     editedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     editedAt: Date,

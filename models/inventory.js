@@ -71,6 +71,12 @@ const inventorySchema = new Schema({
   },
   // Explicit classification; old trips stay unknown rather than guessing from names.
   seaLoadType: { type: String, enum: ['FCL', 'LCL', null], default: null },
+  // Sea trips only: lcl = shared container (شحن مشترك), fcl = a full container for one customer
+  // (شحن حاوية كاملة لعميل). Sales goals count LCL by CBM and FCL by containers.
+  seaType: {
+    type: String,
+    enum: ['lcl', 'fcl', null],
+  },
   isCaclulationDone: {
     type: Boolean,
     default: false

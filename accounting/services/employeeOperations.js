@@ -1,6 +1,7 @@
 // Read original operational documents, not journal lines: one payment stays one operation.
 const mongoose = require('mongoose');
 const Statement = require('../../models/userStatement');
+const WalletExchange = require('../../models/walletExchange');
 const Payment = require('../../models/orderPaymentHistory');
 const Order = require('../../models/order');
 const Invoice = require('../../models/invoice');
@@ -17,7 +18,7 @@ const literal = value => ({ $literal: value });
 const coalesce = (...values) => values.reduceRight((rest, value) => ({ $ifNull: [value, rest] }));
 const url = (prefix, field = '$_id') => ({ $concat: [prefix, { $toString: field }] });
 const orderUrl = (field = '$_id') => ({ $concat: ['/invoice/', { $toString: field }, '/edit'] });
-const types = ['deposit', 'withdrawal', 'refund', 'compensation', 'wallet_payment', 'purchase_payment', 'shipping_payment',
+const types = ['deposit', 'withdrawal', 'refund', 'compensation', 'wallet_payment', 'wallet_exchange', 'purchase_payment', 'shipping_payment',
   'purchase_invoice', 'shipping_order', 'shipping_invoice', 'supplier_bill', 'expense', 'supplier_payment', 'supplier_receipt', 'transfer', 'salary', 'change', 'manual_entry', 'yuan', 'netting', 'equity', 'writeoff'];
 const condition = (test, yes, no) => ({ $cond: [test, yes, no] });
 
@@ -29,7 +30,7 @@ function sources() {
     { case: { $eq: ['$calculationType', '-'] }, then: 'wallet_payment' },
   ], default: 'deposit' } };
   const base = [
-    { model: Statement, enteredAt: true, kind: walletKind, partner: '$user', amount: '$amount', url: url('/user/', '$user'),
+    { model: Statement, match:{ walletExchangeId:{ $exists:false }, actionType:{ $ne:'exchange' } }, enteredAt: true, kind: walletKind, partner: '$user', amount: '$amount', url: url('/user/', '$user'),
       extra: [{ $lookup: { from: Payment.collection.name, localField: '_id', foreignField: 'statementId', as: '_payments' } },
         { $lookup: { from: docs.CustomerRefund.collection.name, let: { id: '$_id' }, pipeline: [{ $match: { $expr: { $or: [{ $eq: ['$userStatementId', '$$id'] }, { $eq: ['$legacyWalletStatementId', '$$id'] }] } } }, { $limit: 1 }], as: '_refund' } },
         { $match: { '_refund.0': { $exists: false }, 'accountingSource.model': { $ne: 'AccountingNetting' } } }],
@@ -37,6 +38,8 @@ function sources() {
         condition({ $in: ['invoice', '$_payments.category'] }, 'purchase_payment', condition({ $in: ['receivedGoods', '$_payments.category'] }, 'shipping_payment',
           condition({ $regexMatch: { input: coalesce('$description', literal('')), regex: 'تم دفع قيمة الشحن|بضاعة مستلمة' } }, 'shipping_payment',
             condition({ $regexMatch: { input: coalesce('$note', literal('')), regex: '\\border(?:\\s+(?:id|number|no\\.?))?[\\s:#(]*\\d', options: 'i' } }, 'purchase_payment', walletKind)))), walletKind) },
+    { model: WalletExchange, enteredAt:true, kind:'wallet_exchange', partner:'$user', amount:{ $divide:['$fromMinor',100] }, currency:'$fromCurrency', url:url('/user/','$user'), status:coalesce('$posting.status',literal('pending')),
+      description:{ $concat:[literal('صرافة محفظة: '),{$toString:{$divide:['$fromMinor',100]}},' ','$fromCurrency',' → ',{$toString:{$divide:['$toMinor',100]}},' ','$toCurrency'] } },
     { model: Payment, enteredAt: true, match: { statementId: null }, kind: condition({ $eq: ['$category', 'invoice'] }, 'purchase_payment', 'shipping_payment'), partner: '$customer', amount: '$receivedAmount', url: condition(coalesce('$order', literal(false)), orderUrl('$order'), url('/user/', '$customer')) },
     { model: Order, match: { $or: [{ totalInvoice: { $gt: 0 } }, { isPayment: true }, { isShipment: true }] }, actor: '$madeBy', partner: '$user', office: '$placedAt',
       kind: condition({ $or: ['$isPayment', { $gt: ['$totalInvoice', 0] }] }, 'purchase_invoice', 'shipping_order'),

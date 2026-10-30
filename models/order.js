@@ -474,5 +474,9 @@ orderSchema.pre('aggregate', function hideDeletedInPipeline() {
 });
 orderSchema.index({ 'paymentList.domesticTripId': 1 });
 orderSchema.index({ shippingBlocked: 1, isFinished: 1, createdAt: -1 }, { partialFilterExpression: { shippingBlocked: true } });
+// Date ranges read by the sales goals dashboard (sales by invoice date, packages by arrival date)
+orderSchema.index({ createdAt: 1 });
+orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ 'paymentList.deliveredPackages.arrivedAt': 1 });
 
 module.exports = mongoose.model("Order", orderSchema);

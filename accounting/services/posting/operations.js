@@ -205,6 +205,7 @@ async function postStatement(statementId, options = {}) {
   const { session } = options;
   const statement = await UserStatement.findById(statementId).session(session).lean();
   if (!statement) return { skipped: 'statement not found' };
+  if (statement.walletExchangeId) return require('../../../utils/walletExchangeAccounting').postExchange(statement.walletExchangeId, options);
   if (statement.accountingSource?.model) return { skipped: 'posted by accounting itself' };
 
   // The historical migration may say what an old statement was when its kind was never saved

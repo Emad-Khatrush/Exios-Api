@@ -97,6 +97,7 @@ const userSchema = new Schema({
     reviewedAt: { type: Date },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
+  walletExchangeVersion: { type: Number, default: 0 },
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function(password) {

@@ -2,6 +2,20 @@ if (process.env.NODE_ENV !== "production") {
   require('dotenv').config();
 }
 const { isQa } = require('./utils/qaEnvironment');
+// Optional override for environments whose default resolver rejects Atlas SRV queries.
+const mongoDnsServers = (process.env.MONGO_DNS_SERVERS || '')
+  .split(',').map(server => server.trim()).filter(Boolean);
+if (mongoDnsServers.length > 0) {
+  require('node:dns').setServers(mongoDnsServers);
+}
+// Keep certificate verification enabled while trusting the local system CA store.
+if (process.env.MONGO_USE_SYSTEM_CA === 'true') {
+  const tls = require('node:tls');
+  tls.setDefaultCACertificates([
+    ...tls.getCACertificates('default'),
+    ...tls.getCACertificates('system'),
+  ]);
+}
 const express = require('express');
 const mongoose = require('mongoose');
 const morgan = require('morgan');
@@ -40,6 +54,7 @@ const analytics = require('./routes/analytics');
 const campaigns = require('./routes/campaigns');
 const companyNotes = require('./routes/companyNotes');
 const { routes: accountingRoutes, systemRoutes: accountingSystemRoutes, initAccounting } = require('./accounting');
+const goals = require('./routes/goals');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -107,6 +122,9 @@ if (isLocalAccountingTrial) app.get('/api/accounting/trial-status', async (req, 
 mongoose.connect(connectionUrl, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+}).catch(error => {
+  console.error('MongoDB startup connection failed:', error.code || error.name);
+  process.exit(1);
 });
 
 // Accounting receives whole files as rows (a bank statement, a migration's cost list), larger than
@@ -418,6 +436,7 @@ async function initializeWhatsAppClient() {
 db.once("open", () => {
   console.log('MongoDB connected');
   initAccounting();
+  require('./controllers/goals').prepareGoals();
   initializeWhatsAppClient();
 });
 
@@ -463,6 +482,7 @@ app.use('/api', popupAds);
 app.use('/api', analytics);
 app.use('/api', campaigns);
 app.use('/api', companyNotes);
+app.use('/api', goals);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {
