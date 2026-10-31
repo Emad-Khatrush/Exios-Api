@@ -21,6 +21,11 @@ const linkedTargets = lines => new Set((lines || []).flatMap(line => {
 
 // References are stronger than amount/date similarities. Neither permits silently merging money.
 async function candidates(input, { session, excludeId } = {}) {
+  // The form omits vendorId for a direct expense; use the same seeded vendor as posting.
+  if (input.withoutVendor === true) {
+    const vendor = await Vendor.findOne({ seedKey: 'cash_expenses' }).select('_id').session(session || null).lean();
+    input = { ...input, vendorId: vendor?._id };
+  }
   if (input.isCreditNote || input.isHistorical || input.migrationRunId || !isDay(input.day) || !mongoose.isValidObjectId(input.vendorId)) return [];
   const orders = [...new Set((input.lines || []).map(l => id(l.orderId)).filter(Boolean))];
   const trips = [...new Set((input.lines || []).map(l => id(l.tripId)).filter(Boolean))];

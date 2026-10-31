@@ -37,6 +37,24 @@ async function moneyAccount(accountId, { currency, what = 'الحساب' } = {})
   return account;
 }
 
+// Bank choices on older wallet screens are saved as office aliases (e.g. "bank"),
+// not branch cash. Resolve them before consulting the employee's office. Callers
+// persist this account id so changing an office mapping cannot move an old deposit.
+async function resolveDepositAccount({ accountId, office, currency }) {
+  if (accountId) return moneyAccount(accountId, { currency, what: 'حساب الإيداع' });
+  if (!office) return null;
+  const { settings, offices } = await getConfig();
+  const { STATEMENT_OFFICE_ALIASES } = require('../seed/defaults');
+  const bankAlias = Object.prototype.hasOwnProperty.call(STATEMENT_OFFICE_ALIASES, office)
+    || (!offices.has(office) && Object.prototype.hasOwnProperty.call(settings?.officeAliases || {}, office));
+  if (!bankAlias) return null;
+  const mappedId = settings?.officeAccounts?.[office]?.[currency];
+  if (!mappedId) throw new ErrorHandler(400, `حساب البنك «${office}» غير مربوط بعملة ${currency}؛ لم يُستخدم حساب خزينة بديل`);
+  const account = await moneyAccount(mappedId, { currency, what: 'حساب البنك المختار' });
+  if (account.cashKind !== 'bank') throw new ErrorHandler(400, 'مكان الإيداع البنكي مرتبط بحساب غير بنكي؛ صحّح الربط بدل تحويله إلى خزينة المكتب');
+  return account;
+}
+
 // Where a new debt's money came from (spec 19.8). A debt that reminds of an order's own claim
 // needs nothing; any other debt names the cash box or partner account the money left.
 async function debtSource({ accountId, currency, orderLinked }) {
@@ -76,4 +94,4 @@ async function assertDepositPlace(place, currency, actionType) {
   }
 }
 
-module.exports = { listMoneyAccounts, moneyAccount, debtSource, depositPlaces, assertDepositPlace, KIND_LABELS };
+module.exports = { listMoneyAccounts, moneyAccount, resolveDepositAccount, debtSource, depositPlaces, assertDepositPlace, KIND_LABELS };

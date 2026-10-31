@@ -10,7 +10,7 @@ const Inventory = require('../../models/inventory');
 const errorHandler = require('../../middleware/error');
 const { routes, systemRoutes } = require('..');
 const { getBalance } = require('../services/carrying');
-const { SupplierBill, ExpenseType } = require('../models/documents');
+const { SupplierBill, SupplierPayment, Vendor, ExpenseType } = require('../models/documents');
 const { AccountingSettings, CurrencyRate } = require('../models');
 const { invalidateConfig } = require('../services/config');
 
@@ -111,4 +111,73 @@ test('a trip cost entered on the trip page is a supplier bill, paid from a box o
   const list = await call('get', `/api/acc/trips/${trip._id}/costs`, clerk);
   expect(list.body.bills).toHaveLength(2);
   expect(list.body.bills.find((b) => b.paid).paidFrom).toBe('خزينة فرعية طرابلس - دولار'); // staff cash comes out of their office's sub box (spec v8)
+});
+
+test('a direct expense uses the cash supplier, posts its full cost and payment once, and previews duplicates', async () => {
+  const owner = await makeUser({ isAdmin: true });
+  const cash = await account('110101');
+  const expense = await account('531300');
+  const generic = await Vendor.findOne({ seedKey: 'cash_expenses' });
+  const input = { withoutVendor: true, day: '2026-10-31', currency: 'USD', paidImmediatelyFrom: cash._id,
+    idempotencyKey: 'direct-expense-once', vendorRef: 'DIRECT-1',
+    lines: [{ target: 'expense', description: 'Hospitality paid without named supplier', office: 'tripoli', accountId: expense._id, amount: 17 }] };
+  const saved = await call('post', '/api/accounting/bills', owner).send(input);
+  expect(saved.status).toBe(201);
+  expect(saved.body.vendorId).toBe(String(generic._id));
+  expect(saved.body.paymentId).toBeTruthy();
+  expect(await balanceOf('531300')).toBe(1700);
+  expect(await balanceOf('110101')).toBe(-1700);
+  expect(await balanceOf('210200')).toBe(0);
+  const retried = await call('post', '/api/accounting/bills', owner).send(input);
+  expect(retried.status).toBe(201);
+  expect(retried.body._id).toBe(saved.body._id);
+  expect(await SupplierBill.countDocuments()).toBe(1);
+  expect(await SupplierPayment.countDocuments()).toBe(1);
+  expect(await balanceOf('110101')).toBe(-1700);
+  const preview = await call('post', '/api/accounting/bills/duplicate-preview', owner).send(input);
+  expect(preview.status).toBe(200);
+  expect(preview.body.results.map(row => row.billId)).toContain(saved.body._id);
+});
+
+test('trip expenses without a named supplier keep the trip cost and employee cash routing', async () => {
+  const clerk = await makeUser({ isEmployee: true }, { office: 'tripoli' });
+  const trip = await Inventory.create({ voyage: 'DIRECT-AIR', inventoryType: 'inventoryGoods', shippingType: 'air', inventoryPlace: 'tripoli', shippedCountry: 'CN', status: 'processing' });
+  const generic = await Vendor.findOne({ seedKey: 'cash_expenses' });
+  const count = await Vendor.countDocuments();
+  const saved = await call('post', `/api/acc/trips/${trip._id}/costs`, clerk).send({ withoutVendor: true,
+    amount: 45, payFromAccountId: (await account('110101'))._id, description: 'Direct trip transport', costCategory: 'transport' });
+  expect(saved.status).toBe(200);
+  const bill = await SupplierBill.findById(saved.body._id);
+  expect(String(bill.vendorId)).toBe(String(generic._id));
+  expect(String(bill.lines[0].tripId)).toBe(String(trip._id));
+  expect(bill.lines[0].costCategory).toBe('transport');
+  expect(await Vendor.countDocuments()).toBe(count);
+  expect(await balanceOf('130100')).toBe(4500);
+  expect(await balanceOf('110121')).toBe(-4500);
+  expect(await balanceOf('210200')).toBe(0);
+  const rejected = await call('post', `/api/acc/trips/${trip._id}/costs`, clerk).send({ withoutVendor: true, amount: 99 });
+  expect(rejected.status).toBe(400);
+  expect(await SupplierBill.countDocuments()).toBe(1);
+});
+
+test('direct expenses reject unpaid, invalid payment and historical shortcuts without changing the books', async () => {
+  const owner = await makeUser({ isAdmin: true });
+  const expense = await account('531300');
+  const input = { withoutVendor: true, day: '2026-10-31', currency: 'USD',
+    lines: [{ target: 'expense', description: 'Direct expense guard', office: 'tripoli', accountId: expense._id, amount: 10 }] };
+  for (const extra of [{}, { paidImmediatelyFrom: expense._id },
+    { paidImmediatelyFrom: (await account('110101'))._id, paidBeforeCount: true },
+    { paidImmediatelyFrom: (await account('110101'))._id, isHistorical: true },
+    { paidImmediatelyFrom: (await account('110101'))._id, isCreditNote: true },
+    { withoutVendor: 'true' }]) {
+    const rejected = await call('post', '/api/accounting/bills', owner).send({ ...input, ...extra });
+    expect(rejected.status).toBe(400);
+  }
+  expect(await SupplierBill.countDocuments()).toBe(0);
+  expect(await SupplierPayment.countDocuments()).toBe(0);
+  expect(await balanceOf('531300')).toBe(0);
+  expect(await balanceOf('110101')).toBe(0);
+  await Vendor.updateOne({ seedKey: 'cash_expenses' }, { $set: { isActive: false } });
+  expect((await call('post', '/api/accounting/bills', owner).send({ ...input, paidImmediatelyFrom: (await account('110101'))._id })).status).toBe(400);
+  expect(await SupplierBill.countDocuments()).toBe(0);
 });

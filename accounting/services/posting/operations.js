@@ -11,6 +11,7 @@ const { postEntry, reverseEntry } = require('../ledger');
 const { lockClaimAllocations } = require('../claims/locks');
 const { getConfig } = require('../config');
 const { walletRole, resolveCashAccount, resolveStaffCashAccount } = require('../roles');
+const { resolveDepositAccount } = require('../moneyAccounts');
 const { reverseSourceEntries } = require('../cancel');
 const { syncOrder } = require('../claims/sync');
 const { syncServiceDebts } = require('../claims/serviceDebt');
@@ -270,10 +271,13 @@ async function postStatement(statementId, options = {}) {
   // Cash box of the office/currency, or the suspense account when the statement has no office
   const cashAccount = async () => {
     // The account chosen on the deposit screen (a bank, or a partner's current account like Wasl)
-    if (statement.accountId) {
-      const chosen = (await getConfig()).accountsById.get(String(statement.accountId));
-      if (chosen?.isCash && chosen.isActive && (chosen.currency || 'USD') === currency) return chosen;
-      fallbacks.push('الحساب المختار في الإيداع غير صالح لهذه العملة؛ استُخدمت خزينة المكتب');
+    const chosen = await resolveDepositAccount({ accountId: statement.accountId, office: statementOffice, currency });
+    if (chosen) {
+      if (!statement.accountId && kind === 'DEPOSIT') {
+        await UserStatement.updateOne({ _id: statement._id, accountId: null }, { $set: { accountId: chosen._id } }, { session });
+        statement.accountId = chosen._id;
+      }
+      return chosen;
     }
     // Live: a sub cash box (see cashOffice); history: the main box of the statement's office
     const historical = !!options.isHistorical;

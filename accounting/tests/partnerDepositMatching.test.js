@@ -2,7 +2,7 @@ jest.mock('../../utils/googleClould', () => ({ storage: {}, uploadToGoogleCloud:
 jest.mock('../../utils/messageQueue', () => ({ add: async () => {}, process: () => {}, getJobs: async () => [] }));
 const { startDb, stopDb, resetDb, account, oid } = require('./helpers');
 const { call } = require('./e2eKit');
-const { AccountingSettings, AccountingEvent, JournalEntry, MigrationRun } = require('../models');
+const { AccountingSettings, AccountingEvent, JournalEntry, MigrationRun, Account, CurrencyRate } = require('../models');
 const { BankStatementLine } = require('../models/documents');
 const { invalidateConfig } = require('../services/config');
 const { getBalance } = require('../services/carrying');
@@ -22,7 +22,7 @@ beforeEach(async () => {
   await resetDb();
   await AccountingSettings.updateOne({ key: 'main' }, { $set: { liveEnabled: true, migrationDate: '2026-01-01' } });
   invalidateConfig();
-  customer = (await User.collection.insertOne({ firstName: 'Wasl', customerId: 'W001' })).insertedId;
+  customer = (await User.collection.insertOne({ firstName: 'Wasl', customerId: 'N999' })).insertedId;
   current = await account('110401');
 });
 const deposit = (extra = {}) => call(controller.addBalanceToWallet, { params: { id: String(customer) }, user,
@@ -30,6 +30,123 @@ const deposit = (extra = {}) => call(controller.addBalanceToWallet, { params: { 
     accountId: String(current._id), actionType: 'bank', office: 'tripoli', ...extra } });
 const importRows = (rows = [{ day, description: 'Shipping credit', reference: 'W500', amount: 500 }]) =>
   runInTransaction(session => bank.importLines(current._id, rows, { session, req: { user } }));
+
+describe('bank deposit destinations survive posting and date edits', () => {
+  let libyan, clerk;
+  const operations = require('../services/posting/operations');
+  beforeEach(async () => {
+    libyan = await Account.create({ code: '110299', name: 'Libyan bank test', type: 'asset',
+      parentId: (await account('1102'))._id, currency: 'LYD', isCash: true, cashKind: 'bank', office: 'tripoli' });
+    await CurrencyRate.create({ currency: 'LYD', day: '2026-01-01', rate: 9 });
+    await AccountingSettings.updateOne({ key: 'main' }, { $set: {
+      'officeAccounts.bank.LYD': libyan._id, 'officeAliases.bank': 'tripoli',
+    } });
+    clerk = { _id: (await User.collection.insertOne({ firstName: 'Clerk', customerId: 'CLERK', phone: '999000001', office: 'tripoli', roles: { isEmployee: true } })).insertedId,
+      roles: { isEmployee: true } };
+    invalidateConfig();
+  });
+  const addBankDeposit = (body = {}) => call(controller.addBalanceToWallet, { params: { id: String(customer) }, user: clerk,
+    body: { createdAt: '2026-10-31T12:00:00Z', amount: 605, currency: 'LYD', description: 'Customer bank deposit', office: 'bank', actionType: 'bank', ...body } });
+  const subBalance = async () => getBalance((await account('110122'))._id);
+
+  test('an employee bank deposit pins the bank and never credits the employee sub cash box', async () => {
+    await addBankDeposit();
+    expect(String((await UserStatement.findOne()).accountId)).toBe(String(libyan._id));
+    await processQueue();
+    expect((await getBalance(libyan._id)).foreign).toBe(605000);
+    expect((await subBalance()).foreign).toBe(0);
+    expect((await Wallet.findOne({ user: customer, currency: 'LYD' })).balance).toBe(605);
+    expect(await AccountingEvent.countDocuments({ status: 'failed' })).toBe(0);
+  });
+
+  test('backdating to the counted day removes the extra bank amount without adding sub cash or changing the wallet', async () => {
+    await MigrationRun.collection.insertOne({ status: 'committed', committedAt: new Date('2026-10-31T00:00:00Z'),
+      cutoff: new Date('2026-10-31T00:00:00Z'), config: { countDay: '2026-10-30', openingCounts: [{ accountId: libyan._id }] } });
+    invalidateConfig();
+    await addBankDeposit(); await processQueue();
+    expect((await getBalance(libyan._id)).foreign).toBe(605000);
+    const statement = await UserStatement.findOne();
+    await call(controller.updateStatement, { params: { id: String(customer), statementId: String(statement._id) }, user,
+      body: { createdAt: '2026-10-30T12:00:00Z' } });
+    await processQueue();
+    expect((await getBalance(libyan._id)).foreign).toBe(0);
+    expect((await subBalance()).foreign).toBe(0);
+    expect((await Wallet.findOne({ user: customer, currency: 'LYD' })).balance).toBe(605);
+    expect(String((await UserStatement.findById(statement._id)).accountId)).toBe(String(libyan._id));
+    expect(await AccountingEvent.countDocuments({ status: 'failed' })).toBe(0);
+  });
+
+  test('legacy alias-only deposits resolve to the bank during posting and historical replay', async () => {
+    await addBankDeposit({ actionType: undefined });
+    const statement = await UserStatement.findOne();
+    await UserStatement.updateOne({ _id: statement._id }, { $unset: { accountId: '' } });
+    await runInTransaction(session => operations.postStatement(statement._id, { session, isHistorical: true }));
+    expect((await getBalance(libyan._id)).foreign).toBe(605000);
+    expect((await subBalance()).foreign).toBe(0);
+    expect(String((await UserStatement.findById(statement._id)).accountId)).toBe(String(libyan._id));
+  });
+
+  test('editing a legacy date with an omitted action type pins the bank before the update event', async () => {
+    await addBankDeposit({ actionType: undefined }); await processQueue();
+    const statement = await UserStatement.findOne();
+    await UserStatement.updateOne({ _id: statement._id }, { $unset: { accountId: '' } });
+    await call(controller.updateStatement, { params: { id: String(customer), statementId: String(statement._id) }, user,
+      body: { createdAt: '2026-10-30T12:00:00Z', accountId: null } });
+    expect(String((await UserStatement.findById(statement._id)).accountId)).toBe(String(libyan._id));
+    await processQueue();
+    expect((await getBalance(libyan._id)).foreign).toBe(605000);
+    expect((await subBalance()).foreign).toBe(0);
+    expect(await AccountingEvent.countDocuments({ status: 'failed' })).toBe(0);
+  });
+
+  test('changing a bank alias mapping after creation does not move an existing deposit on edit', async () => {
+    await addBankDeposit(); await processQueue();
+    const other = await Account.create({ code: '110298', name: 'Other LYD bank', type: 'asset', currency: 'LYD', isCash: true, cashKind: 'bank' });
+    await AccountingSettings.updateOne({ key: 'main' }, { $set: { 'officeAccounts.bank.LYD': other._id } });
+    invalidateConfig();
+    const statement = await UserStatement.findOne();
+    await call(controller.updateStatement, { params: { id: String(customer), statementId: String(statement._id) }, user,
+      body: { createdAt: '2026-10-30T12:00:00Z' } });
+    await processQueue();
+    expect((await getBalance(libyan._id)).foreign).toBe(605000);
+    expect((await getBalance(other._id)).foreign).toBe(0);
+    expect((await subBalance()).foreign).toBe(0);
+  });
+
+  test('an invalid explicit account fails instead of silently falling back to branch cash', async () => {
+    await addBankDeposit();
+    const statement = await UserStatement.findOne();
+    await Account.updateOne({ _id: libyan._id }, { $set: { isActive: false } });
+    invalidateConfig();
+    await expect(runInTransaction(session => operations.postStatement(statement._id, { session }))).rejects.toThrow('مؤرشف');
+    expect(await JournalEntry.countDocuments()).toBe(0);
+    expect((await subBalance()).foreign).toBe(0);
+  });
+
+  test('missing or non-bank alias mappings cannot reroute a legacy bank deposit to cash', async () => {
+    await addBankDeposit();
+    const statement = await UserStatement.findOne();
+    await UserStatement.updateOne({ _id: statement._id }, { $unset: { accountId: '' } });
+    await AccountingSettings.updateOne({ key: 'main' }, { $unset: { 'officeAccounts.bank.LYD': '' } });
+    invalidateConfig();
+    await expect(runInTransaction(session => operations.postStatement(statement._id, { session }))).rejects.toThrow('غير مربوط');
+    await AccountingSettings.updateOne({ key: 'main' }, { $set: { 'officeAccounts.bank.LYD': (await account('110122'))._id } });
+    invalidateConfig();
+    await expect(runInTransaction(session => operations.postStatement(statement._id, { session }))).rejects.toThrow('غير بنكي');
+    expect(await JournalEntry.countDocuments()).toBe(0);
+    expect((await subBalance()).foreign).toBe(0);
+  });
+
+  test('other bank aliases bypass clerk cash while ordinary office cash keeps its routing', async () => {
+    await call(controller.addBalanceToWallet, { params: { id: String(customer) }, user: clerk,
+      body: { createdAt: '2026-10-31T12:00:00Z', amount: 20, currency: 'USD', description: 'Turkey bank deposit', office: 'almutahidaTrBank', actionType: 'bank' } });
+    await addBankDeposit({ office: 'tripoli', actionType: 'cash' });
+    await processQueue();
+    expect((await getBalance((await account('110201'))._id)).usd).toBe(2000);
+    expect((await subBalance()).foreign).toBe(605000);
+    expect((await getBalance(libyan._id)).foreign).toBe(0);
+  });
+});
 
 test('ordinary wallet deposit immediately increases the current account and matches an earlier statement', async () => {
   await importRows();

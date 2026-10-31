@@ -12,7 +12,7 @@ const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { emitAccountingEvent } = require('../accounting/services/events');
 const { lydRateLimits } = require('../accounting/services/walletRate');
 const { assertOpenPeriod } = require('../accounting/services/periodGuard');
-const { moneyAccount, assertDepositPlace } = require('../accounting/services/moneyAccounts');
+const { moneyAccount, resolveDepositAccount, assertDepositPlace } = require('../accounting/services/moneyAccounts');
 const { payOrderDebts, restoreOrderDebts } = require('../utils/debts');
 const { deliveryInvoiceOf, refundWalletPayment } = require('../utils/helperApi');
 const { runInTransaction } = require('../accounting/services/transaction');
@@ -276,7 +276,12 @@ module.exports.addBalanceToWallet = async (req, res, next) => {
     // The account the money went into, when chosen (a bank, or a partner's current account such as Wasl)
     let accountId;
     if (req.body.accountId) accountId = (await moneyAccount(req.body.accountId, { currency, what: 'الحساب' }))._id;
-    else await assertDepositPlace(office, currency, actionType);
+    else {
+      await assertDepositPlace(office, currency, actionType);
+      if (['cash', 'bank', undefined, null, ''].includes(actionType)) {
+        accountId = (await resolveDepositAccount({ office, currency }))?._id;
+      }
+    }
 
 
     const files = [];
@@ -693,8 +698,20 @@ module.exports.updateStatement = async (req, res, next) => {
         const next = req.body.accountId ? String((await moneyAccount(req.body.accountId, { currency: statement.currency, what: 'الحساب' }))._id) : null;
         if (String(statement.accountId || '') !== String(next || '')) changes.accountId = next;
       }
-      const accountAfter = 'accountId' in changes ? changes.accountId : statement.accountId;
-      if (accountAfter && !['cash', 'bank'].includes(changes.actionType ?? statement.actionType)) {
+      let accountAfter = 'accountId' in changes ? changes.accountId : statement.accountId;
+      // A date/amount edit must not reinterpret a bank deposit as branch cash.
+      // Also pin the account of legacy alias-only deposits when they are reposted.
+      if (POSTED_STATEMENT_FIELDS.some(field => field in changes)
+        && statement.calculationType === '+'
+        && ['cash', 'bank', undefined, null, ''].includes(changes.actionType ?? statement.actionType)) {
+        const chosen = await resolveDepositAccount({ accountId: accountAfter,
+          office: changes.office ?? statement.office, currency: statement.currency });
+        if (chosen && String(accountAfter || '') !== String(chosen._id)) {
+          changes.accountId = chosen._id;
+          accountAfter = chosen._id;
+        }
+      }
+      if (accountAfter && !['cash', 'bank', undefined, null, ''].includes(changes.actionType ?? statement.actionType)) {
         throw new ErrorHandler(400, 'A deposit into an account is cash or bank. Change the action type first.');
       }
 

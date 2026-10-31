@@ -87,6 +87,17 @@ async function syncBillTargets(bill, { session, user, sync = {} }) {
 
 // Checks the bill as typed; nothing is saved here
 async function validateBillInput(input, session, { readOnly = false } = {}) {
+  if (input.withoutVendor !== undefined && typeof input.withoutVendor !== 'boolean') {
+    throw fail('خيار بدون مورد محدد غير صالح');
+  }
+  if (input.withoutVendor) {
+    if (input.isCreditNote || input.paidBeforeCount || input.isHistorical || input.migrationRunId || !input.paidImmediatelyFrom) {
+      throw fail('المصروف بدون مورد محدد يتطلب اختيار حساب الدفع الفعلي؛ المصروف الآجل يحتاج موردًا');
+    }
+    const cashVendor = await Vendor.findOne({ seedKey: 'cash_expenses' }).session(session);
+    if (!cashVendor?.isActive) throw fail('مورد المصروفات النقدية غير متاح؛ راجع تهيئة المحاسبة قبل الحفظ');
+    input.vendorId = cashVendor._id;
+  }
   const vendor = await Vendor.findById(input.vendorId).session(session);
   if (!vendor) throw fail('اختر المورد');
   if (!vendor.isActive) throw fail('المورد مؤرشف');

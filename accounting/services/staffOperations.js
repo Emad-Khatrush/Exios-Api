@@ -142,7 +142,7 @@ async function addCost(target, targetId, input, req) {
   const amount = Number(input.amount);
   if (!Number.isFinite(amount) || !(amount > 0)) throw fail('المبلغ يجب أن يكون أكبر من صفر');
   let vendorId = input.vendorId;
-  if (!validId(vendorId)) vendorId = (await createVendor({ name: input.vendorName, type: target === 'trip' ? 'carrier' : 'supplier' }))._id;
+  if (!input.withoutVendor && !validId(vendorId)) vendorId = (await createVendor({ name: input.vendorName, type: target === 'trip' ? 'carrier' : 'supplier' }))._id;
   let payFrom = input.payFromAccountId ? await moneyAccount(input.payFromAccountId, { what: 'دُفعت من' }) : null;
   // Cash paid by staff comes out of their office's sub box (spec v8)
   if (payFrom && (payFrom.cashKind || 'cash') === 'cash' && !payFrom.subBox) {
@@ -156,7 +156,7 @@ async function addCost(target, targetId, input, req) {
   return runInTransaction(async (session) => {
     await assertOpenPeriod(req.user, day, { session });
     return createBill({
-    vendorId, day, currency, rate, idempotencyKey: input.idempotencyKey || undefined,
+      vendorId, withoutVendor: input.withoutVendor, day, currency, rate, idempotencyKey: input.idempotencyKey || undefined,
     duplicateDecision: input.duplicateDecision, duplicateReason: input.duplicateReason, duplicateFingerprint: input.duplicateFingerprint,
     paidImmediatelyFrom: payFrom?._id, note: input.note, enteredFrom: target,
     lines: [{
