@@ -312,6 +312,27 @@ async function postOpeningCash(run) {
         const booked = currency === 'USD' ? bookedBalance.usd : bookedBalance.foreign;
         const opening = counted - booked;
         results.push({ accountId: account._id, code: account.code, name: account.name, currency, counted, booked, opening, countDay });
+        const method = run.config?.openingCashRateMethod || 'legacy';
+        if (currency !== 'USD' && method !== 'legacy') {
+          const valuation = require('../openingCashValuation');
+          const rates = new RateBook(session);
+          const decimals = await require('../posting/common').decimalsOf(currency);
+          const sampled = counted === 0 ? { method, source: 'zero_balance', sampleCount: 0, to: countDay,
+            rate: require('../carrying').carryingRate(bookedBalance, decimals) || 1 }
+            : await valuation.estimate(account, countDay, method, { session, rates });
+          const change = valuation.adjustmentLines(account, await resolveAccount('opening_balance'), bookedBalance, counted, sampled, decimals);
+          const result = results[results.length - 1];
+          Object.assign(result, { valuation: sampled, valuationUsdDelta: change.usdDelta, countedUsd: change.desiredUsd });
+          if (!change.lines.length) return;
+          const entry = await postEntry({ eventType: 'OPENING_CASH', eventKey: `OPENING_CASH:${account._id}:${run.runId}`, date: countDay,
+            description: `جرد وتقييم افتتاحي ${account.name} بمتوسط الوارد المختار بتاريخ ${countDay}`,
+            source: { model: 'AccountingAccount', id: account._id }, isHistorical: true, migrationRunId: run.runId,
+            fallbacks: rates.fallbacks, lines: change.lines,
+          }, { session });
+          result.entryId = entry._id;
+          await rates.lock();
+          return;
+        }
         if (!opening) return;
         const rates = new RateBook(session);
         // Posted on the count day (owner's decision): before it the box shows exactly what the

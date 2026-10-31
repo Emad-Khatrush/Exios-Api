@@ -86,6 +86,7 @@ const AccountingSettings = mongoose.model('AccountingSettings', new Schema({
   writeOffAfterDays: { type: Number, default: 180 },
   // No rate on or before an operation's day: use the first rate after it (marked on the entry)
   rateFallbackNext: { type: Boolean, default: true },
+  openingCashRateMethod: { type: String, enum: ['legacy', 'receipts_1m', 'receipts_2m', 'receipts_12m', 'receipts_all'], default: 'legacy' },
   // Volumetric weight of a package = its CBM x this factor (KG per CBM); used when the package is
   // marked "charged by volume"
   volumetricFactor: { type: Number, default: 167 },
@@ -165,6 +166,7 @@ const MigrationRun = mongoose.model('AccountingMigrationRun', new Schema({
     openingCounts: { type: Schema.Types.Mixed, default: [] },
     // The day the counts were taken (balance at the end of that day); default: the run's day
     countDay: String,
+    openingCashRateMethod: { type: String, enum: ['legacy', 'receipts_1m', 'receipts_2m', 'receipts_12m', 'receipts_all'], default: 'legacy' },
     // Fold what history leaves in suspense into the opening balance (start from the counts)
     closeSuspense: { type: Boolean, default: false },
     // Purchase costs from the account statements only: purchases typed on orders are not bills

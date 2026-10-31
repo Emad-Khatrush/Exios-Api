@@ -93,6 +93,9 @@ router.post('/wizard/mark', P.setup, settings.markWizardStep);
 router.get('/dashboard', P.dashboard, reports.dashboard);
 
 router.route('/settings').get(ANY, settings.get).patch(P.setup, settings.update);
+router.get('/settings/opening-cash-valuation-preview', P.setup, settings.openingCashValuationPreview);
+router.get('/settings/current-cash-valuation-preview', P.setup, handle(async (req, res) => res.json(await require('./services/currentCashValuation').preview(req.query.method))));
+router.post('/settings/current-cash-valuation-apply', P.setup, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/currentCashValuation').apply(req.body, { session, req })))));
 router.put('/settings/roles', P.setup, settings.updateRoles);
 router.put('/settings/office-accounts', P.setup, settings.updateOfficeAccounts);
 router.put('/settings/event-journals', P.setup, settings.updateEventJournals);

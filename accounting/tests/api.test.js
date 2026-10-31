@@ -2,7 +2,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 const express = require('express');
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
-const { startDb, stopDb, resetDb, account } = require('./helpers');
+const { startDb, stopDb, resetDb, account, post: postRaw } = require('./helpers');
 const User = require('../../models/user');
 const errorHandler = require('../../middleware/error');
 const { routes } = require('..');
@@ -63,6 +63,52 @@ test('HTTP duplicate preview identifies an existing cost and posting cannot bypa
   expect(preview.body.results).toHaveLength(1);
   expect(preview.body.canConfirmIndependent).toBe(false);
   expect((await api('post', '/bills').send(data)).status).toBe(400);
+});
+
+test('opening valuation settings and preview never rewrite existing cash or journal entries', async () => {
+  const cash = await account('110102'), opening = await account('390000');
+  expect((await api('post', '/entries').send({ date: '2026-10-30', description: 'Existing counted cash',
+    lines: [{ accountId: cash._id, side: 'debit', amount: 1000, rate: 10, office: 'tripoli' },
+      { accountId: opening._id, side: 'credit', amount: 100 }] })).status).toBe(201);
+  expect((await api('post', '/rates').send({ currency: 'LYD', day: '2026-10-30', rate: 10 })).status).toBe(200);
+  const before = await JournalEntry.find({}).lean();
+  expect((await api('patch', '/settings').send({ openingCashRateMethod: 'receipts_1m' })).status).toBe(200);
+  expect((await api('get', '/settings')).body.settings.openingCashRateMethod).toBe('receipts_1m');
+  const preview = await api('get', '/settings/opening-cash-valuation-preview?countDay=2026-10-30');
+  expect(preview.status).toBe(200);
+  expect(preview.body.readOnly).toBe(true);
+  const row = preview.body.results.find(item => item.code === '110102');
+  expect(row.valuation.source).toBe('count_day_fallback');
+  expect(row.valuation.sampleCount).toBe(0);
+  expect(row.currentUsd).toBe(10000);
+  expect(row.proposedUsd).toBe(10000);
+  expect(await JournalEntry.find({}).lean()).toEqual(before);
+  expect((await api('patch', '/settings').send({ openingCashRateMethod: 'unsafe' })).status).toBe(400);
+  expect((await api('get', '/settings/opening-cash-valuation-preview?method=unsafe')).status).toBe(400);
+});
+
+test('current valuation HTTP requires setup access and a fresh confirmed preview, and retries only once', async () => {
+  const cash = await account('110102'), opening = await account('390000');
+  const { today, addDays } = require('../services/dates');
+  for (const [day, usd] of [[addDays(today(), -75), 200000], [addDays(today(), -1), 100000]]) {
+    await postRaw({ eventKey: `CURRENT-HTTP:${day}`, eventType: 'DEPOSIT', date: day,
+      lines: [{ accountId: cash._id, debit: usd, currency: 'LYD', amountCurrency: 10000000, office: 'tripoli' },
+        { accountId: opening._id, credit: usd }] });
+  }
+  expect((await api('get', '/settings/current-cash-valuation-preview?method=receipts_1m', employeeToken)).status).toBe(403);
+  const preview = await api('get', '/settings/current-cash-valuation-preview?method=receipts_1m');
+  expect(preview.status).toBe(200);
+  const row = preview.body.results.find(item => item.code === '110102');
+  const input = { accountId: cash._id, method: 'receipts_1m', fingerprint: row.fingerprint, idempotencyKey: 'current-http', reason: 'Reviewed actual cash estimate' };
+  expect((await api('post', '/settings/current-cash-valuation-apply', employeeToken).send(input)).status).toBe(403);
+  expect((await api('post', '/settings/current-cash-valuation-apply').send({ ...input, reason: '' })).status).toBe(400);
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(0);
+  const applied = await api('post', '/settings/current-cash-valuation-apply').send(input);
+  expect(applied.status).toBe(200);
+  expect((await api('post', '/settings/current-cash-valuation-apply').send(input)).body.entryId).toBe(applied.body.entryId);
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(1);
+  const balances = await require('../services/carrying').getBalance(cash._id);
+  expect(balances).toEqual({ foreign: 20000000, usd: 200000 });
 });
 
 test('only admins can open the accounting section', async () => {

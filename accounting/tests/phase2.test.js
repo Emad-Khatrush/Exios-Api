@@ -10,6 +10,8 @@ const schedules = require('../services/posting/schedules');
 const people = require('../services/posting/people');
 const bank = require('../services/posting/bank');
 const billFinancialEdit = require('../services/billFinancialEdit');
+const openingValuation = require('../services/openingCashValuation');
+const currentValuation = require('../services/currentCashValuation');
 const { cancelDocument } = require('../services/cancel');
 const Order = require('../../models/order');
 const Inventory = require('../../models/inventory');
@@ -33,6 +35,165 @@ const fund = (code, amount, rateValue) => tx(async (session) => people.createEqu
 }, { session, req }));
 
 beforeEach(() => resetDb());
+
+async function incomingCash(day, amount, usd, eventType = 'DEPOSIT') {
+  return post({ eventKey: `VALUATION:${day}:${Math.random()}`, eventType, date: day,
+    lines: [{ accountId: (await account('110102'))._id, debit: usd, currency: 'LYD', amountCurrency: amount * 1000, office: 'tripoli' },
+      { accountId: (await account('390000'))._id, credit: usd }] });
+}
+
+test('opening valuation weights incoming amounts and excludes cancellations, adjustments and outflows', async () => {
+  await incomingCash('2026-10-01', 1000, 10000); // 10 LYD/USD
+  await incomingCash('2026-10-20', 9000, 75000); // 12 LYD/USD
+  await incomingCash('2026-08-01', 10000, 200000);
+  await incomingCash('2026-10-21', 500000, 50000000, 'MANUAL');
+  await incomingCash('2026-10-22', 500000, 50000000, 'OPENING_CASH');
+  const canceled = await incomingCash('2026-10-23', 500000, 50000000);
+  await tx(session => require('../services/ledger').reverseEntry(canceled._id, { session, user: req.user, reason: 'Canceled receipt' }));
+  await post({ eventKey: 'VALUATION:out', eventType: 'TRANSFER', date: '2026-10-24',
+    lines: [{ accountId: (await account('110102'))._id, credit: 10000, currency: 'LYD', amountCurrency: -1000000, office: 'tripoli' },
+      { accountId: (await account('390000'))._id, debit: 10000 }] });
+  const recent = await openingValuation.estimate(await account('110102'), '2026-10-30', 'receipts_1m');
+  expect(recent.from).toBe('2026-10-01');
+  expect(recent.sampleCount).toBe(2);
+  expect(recent.sampleForeign).toBe(10000000);
+  expect(recent.sampleUsd).toBe(85000);
+  expect(recent.rate).toBeCloseTo(10000 / 850, 8);
+  const all = await openingValuation.estimate(await account('110102'), '2026-10-30', 'receipts_all');
+  expect(all.sampleCount).toBe(3);
+  expect(all.rate).toBeCloseTo(20000 / 2850, 8);
+});
+
+test('opening valuation respects each calendar window and falls back to count-day rate without samples', async () => {
+  await CurrencyRate.create({ currency: 'LYD', day: '2026-10-30', rate: 10.1 });
+  const cash = await account('110102');
+  const empty = await openingValuation.estimate(cash, '2026-10-30', 'receipts_1m');
+  expect(empty.source).toBe('count_day_fallback');
+  expect(empty.rate).toBe(10.1);
+  await incomingCash('2026-09-05', 1000, 10000);
+  await incomingCash('2025-12-05', 9000, 75000);
+  expect((await openingValuation.estimate(cash, '2026-10-30', 'receipts_2m')).sampleCount).toBe(1);
+  expect((await openingValuation.estimate(cash, '2026-10-30', 'receipts_12m')).sampleCount).toBe(2);
+  expect(() => openingValuation.validateMethod('receipts_3m')).toThrow();
+});
+
+test.each([10000, 0])('opening valuation migration values matching quantity or clears the counted balance %s', async countedAmount => {
+  if (countedAmount) await CurrencyRate.create({ currency: 'LYD', day: '2026-10-30', rate: 10 });
+  await incomingCash('2026-08-01', 10000, 200000);
+  await incomingCash('2026-10-10', 10000, 100000);
+  await post({ eventKey: 'VALUATION:spent', eventType: 'TRANSFER', date: '2026-10-15',
+    lines: [{ accountId: (await account('110102'))._id, credit: 150000, currency: 'LYD', amountCurrency: -10000000, office: 'tripoli' },
+      { accountId: (await account('390000'))._id, debit: 150000 }] });
+  const run = await require('../services/migration').startRun({ wait: true, user: req.user,
+    config: { countDay: '2026-10-30', openingCashRateMethod: 'receipts_1m', openingCounts: [{ accountId: (await account('110102'))._id, amount: countedAmount }] } });
+  expect(run.status).toBe('review');
+  expect(run.problems).toHaveLength(0);
+  expect(run.config.openingCashRateMethod).toBe('receipts_1m');
+  const opening = run.report.openingCash.find(row => row.code === '110102');
+  expect(opening.opening).toBe(countedAmount ? 0 : -10000000);
+  expect(opening.valuationUsdDelta).toBe(countedAmount ? -50000 : -150000);
+  expect(opening.entryId).toBeTruthy();
+  expect(await balanceOf('110102')).toEqual({ foreign: countedAmount * 1000, usd: countedAmount * 10 });
+  const cashLine = (await JournalEntry.findById(opening.entryId)).lines.find(line => line.accountCode === '110102');
+  expect(cashLine.amountCurrency).toBe(countedAmount ? 0 : -10000000);
+  expect(cashLine.credit).toBe(countedAmount ? 50000 : 150000);
+});
+
+test('opening valuation handles quantity and USD changes in opposite directions and clears zero balance', async () => {
+  const cash = await account('110102'), opening = await account('390000');
+  const sampled = { rate: 10 };
+  const change = openingValuation.adjustmentLines(cash, opening, { foreign: 1000000, usd: 20000 }, 1500000, sampled, 3);
+  expect(change.desiredUsd).toBe(15000);
+  await post({ eventKey: 'VALUATION:mixed', eventType: 'OPENING_CASH', date: '2026-10-30', lines: change.lines });
+  expect(await balanceOf('110102')).toEqual({ foreign: 500000, usd: -5000 });
+  const clear = openingValuation.adjustmentLines(cash, opening, { foreign: 1000000, usd: 20000 }, 0, sampled, 3);
+  expect(clear.desiredUsd).toBe(0);
+  expect(clear.lines.filter(line => String(line.accountId) === String(cash._id)).reduce((sum, line) => sum + (line.debit || 0) - (line.credit || 0), 0)).toBe(-20000);
+});
+
+test('opening valuation preference leaves live conversion at carrying value with actual USD received', async () => {
+  await AccountingSettings.updateOne({ key: 'main' }, { $set: { openingCashRateMethod: 'receipts_1m' } });
+  require('../services/config').invalidateConfig();
+  await fund('110102', 20000, 10);
+  await tx(async session => treasury.createTransfer({ day: '2026-10-31', fromAccountId: (await account('110102'))._id,
+    fromAmount: 10500, toAccountId: (await account('110101'))._id, toAmount: 1000, rate: 10.5 }, { session, req }));
+  expect(await balanceOf('110102')).toEqual({ foreign: 9500000, usd: 95000 });
+  expect((await balanceOf('110101')).usd).toBe(100000);
+  expect((await balanceOf('710300')).usd).toBe(5000);
+});
+
+async function currentValuationFixture(oldUsd = 200000) {
+  const { today, addDays } = require('../services/dates');
+  await incomingCash(addDays(today(), -75), 10000, oldUsd);
+  await incomingCash(addDays(today(), -1), 10000, 100000);
+  const row = (await currentValuation.preview('receipts_1m')).results.find(item => item.code === '110102');
+  return { row, input: { accountId: row.accountId, method: 'receipts_1m', fingerprint: row.fingerprint,
+    reason: 'Apply reviewed current incoming weighted average', idempotencyKey: 'current-valuation-once' } };
+}
+
+test('current valuation changes only USD, posts the valuation loss once and changes future carrying value', async () => {
+  const { row, input } = await currentValuationFixture();
+  expect(row.amount).toBe(20000);
+  expect(row.currentRate).toBeCloseTo(20000 / 3000);
+  expect(row.valuation.rate).toBe(10);
+  expect(row.differenceUsd).toBe(-100000);
+  const result = await tx(session => currentValuation.apply(input, { session, req }));
+  expect(await balanceOf('110102')).toEqual({ foreign: 20000000, usd: 200000 });
+  expect((await balanceOf('710400')).usd).toBe(100000);
+  const cashLine = (await JournalEntry.findById(result.entryId)).lines.find(line => line.accountCode === '110102');
+  expect(cashLine.amountCurrency).toBe(0);
+  expect((await bank.unmatchedMovements((await account('110102'))._id)).some(item => String(item._id) === String(result.entryId))).toBe(false);
+  const retry = await tx(session => currentValuation.apply(input, { session, req }));
+  expect(String(retry.entryId)).toBe(String(result.entryId));
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(1);
+  const refreshed = (await currentValuation.preview('receipts_1m')).results.find(item => item.code === '110102');
+  expect(refreshed.canApply).toBe(false);
+  expect(refreshed.valuation.sampleCount).toBe(1);
+  await tx(async session => treasury.createTransfer({ day: require('../services/dates').today(),
+    fromAccountId: (await account('110102'))._id, fromAmount: 10500, toAccountId: (await account('110101'))._id, toAmount: 1000 }, { session, req }));
+  expect(await balanceOf('110102')).toEqual({ foreign: 9500000, usd: 95000 });
+  expect((await balanceOf('110101')).usd).toBe(100000);
+  expect((await balanceOf('710300')).usd).toBe(5000);
+});
+
+test('current valuation gain goes to valuation income and preserves the currency amount', async () => {
+  const { input } = await currentValuationFixture(50000);
+  await tx(session => currentValuation.apply(input, { session, req }));
+  expect(await balanceOf('110102')).toEqual({ foreign: 20000000, usd: 200000 });
+  expect((await balanceOf('420200')).usd).toBe(-50000);
+});
+
+test('current valuation refuses a stale balance and records no partial adjustment', async () => {
+  const { input } = await currentValuationFixture();
+  await incomingCash(require('../services/dates').today(), 1000, 10000);
+  await expect(tx(session => currentValuation.apply(input, { session, req }))).rejects.toThrow('حدّث المعاينة');
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(0);
+  expect(await balanceOf('110102')).toEqual({ foreign: 21000000, usd: 310000 });
+});
+
+test('current valuation serializes concurrent confirmations on the same cash account', async () => {
+  const { input } = await currentValuationFixture();
+  const results = await Promise.allSettled(['one', 'two'].map(idempotencyKey => tx(session => currentValuation.apply({ ...input, idempotencyKey }, { session, req }))));
+  expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(1);
+  expect(await balanceOf('110102')).toEqual({ foreign: 20000000, usd: 200000 });
+});
+
+test('current valuation protects locked periods and refuses fallback rates without incoming samples', async () => {
+  const { input } = await currentValuationFixture();
+  await AccountingSettings.updateOne({ key: 'main' }, { $set: { lockDate: require('../services/dates').today() } });
+  require('../services/config').invalidateConfig();
+  await expect(tx(session => currentValuation.apply(input, { session, req }))).rejects.toThrow('فترة مقفلة');
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(0);
+  await AccountingSettings.updateOne({ key: 'main' }, { $set: { lockDate: null } });
+  require('../services/config').invalidateConfig();
+  await CurrencyRate.create({ currency: 'LYD', day: require('../services/dates').today(), rate: 10 });
+  await JournalEntry.updateMany({ eventType: 'DEPOSIT' }, { $set: { eventType: 'MANUAL' } });
+  const result = await currentValuation.preview('receipts_1m');
+  expect(result.results.find(row => row.code === '110102').canApply).toBe(false);
+  await expect(tx(session => currentValuation.apply(input, { session, req }))).rejects.toThrow('لا يوجد وارد صالح');
+  expect(await JournalEntry.countDocuments({ eventType: 'FX_REVALUATION' })).toBe(0);
+});
 
 async function historicalEditableBill({ closeSuspense = false, cash = false } = {}) {
   const vendor = await newVendor('carrier', 'Historical carrier');

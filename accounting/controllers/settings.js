@@ -29,7 +29,7 @@ module.exports.get = handle(async (req, res) => {
 
   res.json({
     setupDone: !!settings.setupCompletedAt,
-    settings: pick(settings, ['lockDate', 'historyStartDate', 'migrationDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'volumetricFactor', 'abandonAfterDays', 'cutoffAt', 'timezone', 'setupCompletedAt', 'wizard', 'officeAliases']),
+    settings: pick(settings, ['lockDate', 'historyStartDate', 'migrationDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'openingCashRateMethod', 'volumetricFactor', 'abandonAfterDays', 'cutoffAt', 'timezone', 'setupCompletedAt', 'wizard', 'officeAliases']),
     roles,
     officeAccounts,
     eventJournals: { ...EVENT_JOURNALS, ...(settings.eventJournals || {}) },
@@ -37,7 +37,8 @@ module.exports.get = handle(async (req, res) => {
 });
 
 module.exports.update = handle(async (req, res) => {
-  const changes = pick(req.body, ['lockDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'volumetricFactor', 'abandonAfterDays']);
+  const changes = pick(req.body, ['lockDate', 'fiscalYearStartMonth', 'writeOffAfterDays', 'rateFallbackNext', 'openingCashRateMethod', 'volumetricFactor', 'abandonAfterDays']);
+  if (changes.openingCashRateMethod !== undefined) require('../services/openingCashValuation').validateMethod(changes.openingCashRateMethod);
   if (changes.lockDate !== undefined && changes.lockDate !== null && !isDay(changes.lockDate)) throw badRequest('تاريخ الإقفال غير صالح');
   if (changes.fiscalYearStartMonth !== undefined && !(changes.fiscalYearStartMonth >= 1 && changes.fiscalYearStartMonth <= 12)) {
     throw badRequest('شهر بداية السنة غير صالح');
@@ -56,6 +57,27 @@ module.exports.update = handle(async (req, res) => {
   });
   invalidateConfig();
   res.json({ success: true });
+});
+
+module.exports.openingCashValuationPreview = handle(async (req, res) => {
+  const { settings, count, accountsById } = await getConfig();
+  const valuation = require('../services/openingCashValuation');
+  const method = valuation.validateMethod(req.query.method || settings?.openingCashRateMethod || 'legacy');
+  const day = req.query.countDay || count?.day || require('../services/dates').today();
+  if (!isDay(day) || day > require('../services/dates').today()) throw badRequest('تاريخ تقييم الافتتاحي غير صالح');
+  const results = [];
+  for (const account of accountsById.values()) {
+    if (!account.isCash || account.isGroup || !account.isActive || !account.currency || account.currency === 'USD') continue;
+    const booked = await require('../services/carrying').getBalance(account._id, { upToDay: day });
+    if (!booked.foreign && !booked.usd) continue;
+    const sampled = await valuation.estimate(account, day, method);
+    const decimals = await require('../services/posting/common').decimalsOf(account.currency);
+    const desiredUsd = method === 'legacy' ? booked.usd : valuation.targetUsd(booked.foreign, decimals, sampled.rate);
+    results.push({ accountId: account._id, code: account.code, name: account.name, currency: account.currency,
+      amount: booked.foreign / 10 ** decimals, currentUsd: booked.usd, proposedUsd: desiredUsd,
+      differenceUsd: desiredUsd - booked.usd, valuation: sampled });
+  }
+  res.json({ method, day, committed: !!settings?.migrationDate, readOnly: true, results });
 });
 
 // Every role must stay linked to a valid account; changes only affect new entries

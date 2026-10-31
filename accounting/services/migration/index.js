@@ -54,6 +54,7 @@ async function startRun({ user, config = {}, wait = false } = {}) {
   const { settings } = await require('../config').getConfig();
   if (settings?.migrationDate) throw fail('الترحيل التاريخي اعتُمد مسبقاً؛ لا يمكن تشغيله مرة أخرى.');
   if (await MigrationRun.exists({ status: { $in: ACTIVE } })) throw fail('يوجد تشغيل ترحيل قائم. اعتمده أو ألغِه أولاً.');
+  config = { ...config, openingCashRateMethod: require('../openingCashValuation').validateMethod(config.openingCashRateMethod || settings?.openingCashRateMethod || 'legacy') };
   const cutoff = new Date();
   const countDay = config?.countDay || toDay(cutoff);
   const openingErrors = [];
@@ -222,7 +223,7 @@ async function commitRun(runId, { user } = {}) {
   const openings = run.report.openingCash || [];
   for (const count of run.config?.openingCounts || []) {
     const row = openings.find(r => String(r.accountId) === String(count.accountId) && !r.uncounted);
-    if (!row || (row.opening && (!row.entryId || !await JournalEntry.exists({ _id: row.entryId, migrationRunId: runId, eventType: 'OPENING_CASH', status: 'posted' }))))
+    if (!row || ((row.opening || row.valuationUsdDelta) && (!row.entryId || !await JournalEntry.exists({ _id: row.entryId, migrationRunId: runId, eventType: 'OPENING_CASH', status: 'posted' }))))
       throw fail(`لا يمكن اعتماد الترحيل: قيد الجرد للحساب ${row?.code || count.accountId} ${row?.name || ''} لم يُنشأ. صحّح السبب ثم ألغِ التشغيل وأعده.`);
   }
   const wasBankTrial = run.bankTrialEnabled;
