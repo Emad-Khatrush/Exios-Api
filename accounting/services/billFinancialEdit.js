@@ -9,7 +9,7 @@ const { RateBook, toCurrencyMinor } = require('./posting/common');
 const payables = require('./posting/payables');
 const { logAudit } = require('./audit');
 const { resolveAccount } = require('./roles');
-const { isDay } = require('./dates');
+const { isDay, today } = require('./dates');
 const ErrorHandler = require('../../utils/errorHandler');
 const Order = require('../../models/order');
 const fail = message => new ErrorHandler(400, message);
@@ -21,6 +21,35 @@ const lineView = line => ({ description: String(line.description || '').trim(), 
   packageId: idOf(line.packageId), costCategory: line.costCategory || '', purchaseItemId: idOf(line.purchaseItemId) });
 const financialView = line => { const { description, ...rest } = lineView(line); return rest; };
 
+// Only undo a migration's assumed payment, never a real cash/bank payment.
+async function assumedPayment(bill, payments, receipts, notes, nettings, session) {
+  if (!bill.isHistorical || bill.paidBeforeCount || bill.isCreditNote || bill.yuanPurchaseId
+    || payments.length !== 1 || receipts.length || notes.length || nettings.length) {
+    throw fail('تحويل الفاتورة إلى غير مدفوعة متاح لسداد تاريخي افتراضي منفرد فقط؛ راجع الدفعات والتسويات المرتبطة');
+  }
+  const payment = payments[0];
+  const suspense = await resolveAccount('migration_suspense');
+  if (!payment.isHistorical || !payment.migrationRunId || payment.migrationRunId !== bill.migrationRunId
+    || idOf(payment.autoFromBillId) !== idOf(bill._id)
+    || idOf(payment.fromAccountId) !== idOf(suspense._id) || payment.allocations.length !== 1
+    || payment.advanceUsd || payment.costDifferenceUsd || payment.fromAdvance) {
+    throw fail('هذا السداد ليس افتراضيًا من المعلّق؛ السداد المسجل على خزينة أو بنك يُراجع من مستنده الأصلي');
+  }
+  const entry = await JournalEntry.findById(payment.entryId).session(session || null).lean();
+  const amount = payment.allocations[0].amountUsd;
+  const key = payables.billKey(bill._id);
+  if (!entry || entry.status !== 'posted' || !entry.isHistorical || entry.migrationRunId !== payment.migrationRunId
+    || entry.reversalOf || entry.lines.length !== 2
+    || !(amount > 0) || entry.lines.some(line => line.currency !== 'USD')
+    || entry.lines.filter(line => line.apKey === key).reduce((sum, line) => sum + line.debit - line.credit, 0) !== amount
+    || entry.lines.filter(line => idOf(line.accountId) === idOf(suspense._id)).reduce((sum, line) => sum + line.credit - line.debit, 0) !== amount) {
+    throw fail('قيد السداد التاريخي يحتاج مراجعة قبل تصحيحه');
+  }
+  const { account: counterpart, closure } = await require('./posting/historicalPaymentCounterpart').counterpartFor(payment, entry, suspense, { session });
+  if (suspense.isCash || counterpart.isCash) throw fail('حساب تصحيح السداد التاريخي يجب ألا يكون خزينة أو بنكًا');
+  return { payment, entry, amount, counterpart: { _id: counterpart._id, name: counterpart.name }, closure };
+}
+
 // Read-only preparation is shared by the preview and commit. Nothing is posted
 // until the exact preview fingerprint is confirmed in a transaction.
 async function prepare(id, input, { session, settings: lockedSettings } = {}) {
@@ -29,6 +58,8 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   if (!bill || bill.status !== 'posted') throw fail('اختر فاتورة مُرحّلة غير ملغاة');
   const { settings: cached } = await getConfig();
   const settings = lockedSettings || cached;
+  const historicalPayment = input.historicalPayment || 'preserve';
+  if (!['preserve', 'unpaid'].includes(historicalPayment)) throw fail('اختر معالجة السداد التاريخي');
   if (settings?.lockDate && bill.day <= settings.lockDate) throw fail(`الفترة مقفلة حتى ${settings.lockDate}؛ لا يمكن تعديل الفاتورة`);
   if (settings?.migrationGuardDay && bill.day <= settings.migrationGuardDay) throw fail('الفاتورة ضمن فترة الترحيل قيد المراجعة');
   if (new Date(input.updatedAt).getTime() !== new Date(bill.updatedAt).getTime()) throw new ErrorHandler(409, 'تغيّرت الفاتورة؛ أعد فتح التعديل');
@@ -49,6 +80,7 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
     // Only the dimensions meaningful to this target are accepted.
     for (const key of ['accountId', 'tripId', 'orderId', 'packageId', 'purchaseItemId']) if (!line[key]) delete line[key];
     if (line.target !== 'trip') { delete line.tripId; delete line.costCategory; }
+    else if (!line.costCategory) delete line.costCategory;
     if (!['order', 'customs'].includes(line.target)) { delete line.orderId; delete line.purchaseItemId; }
     if (line.target !== 'customs') delete line.packageId;
     if (line.target !== 'expense') delete line.accountId;
@@ -59,7 +91,7 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   const merged = { ...bill, vendorId: input.vendorId, vendorRef: String(input.vendorRef || '').trim(), note: String(input.note || '').trim(),
     day, currency: input.currency, rate, lines };
   if (merged.vendorRef.length > 200 || merged.note.length > 5000) throw fail('رقم المورد أو الملاحظات أطول من الحد المسموح');
-  const financial = day !== bill.day || merged.currency !== bill.currency || Number(rate || 0) !== Number(bill.rate || 0)
+  const financial = historicalPayment === 'unpaid' || day !== bill.day || merged.currency !== bill.currency || Number(rate || 0) !== Number(bill.rate || 0)
     || JSON.stringify(lines.map(financialView)) !== JSON.stringify(bill.lines.map(financialView));
   if (financial && (bill.yuanPurchaseId || bill.isCreditNote || bill.lines.some(line => !TARGETS.includes(line.target)))) {
     throw fail('هذه الفاتورة مرتبطة بمستند متخصص أو إشعار دائن؛ عدّل القيمة من مستندها الأصلي');
@@ -103,8 +135,11 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
     if (bank) throw fail('الفاتورة أو إحدى دفعاتها مطابقة بكشف بنك. فكّ المطابقة من سطر الكشف أولًا، ثم أعد التعديل والمطابقة');
     const targetView = rows => JSON.stringify(rows.map(row => { const { amount, ...target } = financialView(row); return target; }));
     if (payments.some(payment => payment.costDifferenceUsd) && targetView(lines) !== targetView(bill.lines)) throw fail('يوجد فرق تكلفة موزع من دفعة مرتبطة؛ ألغِ تسوية الفرق قبل تغيير جهة تحميل التكلفة');
-    if (merged.currency !== bill.currency && (bill.paidBeforeCount || payments.length || receipts.length || nettings.length)) throw fail('الفاتورة عليها سداد أو تسوية؛ احتفظ بعملتها وعدّل القيمة وسعر الصرف، أو عالج السداد قبل تغيير العملة');
+    if (merged.currency !== bill.currency && (bill.paidBeforeCount || receipts.length || nettings.length)) throw fail('الفاتورة عليها سداد افتتاحي أو استرداد أو مقاصة؛ عالج التسوية المرتبطة قبل تغيير العملة');
   }
+  const reopening = historicalPayment === 'unpaid' ? await assumedPayment(bill, payments, receipts, notes, nettings, session) : null;
+  const settlementCorrectionDay = reopening ? today() : undefined;
+  if (settlementCorrectionDay && settings?.lockDate && settlementCorrectionDay <= settings.lockDate) throw fail('تاريخ تصحيح السداد في فترة مقفلة');
   const rates = new RateBook(session);
   let newUsd = 0;
   for (const line of lines) {
@@ -119,11 +154,15 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   const oldOpen = await payables.apBalance(payables.billKey(bill._id), session);
   const total = lines.reduce((sum, line) => sum + line.amount, 0);
   const fingerprint = hash({ bill, input: merged, entries, payments, receipts, notes, nettings, originItems, newUsd,
-    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen });
-  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint,
+    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, settlementCorrectionDay });
+  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening,
     summary: { oldTotal: bill.total, newTotal: total, oldCurrency: bill.currency, newCurrency: merged.currency,
       oldUsd: bill.totalUsd, newUsd, settledUsd: bill.totalUsd - oldOpen, oldOpen,
-      newOpen: oldOpen + newUsd - bill.totalUsd, costDelta: newUsd - bill.totalUsd, day } };
+      newOpen: oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0), costDelta: newUsd - bill.totalUsd, day,
+      historicalPayment, removedSettlementUsd: reopening?.amount || 0,
+      remainingSettlementUsd: bill.totalUsd - oldOpen - (reopening?.amount || 0),
+      settlementCounterpart: reopening?.counterpart.name, settlementCorrectionDay,
+      settlementFromOpening: !!reopening?.closure, cashChangeUsd: 0 } };
 }
 
 async function preview(id, input) {
@@ -149,6 +188,29 @@ async function apply(id, input, { session, req }) {
   }, { session, req });
   if (!financial) return { ...details, preview: prepared.summary };
   const current = await SupplierBill.findById(id).session(session);
+  if (prepared.reopening) {
+    const { payment, amount, counterpart } = prepared.reopening;
+    // SUSPENSE_CLOSE already transferred old suspense to opening equity. Correct
+    // that equity directly; neither reopen suspense nor refund a real cash box.
+    const correction = await require('./ledger').postEntry({
+      eventType: 'HISTORICAL_PAYMENT_REOPEN', eventKey: `HISTORICAL_PAYMENT_REOPEN:${payment._id}`,
+      date: prepared.summary.settlementCorrectionDay, description: `تصحيح سداد تاريخي مفترض للفاتورة ${current.number}: ${input.reason}`,
+      source: { model: 'AccountingSupplierPayment', id: payment._id },
+      lines: [
+        { accountId: current.payableAccountId, credit: amount, vendorId: current.vendorId, apKey: payables.billKey(current._id) },
+        { accountId: counterpart._id, debit: amount },
+      ],
+    }, { session, user: req.user });
+    const canceled = await SupplierPayment.findOneAndUpdate({ _id: payment._id, status: 'posted' },
+      { $set: { status: 'canceled', canceledAt: new Date(), canceledBy: req.user._id,
+        cancelReason: `تصحيح السداد التاريخي المفترض: ${input.reason}`, reversalEntryId: correction._id } }, { session, new: true });
+    if (!canceled) throw new ErrorHandler(409, 'تغيّر السداد التاريخي؛ أعد المعاينة');
+    current.paymentId = undefined;
+    current.paidImmediatelyFrom = undefined;
+    await logAudit({ req, action: 'bill.historicalPayment.reopen', model: 'AccountingSupplierPayment', docId: payment._id,
+      before: payment, after: { document: canceled.toObject(), correctionEntryId: correction._id,
+        counterpartId: counterpart._id, closureId: prepared.reopening.closure?._id, reason: input.reason } }, session);
+  }
   for (const origin of prepared.originItems) {
     const order = await Order.findById(origin.orderId).session(session);
     const item = order?.purchaseItems.id(origin.before._id);

@@ -2,13 +2,14 @@ const mongoose = require('mongoose');
 const { startDb, stopDb, resetDb, account, post, oid } = require('./helpers');
 const { runInTransaction } = require('../services/transaction');
 const { getBalance } = require('../services/carrying');
-const { JournalEntry, CurrencyRate } = require('../models');
-const { Vendor, SupplierBill, SupplierPayment, FixedAsset } = require('../models/documents');
+const { JournalEntry, CurrencyRate, AccountingSettings } = require('../models');
+const { Vendor, SupplierBill, SupplierPayment, BankStatementLine, FixedAsset } = require('../models/documents');
 const payables = require('../services/posting/payables');
 const treasury = require('../services/posting/treasury');
 const schedules = require('../services/posting/schedules');
 const people = require('../services/posting/people');
 const bank = require('../services/posting/bank');
+const billFinancialEdit = require('../services/billFinancialEdit');
 const { cancelDocument } = require('../services/cancel');
 const Order = require('../../models/order');
 const Inventory = require('../../models/inventory');
@@ -32,6 +33,110 @@ const fund = (code, amount, rateValue) => tx(async (session) => people.createEqu
 }, { session, req }));
 
 beforeEach(() => resetDb());
+
+async function historicalEditableBill({ closeSuspense = false, cash = false } = {}) {
+  const vendor = await newVendor('carrier', 'Historical carrier');
+  const suspense = await account('399000');
+  const tripId = await insertTrip();
+  let bill = await tx(session => payables.createBill({ vendorId: vendor._id, day: '2026-07-18', currency: 'USD',
+    isHistorical: true, migrationRunId: 'EDIT-HISTORY', paidImmediatelyFrom: cash ? undefined : suspense._id,
+    lines: [{ target: 'trip', tripId, description: 'Historical editable trip cost', amount: 100 }] }, { session, req }));
+  if (cash) await tx(session => payables.createPayment({ vendorId: vendor._id, day: '2026-07-18',
+    fromAccountId: suspense._id, amount: 100, isHistorical: true, migrationRunId: 'EDIT-HISTORY',
+    allocations: [{ billId: bill._id, amountUsd: 10000 }] }, { session, req }));
+  if (closeSuspense) await post({ eventKey: 'SUSPENSE_CLOSE:EDIT-HISTORY', eventType: 'SUSPENSE_CLOSE', date: '2026-10-30',
+    isHistorical: true, migrationRunId: 'EDIT-HISTORY',
+    lines: [{ accountId: suspense._id, debit: 10000 }, { accountId: (await account('390000'))._id, credit: 10000 }] });
+  bill = await SupplierBill.findById(bill._id);
+  const input = { vendorId: bill.vendorId, day: bill.day, currency: 'LYD', rate: 10,
+    lines: bill.lines.map(line => ({ ...line.toObject(), amount: 1200 })),
+    updatedAt: bill.updatedAt, reason: 'Correct historical supplier currency and value' };
+  return { bill, input, vendor, suspense };
+}
+
+test('bill correction keeps actual payment unchanged when invoice currency changes', async () => {
+  const vendor = await newVendor();
+  const bill = await tx(async session => payables.createBill({ vendorId: vendor._id, day: '2026-07-18', currency: 'USD',
+    paidImmediatelyFrom: (await account('110101'))._id,
+    lines: [{ target: 'expense', accountId: (await account('531300'))._id, office: 'tripoli', description: 'Paid editable cost', amount: 100 }] }, { session, req }));
+  const before = (await SupplierPayment.findById(bill.paymentId)).toObject();
+  const input = { vendorId: bill.vendorId, day: bill.day, currency: 'LYD', rate: 10,
+    lines: bill.lines.map(line => ({ ...line.toObject(), amount: 1200 })), updatedAt: bill.updatedAt, reason: 'Correct invoice currency only' };
+  const preview = await billFinancialEdit.preview(bill._id, input);
+  expect(preview.newOpen).toBe(2000);
+  await tx(session => billFinancialEdit.apply(bill._id, { ...input, fingerprint: preview.fingerprint }, { session, req }));
+  const after = (await SupplierPayment.findById(bill.paymentId)).toObject();
+  expect(after.amount).toBe(before.amount);
+  expect(after.currency).toBe('USD');
+  expect(after.entryId).toEqual(before.entryId);
+  expect((await balanceOf('110101')).usd).toBe(-10000);
+  expect((await balanceOf('531300')).usd).toBe(12000);
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(2000);
+});
+
+test.each([false, true])('bill correction reopens assumed historical payment with closed suspense=%s and no cash change', async closeSuspense => {
+  const { bill, input } = await historicalEditableBill({ closeSuspense });
+  const nextVendor = await newVendor('supplier', 'Correct customs supplier');
+  input.vendorId = nextVendor._id;
+  input.historicalPayment = 'unpaid';
+  const preview = await billFinancialEdit.preview(bill._id, input);
+  expect(preview.newOpen).toBe(12000);
+  expect(preview.removedSettlementUsd).toBe(10000);
+  expect(preview.settlementFromOpening).toBe(closeSuspense);
+  expect(preview.cashChangeUsd).toBe(0);
+  const result = await tx(session => billFinancialEdit.apply(bill._id, { ...input, fingerprint: preview.fingerprint }, { session, req }));
+  expect(result.bill.currency).toBe('LYD');
+  expect(result.bill.paymentId).toBeUndefined();
+  expect((await SupplierPayment.findById(bill.paymentId)).status).toBe('canceled');
+  expect((await balanceOf('110101')).usd).toBe(0);
+  expect((await balanceOf('130100')).usd).toBe(12000);
+  expect((await balanceOf('399000')).usd).toBe(0);
+  expect((await balanceOf('390000')).usd).toBe(0);
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(12000);
+  expect((await balanceOf('210100')).usd).toBe(0);
+  expect((await balanceOf('210200')).usd).toBe(-12000);
+  // Pay the corrected existing bill once; it settles without adding trip cost.
+  const actualPayment = await tx(async session => payables.createPayment({ vendorId: nextVendor._id, day: '2026-10-31',
+    fromAccountId: (await account('110102'))._id, amount: 1200, rate: 10,
+    allocations: [{ billId: bill._id, amountUsd: 12000 }] }, { session, req }));
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(0);
+  expect((await balanceOf('130100')).usd).toBe(12000);
+  expect((await balanceOf('110102')).foreign).toBe(-1200000);
+  await expect(tx(session => billFinancialEdit.apply(bill._id, { ...input, fingerprint: preview.fingerprint }, { session, req }))).rejects.toThrow();
+  await tx(session => cancelDocument('AccountingSupplierPayment', actualPayment._id, { session, req, reason: 'Test actual payment cancellation' }));
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(12000);
+  await tx(session => cancelDocument('AccountingSupplierBill', bill._id, { session, req, reason: 'Test corrected bill cancellation' }));
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(0);
+  expect((await balanceOf('130100')).usd).toBe(0);
+  expect((await balanceOf('110102')).foreign).toBe(0);
+});
+
+test('bill correction refuses to turn a historical manual payment into an assumed unpaid bill', async () => {
+  const { bill, input } = await historicalEditableBill({ cash: true });
+  await expect(billFinancialEdit.preview(bill._id, { ...input, historicalPayment: 'unpaid' })).rejects.toThrow('ليس افتراضيًا');
+  expect(await payables.apBalance(payables.billKey(bill._id))).toBe(0);
+  expect((await SupplierPayment.findOne()).status).toBe('posted');
+});
+
+test('bill correction fingerprint prevents payment choice changes after preview', async () => {
+  const { bill, input } = await historicalEditableBill();
+  const preview = await billFinancialEdit.preview(bill._id, input);
+  await expect(tx(session => billFinancialEdit.apply(bill._id, { ...input, historicalPayment: 'unpaid', fingerprint: preview.fingerprint }, { session, req }))).rejects.toThrow('المعاينة');
+  expect((await SupplierPayment.findById(bill.paymentId)).status).toBe('posted');
+  expect((await SupplierBill.findById(bill._id)).currency).toBe('USD');
+});
+
+test('bill correction requires bank unlinking and keeps closed periods protected', async () => {
+  const { bill, input } = await historicalEditableBill();
+  await BankStatementLine.collection.insertOne({ billId: bill._id, historicalSettlementPaymentId: bill.paymentId, lineStatus: 'created_entry' });
+  await expect(billFinancialEdit.preview(bill._id, { ...input, historicalPayment: 'unpaid' })).rejects.toThrow('فكّ المطابقة');
+  await BankStatementLine.deleteMany({});
+  await AccountingSettings.updateOne({ key: 'main' }, { $set: { lockDate: '2026-07-31' } });
+  require('../services/config').invalidateConfig();
+  await expect(billFinancialEdit.preview(bill._id, { ...input, historicalPayment: 'unpaid' })).rejects.toThrow('الفترة مقفلة');
+  expect((await SupplierPayment.findById(bill.paymentId)).status).toBe('posted');
+  expect((await SupplierBill.findById(bill._id)).currency).toBe('USD');
+});
 
 test('scenario 9: Alipay top-up keeps its cost rate and a vendor payment uses it', async () => {
   await fund('110201', 10000);
