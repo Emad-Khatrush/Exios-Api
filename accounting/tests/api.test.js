@@ -111,6 +111,66 @@ test('current valuation HTTP requires setup access and a fresh confirmed preview
   expect(balances).toEqual({ foreign: 20000000, usd: 200000 });
 });
 
+async function supplierCurrencyFixture(currency = 'CNY', amount = 700, rate = 7) {
+  const vendor = (await api('post', '/vendors').send({ name: 'Original currency report supplier', type: 'supplier' })).body;
+  const created = await api('post', '/bills').send({ vendorId: vendor._id, day: '2026-10-01', currency, rate,
+    lines: [{ target: 'expense', accountId: (await account('531300'))._id, office: 'tripoli', description: 'Original currency cost', amount }] });
+  expect(created.status).toBe(201);
+  return { vendor, bill: created.body };
+}
+
+test('supplier currency report keeps CNY invoices and USD payments separate at bill book value', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture();
+  const paid = await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110101'))._id,
+    amount: 40, allocations: [{ billId: bill._id, amountUsd: 4000 }] });
+  expect(paid.status).toBe(201);
+  const statement = await api('get', `/vendors/${vendor._id}/statement`);
+  expect(statement.status).toBe(200);
+  expect(statement.body.owed).toBe(6000);
+  const report = statement.body.currencyReport;
+  expect(report.currencies).toEqual(['CNY', 'USD']);
+  expect(report.invoices[0]).toMatchObject({ currency: 'CNY', total: 700, openUsd: 6000, openEquivalent: 420 });
+  expect(report.settlements[0]).toMatchObject({ currency: 'USD', amount: 40, kind: 'payment' });
+  expect(report.totals.find(row => row.currency === 'CNY')).toMatchObject({ billed: 700, payments: 0, openEquivalent: 420 });
+  expect(report.totals.find(row => row.currency === 'USD')).toMatchObject({ billed: 0, payments: 40, openEquivalent: 0 });
+});
+
+test('supplier cancellation rows are hidden by default and do not inflate native totals or closing balance', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture('USD', 100, 1);
+  const payment = await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110101'))._id,
+    amount: 40, allocations: [{ billId: bill._id, amountUsd: 4000 }] });
+  expect(payment.status).toBe(201);
+  expect((await api('post', `/documents/AccountingSupplierPayment/${payment.body._id}/cancel`).send({ reason: 'Wrong payment canceled' })).status).toBe(200);
+  const normal = await api('get', `/vendors/${vendor._id}/statement`);
+  expect(normal.body.movements).toHaveLength(1);
+  expect(normal.body.owed).toBe(10000);
+  expect(normal.body.currencyReport.settlements).toHaveLength(0);
+  expect(normal.body.currencyReport.totals[0]).toMatchObject({ billed: 100, payments: 0, openEquivalent: 100 });
+  const withCanceled = await api('get', `/vendors/${vendor._id}/statement?showCanceled=true`);
+  expect(withCanceled.body.movements).toHaveLength(3);
+  expect(withCanceled.body.movements[0].reversalOf).toBeTruthy();
+  expect(withCanceled.body.currencyReport.settlements[0].status).toBe('canceled');
+  expect(withCanceled.body.currencyReport.totals).toEqual(normal.body.currencyReport.totals);
+  expect(withCanceled.body.owed).toBe(normal.body.owed);
+  expect((await api('post', `/documents/AccountingSupplierBill/${bill._id}/cancel`).send({ reason: 'Wrong invoice canceled' })).status).toBe(200);
+  const cleared = await api('get', `/vendors/${vendor._id}/statement`);
+  expect(cleared.body.owed).toBe(0);
+  expect(cleared.body.movements).toHaveLength(0);
+  expect(cleared.body.currencyReport.invoices).toHaveLength(0);
+});
+
+test('supplier currency report does not count using an existing advance as another cash payment', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture('USD', 100, 1);
+  expect((await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110101'))._id, amount: 10 })).status).toBe(201);
+  expect((await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-03', fromAdvance: true,
+    allocations: [{ billId: bill._id, amountUsd: 1000 }] })).status).toBe(201);
+  const result = await api('get', `/vendors/${vendor._id}/statement`);
+  expect(result.body.currencyReport.settlements).toHaveLength(2);
+  expect(result.body.currencyReport.settlements.some(row => row.kind === 'advance_allocation')).toBe(true);
+  expect(result.body.currencyReport.totals[0]).toMatchObject({ billed: 100, payments: 10, openEquivalent: 90 });
+  expect(result.body.owed).toBe(9000);
+});
+
 test('only admins can open the accounting section', async () => {
   expect((await api('get', '/dashboard', employeeToken)).status).toBe(403);
   const res = await api('get', '/dashboard');

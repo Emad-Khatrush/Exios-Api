@@ -140,18 +140,22 @@ module.exports.vendorStatement = handle(async (req, res) => {
   if (!vendor) throw notFound('المورد غير موجود');
   const rows = await JournalEntry.aggregate([
     { $match: { 'lines.vendorId': vendor._id } },
-    { $sort: { day: 1, createdAt: 1 } },
+    { $sort: { day: 1, createdAt: 1, _id: 1 } },
     { $unwind: '$lines' },
     { $match: { 'lines.vendorId': vendor._id, 'lines.apKey': { $exists: true } } },
     { $project: { number: 1, day: 1, description: 1, eventType: 1, status: 1, reversalOf: 1, source: 1, line: '$lines' } },
   ]);
   let owed = 0;
-  const movements = rows.map((row) => {
+  const showCanceled = req.query.showCanceled === 'true';
+  const visibleRows = showCanceled ? rows : rows.filter(row => row.status !== 'reversed' && !row.reversalOf);
+  const movements = visibleRows.map((row) => {
     owed += row.line.credit - row.line.debit;
     return { ...row, owed };
   });
   const openBills = await openBillsFor(vendor._id);
-  res.json({ vendor, movements, owed, openBills, advance: -(await payables.apBalance(payables.advanceKey(vendor._id))) });
+  const currencyReport = await require('../services/vendorCurrencyReport').build(vendor._id, openBills, { showCanceled });
+  res.json({ vendor, movements: movements.reverse(), owed: rows.reduce((sum, row) => sum + row.line.credit - row.line.debit, 0), openBills,
+    advance: -(await payables.apBalance(payables.advanceKey(vendor._id))), currencyReport, showCanceled });
 });
 
 async function openBillsFor(vendorId) {
