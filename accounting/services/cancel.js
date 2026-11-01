@@ -74,6 +74,9 @@ const RULES = {
   AccountingSupplierPayment: {
     Model: docs.SupplierPayment,
     async check(payment, { session }) {
+      await docs.Vendor.updateOne({ _id: payment.vendorId }, { $inc: { costPostingVersion: 1 } }, { session });
+      if (await docs.SupplierPayment.exists({ advancePaymentId: payment._id, status: ACTIVE }).session(session))
+        throw fail('الدفعة مستخدمة في تسوية فواتير؛ ألغِ التسويات المرتبطة أولًا');
       if (await docs.YuanPurchase.exists({ fundedFromPaymentId: payment._id, status: ACTIVE }).session(session))
         throw fail('الدفعة مرتبطة بشحن Alipay؛ ألغِ عملية شراء اليوان المرتبطة أولاً ثم ألغِ الدفعة');
       if (await docs.BankStatementLine.exists({ historicalSettlementPaymentId: payment._id, lineStatus: 'created_entry' }).session(session))

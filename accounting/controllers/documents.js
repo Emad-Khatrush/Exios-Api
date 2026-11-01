@@ -180,7 +180,8 @@ module.exports.vendorOpenBills = handle(async (req, res) => {
     const names = new Map(orders.map(order => [String(order._id), { _id: order._id, number: order.orderId, customer: order.customerInfo?.fullName }]));
     results = results.map(row => ({ ...row, orders: row.orderIds.map(id => names.get(id)).filter(Boolean) }));
   }
-  res.json({ results, advance: -(await payables.apBalance(payables.advanceKey(req.params.id))) });
+  res.json({ results, advance: -(await payables.apBalance(payables.advanceKey(req.params.id))),
+    advanceSources: await require('../services/vendorAdvanceSources').available(oid(req.params.id)) });
 });
 
 // ---- Bills ----

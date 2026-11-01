@@ -9,7 +9,7 @@ async function build(vendorId, openBills, { showCanceled = false } = {}) {
   const status = { $in: showCanceled ? ['posted', 'canceled'] : ['posted'] };
   const [bills, payments, receipts, config] = await Promise.all([
     SupplierBill.find({ vendorId, status }).select('number day currency total totalUsd status isCreditNote originalBillId paidBeforeCount note createdAt').sort({ day: -1, createdAt: -1, _id: -1 }).lean(),
-    SupplierPayment.find({ vendorId, status }).select('number day currency amount status fromAdvance allocations isHistorical autoFromBillId entryId note createdAt').sort({ day: -1, createdAt: -1, _id: -1 }).lean(),
+    SupplierPayment.find({ vendorId, status }).select('number day currency amount status fromAdvance allocations advancePaymentId advanceAmount isHistorical autoFromBillId entryId note createdAt').sort({ day: -1, createdAt: -1, _id: -1 }).lean(),
     SupplierReceipt.find({ vendorId, status }).select('number day currency amount status entryId note createdAt').sort({ day: -1, createdAt: -1, _id: -1 }).lean(),
     getConfig(),
   ]);
@@ -32,7 +32,7 @@ async function build(vendorId, openBills, { showCanceled = false } = {}) {
   });
   const paymentRows = payments.map(payment => {
     const currency = payment.currency || 'USD';
-    const amount = payment.fromAdvance ? (payment.allocations || []).reduce((sum, line) => sum + line.amountUsd, 0) / 100 : payment.amount;
+    const amount = payment.fromAdvance ? payment.advancePaymentId ? payment.advanceAmount : (payment.allocations || []).reduce((sum, line) => sum + line.amountUsd, 0) / 100 : payment.amount;
     // Using an already paid advance does not pay that money again.
     if (payment.status === 'posted' && !payment.fromAdvance && Number.isFinite(amount)) group(currency).payments += amount;
     return { ...payment, currency, amount, kind: payment.fromAdvance ? 'advance_allocation' : 'payment', url: payment.entryId ? `/accounting/entries/${payment.entryId}` : null };

@@ -434,6 +434,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   const actor = user || req?.user;
 
   const vendor = await Vendor.findById(input.vendorId).session(session);
+  if (vendor) await Vendor.updateOne({ _id: vendor._id }, { $inc: { costPostingVersion: 1 } }, { session });
   if (!vendor) throw fail('اختر المورد');
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
 
@@ -454,6 +455,8 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   }
 
   const payable = await payableAccountFor(vendor);
+  const nativeAllocated = async currency => Math.round(bills.reduce((sum, bill, i) =>
+    sum + bill.total * allocations[i].amountUsd / bill.totalUsd, 0) * 10 ** await decimalsOf(currency));
   const [doc] = await SupplierPayment.create([{
     vendorId: vendor._id, day: input.day, fromAdvance: !!input.fromAdvance, allocations,
     note: input.note, attachments: input.attachments, idempotencyKey: input.idempotencyKey,
@@ -468,8 +471,26 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     // Applying money already paid to the vendor in advance
     if (!allocated) throw fail('خصص المبلغ على فاتورة واحدة على الأقل');
     const available = -(await apBalance(advanceKey(vendor._id), session));
-    if (allocated > available) throw fail(`الدفعة المقدمة المتاحة ${available / 100}$ فقط`);
-    lines.push({ accountId: payable._id, credit: allocated, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'تسوية من الدفعة المقدمة' });
+    let consumed = allocated;
+    if (input.advancePaymentId) {
+      if (!mongoose.isValidObjectId(input.advancePaymentId)) throw fail('اختر دفعة مقدمة صحيحة');
+      const source = (await require('../vendorAdvanceSources').available(vendor._id, session))
+        .find(p => String(p._id) === String(input.advancePaymentId));
+      if (!source || input.day < source.day) throw fail('الدفعة المقدمة غير متاحة أو تاريخ التسوية يسبقها');
+      if (!bills.every(b => b.currency === source.currency)) throw fail('اختر فواتير بنفس عملة الدفعة المقدمة');
+      const required = await nativeAllocated(source.currency);
+      const remaining = await toCurrencyMinor(source.remainingAmount, source.currency);
+      if (required <= 0 || required > remaining) throw fail('المبلغ المخصص بعملة الفاتورة أكبر من الدفعة المقدمة المتاحة');
+      consumed = required === remaining ? source.remainingUsd : Math.round(source.advanceUsd * required / await toCurrencyMinor(source.amount, source.currency));
+      if (consumed <= 0 || consumed > source.remainingUsd) throw fail('قيمة التسوية غير صالحة');
+      const locked = await SupplierPayment.updateOne({ _id: source._id, status: 'posted' }, { $inc: { allocationVersion: 1 } }, { session });
+      if (locked.modifiedCount !== 1) throw fail('الدفعة المقدمة لم تعد متاحة');
+      Object.assign(doc, { advancePaymentId: source._id, advanceConsumedUsd: consumed,
+        advanceAmount: required / 10 ** await decimalsOf(source.currency), currency: source.currency });
+    }
+    if (consumed > available) throw fail(`الدفعة المقدمة المتاحة ${available / 100}$ فقط`);
+    lines.push({ accountId: payable._id, credit: consumed, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'تسوية من الدفعة المقدمة' });
+    if (input.advancePaymentId) await addFxLine(lines, undefined, 'فرق صرف تسوية دفعة مقدمة بنفس العملة');
   } else {
     const from = await getAccount(input.fromAccountId, 'حساب الدفع');
     const custody = require('../custody');
@@ -491,14 +512,17 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     }
     const atRate = await rates.toUsd(minor, currency, input.day, input.rate);
     const outUsd = await valueOut(from, minor, { day: input.day, docRate: input.rate, rates, ...(isEmployeeAdvance && { employeeId: input.employeeId }) });
+    const sameCurrency = bills.length > 0 && bills.every(b => b.currency === currency);
+    const settledMinor = sameCurrency ? await nativeAllocated(currency) : 0;
+    if (sameCurrency && settledMinor > minor) throw fail('المبلغ المخصص بعملة الفاتورة أكبر من المدفوع');
     // Allowing a little over the day's value: a bill paid in its own currency closes in full
     // even when the rate moved since the bill
-    if (allocated > Math.round(atRate * 1.1) + 100) throw fail('المبالغ المخصصة أكبر من قيمة الدفعة');
+    if (!sameCurrency && allocated > Math.round(atRate * 1.1) + 100) throw fail('المبالغ المخصصة أكبر من قيمة الدفعة');
     // Paid in another currency than the bills (a Kuwaiti site paid from the lira bank): the bills'
     // cost becomes what was really paid, the difference going on their own targets (owner's request
     // 2026-10-04). The box's average rate against the paid rate stays an exchange difference.
     const yuanOnly = bills.length > 0 && bills.every(b => b.yuanPurchaseId || b.lines.every(line => line.target === 'stock'));
-    const difference = input.differenceTo === 'cost' && allocated && !input.autoFromBillId && !yuanOnly ? atRate - allocated : 0;
+    const difference = !sameCurrency && input.differenceTo === 'cost' && allocated && !input.autoFromBillId && !yuanOnly ? atRate - allocated : 0;
     if (difference) {
       if (Math.abs(difference) > Math.round(allocated * 0.1) + 100) throw fail('الفرق بين المدفوع والموزَّع أكبر من 10%: راجع المبلغ أو السعر');
       lines.push(...await costDifferenceLines(bills, allocations, difference, session, actor));
@@ -506,7 +530,8 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     }
     // The payment made with its bill pays exactly that bill: a cent of rounding is not an advance
     const yuanFxSettlement = yuanOnly && currency !== 'USD' && input.differenceTo === 'cost';
-    const advance = input.autoFromBillId || difference || yuanFxSettlement ? 0 : Math.max(atRate - allocated, 0);
+    const advance = sameCurrency ? (minor === settledMinor ? 0 : await rates.toUsd(minor - settledMinor, currency, input.day, input.rate))
+      : input.autoFromBillId || difference || yuanFxSettlement ? 0 : Math.max(atRate - allocated, 0);
     if (advance > 0) lines.push({ accountId: payable._id, debit: advance, vendorId: vendor._id, apKey: advanceKey(vendor._id), label: 'دفعة مقدمة للمورد' });
     lines.push(moneyLine(from, 'credit', minor, outUsd, { label: `دفعة للمورد ${vendor.name}`, ...(isEmployeeAdvance && { employeeId: toId(input.employeeId) }) }));
     office = from.office || undefined;
@@ -565,6 +590,7 @@ async function createReceipt(input, { session, req, user }) {
   if (existing) return existing;
   const actor = user || req?.user;
   const vendor = await Vendor.findById(input.vendorId).session(session);
+  if (vendor) await Vendor.updateOne({ _id: vendor._id }, { $inc: { costPostingVersion: 1 } }, { session });
   if (!vendor) throw fail('اختر المورد');
   if (!isDay(input.day)) throw fail('التاريخ غير صالح');
   const to = await getAccount(input.toAccountId, 'الحساب المستلم');

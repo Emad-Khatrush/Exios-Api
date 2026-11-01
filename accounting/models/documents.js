@@ -131,6 +131,10 @@ const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
 }));
 
 const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycle({
+  advancePaymentId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' },
+  advanceConsumedUsd: Number,
+  advanceAmount: Number,
+  allocationVersion: { type: Number, default: 0 },
   batchTrial: Boolean,
   historicalSettlementVersion: { type: Number, default: 0 },
   // Automatic remittance valuation; original bill/payment and payable allocations stay intact.

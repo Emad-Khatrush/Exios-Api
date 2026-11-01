@@ -171,6 +171,91 @@ test('supplier currency report does not count using an existing advance as anoth
   expect(result.body.owed).toBe(9000);
 });
 
+test.each([5, 20])('same currency supplier settlement closes 16500 LYD at payment rate %s without repricing cost or leaving an advance', async rate => {
+  const { vendor, bill } = await supplierCurrencyFixture('LYD', 16500, 10);
+  const paid = await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110102'))._id,
+    amount: 16500, rate, differenceTo: 'cost', allocations: [{ billId: bill._id, amountUsd: bill.totalUsd }] });
+  expect(paid.status).toBe(201);
+  expect(paid.body.advanceUsd).toBe(0);
+  expect(paid.body.costDifferenceUsd).toBe(0);
+  const statement = (await api('get', `/vendors/${vendor._id}/statement`)).body;
+  expect(statement.owed).toBe(0);
+  expect(statement.openBills).toHaveLength(0);
+  expect(statement.advance).toBe(0);
+  const entry = await JournalEntry.findById(paid.body.entryId).lean();
+  expect(entry.lines.reduce((s, l) => s + l.debit - l.credit, 0)).toBe(0);
+});
+
+test('same currency supplier settlement leaves only an actual native overpayment as advance', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture('LYD', 16500, 10);
+  const data = { vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110102'))._id,
+    rate: 20, allocations: [{ billId: bill._id, amountUsd: bill.totalUsd }] };
+  expect((await api('post', '/payments').send({ ...data, amount: 16499 })).status).toBe(400);
+  const paid = await api('post', '/payments').send({ ...data, amount: 17000 });
+  expect(paid.status).toBe(201);
+  expect(paid.body.advanceUsd).toBe(2500);
+  expect((await api('get', `/vendors/${vendor._id}/open-bills`)).body.results).toHaveLength(0);
+});
+
+test('same currency supplier settlement uses the existing advance without another cash entry and can be undone safely', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture('LYD', 16500, 10);
+  const payment = await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110102'))._id, amount: 16500, rate: 20 });
+  expect(payment.status).toBe(201);
+  const sources = (await api('get', `/vendors/${vendor._id}/open-bills`)).body.advanceSources;
+  expect(sources).toHaveLength(1);
+  expect(sources[0].remainingAmount).toBe(16500);
+  const data = { vendorId: vendor._id, day: '2026-10-03', fromAdvance: true, advancePaymentId: payment.body._id,
+    allocations: [{ billId: bill._id, amountUsd: bill.totalUsd }], idempotencyKey: 'native-advance-settlement' };
+  const settled = await api('post', '/payments').send(data);
+  expect(settled.status).toBe(201);
+  expect(settled.body.advanceConsumedUsd).toBe(82500);
+  expect((await api('post', '/payments').send(data)).body._id).toBe(settled.body._id);
+  const entry = await JournalEntry.findById(settled.body.entryId).lean();
+  expect(entry.lines.some(l => l.foreignAmount || String(l.accountId) === String(payment.body.fromAccountId))).toBe(false);
+  const statement = (await api('get', `/vendors/${vendor._id}/statement`)).body;
+  expect(statement.owed).toBe(0);
+  expect(statement.advance).toBe(0);
+  expect(statement.openBills).toHaveLength(0);
+  expect(statement.currencyReport.totals[0].payments).toBe(16500);
+  expect((await api('post', `/documents/AccountingSupplierPayment/${payment.body._id}/cancel`).send({ reason: 'Cannot cancel used advance' })).status).toBe(400);
+  expect((await api('post', `/documents/AccountingSupplierPayment/${settled.body._id}/cancel`).send({ reason: 'Undo allocation only' })).status).toBe(200);
+  const restored = (await api('get', `/vendors/${vendor._id}/open-bills`)).body;
+  expect(restored.results[0].open).toBe(bill.totalUsd);
+  expect(restored.advanceSources[0].remainingAmount).toBe(16500);
+});
+
+test('same currency supplier settlement rejects a foreign currency advance or another vendor source', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture('LYD', 16500, 10);
+  const payment = await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02', fromAccountId: (await account('110101'))._id, amount: 1650 });
+  expect(payment.status).toBe(201);
+  const settled = await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-03', fromAdvance: true, advancePaymentId: payment.body._id,
+    allocations: [{ billId: bill._id, amountUsd: bill.totalUsd }] });
+  expect(settled.status).toBe(400);
+  expect((await api('get', `/vendors/${vendor._id}/open-bills`)).body.results[0].open).toBe(bill.totalUsd);
+  const otherVendor = (await api('post', '/vendors').send({ name: 'Another supplier' })).body;
+  expect((await api('post', '/payments').send({ vendorId: otherVendor._id, day: '2026-10-03', fromAdvance: true,
+    advancePaymentId: payment.body._id, allocations: [{ billId: bill._id, amountUsd: bill.totalUsd }] })).status).toBe(400);
+});
+
+test('same currency supplier settlement applies a partial advance then closes the remainder without duplicate consumption', async () => {
+  const { vendor, bill } = await supplierCurrencyFixture('LYD', 16500, 10);
+  const payment = (await api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-02',
+    fromAccountId: (await account('110102'))._id, amount: 16500, rate: 20 })).body;
+  const settle = (amountUsd, key) => api('post', '/payments').send({ vendorId: vendor._id, day: '2026-10-03', fromAdvance: true,
+    advancePaymentId: payment._id, allocations: [{ billId: bill._id, amountUsd }], idempotencyKey: key });
+  const partial = await settle(50000, 'partial-native');
+  expect(partial.status).toBe(201);
+  expect(partial.body.advanceAmount).toBe(5000);
+  expect(partial.body.advanceConsumedUsd).toBe(25000);
+  const sources = (await api('get', `/vendors/${vendor._id}/open-bills`)).body.advanceSources;
+  expect(sources[0].remainingAmount).toBe(11500);
+  const results = await Promise.all([settle(115000, 'remaining-a'), settle(115000, 'remaining-b')]);
+  expect(results.map(r => r.status).sort()).toEqual([201, 400]);
+  const statement = (await api('get', `/vendors/${vendor._id}/statement`)).body;
+  expect(statement.owed).toBe(0);
+  expect(statement.advance).toBe(0);
+});
+
 test('only admins can open the accounting section', async () => {
   expect((await api('get', '/dashboard', employeeToken)).status).toBe(403);
   const res = await api('get', '/dashboard');
