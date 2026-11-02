@@ -108,7 +108,7 @@ module.exports.getOrdersControl = async (req, res, next) => {
       const orderIssues = [];
       if (order.hasProblem) orderIssues.push('orderProblem');
       if (order.hasRemainingPayment) orderIssues.push('remainingPayment');
-      if (packages.length > 0 && !order.isFinished && packages.every(pkg => pkg.status?.received)) {
+      if (packages.length > 0 && !order.isFinished && packages.every(pkg => pkg.status?.received || pkg.deliveredPackages?.compensation?.closed)) {
         orderIssues.push('deliveredNotFinished');
       }
 

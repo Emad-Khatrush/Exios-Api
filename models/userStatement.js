@@ -49,7 +49,12 @@ const userStatementSchema = new Schema({
   accountingSource: {
     model: String,
     id: Schema.Types.ObjectId,
-  }, 
+  },
+  // A compensation for a lost or damaged package: given and taken back only from the order page
+  packageCompensation: {
+    orderId: Schema.Types.ObjectId,
+    packageId: Schema.Types.ObjectId,
+  },
   review: {
     receivedDate: Date,
     isAdminConfirmed: Boolean

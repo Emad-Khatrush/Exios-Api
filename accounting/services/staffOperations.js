@@ -133,6 +133,31 @@ async function orderCosts(orderId) {
   return { order: { _id: order._id, orderId: order.orderId }, bills: await billsOn('orderId', orderId) };
 }
 
+// Who may pay from someone's custody: the holder themselves, or the owner, an admin or the accountant
+const seesAllCustody = async (user) => !!(user?.roles?.isAdmin || user?.roles?.isAccountant || await isOwner(user));
+
+async function custodyPayer(accountId, employeeId, user) {
+  if (!validId(employeeId)) throw fail('اختر الموظف صاحب العهدة');
+  const found = validId(accountId) && await require('./custody').staffAccountKind(accountId);
+  if (found?.kind !== 'custody') throw fail('دُفعت من: اختر حساب عهدة');
+  if (String(employeeId) !== String(user._id) && !await seesAllCustody(user)) throw fail('تدفع من عهدتك أنت فقط', 403);
+  return { account: found.account, employeeId: oid(employeeId) };
+}
+
+// The custody accounts with who holds what on each: everyone for the owner, an admin or the
+// accountant; only their own for anyone else (trip costs paid from custody)
+async function custodyOptions(user) {
+  const custody = require('./custody');
+  const all = await seesAllCustody(user);
+  const results = [];
+  for (const { account } of await custody.accountsOf('custody')) {
+    const { currency, results: holders } = await custody.holders(account._id);
+    const shown = all ? holders : holders.filter((h) => String(h._id) === String(user._id));
+    if (shown.length) results.push({ _id: account._id, name: account.name, currency, holders: shown });
+  }
+  return { results };
+}
+
 // One cost line on a trip or an order: paid on the spot from a box (in that box's currency), or
 // owed to the supplier (paid later from Supplier payments)
 async function addCost(target, targetId, input, req) {
@@ -143,9 +168,12 @@ async function addCost(target, targetId, input, req) {
   if (!Number.isFinite(amount) || !(amount > 0)) throw fail('المبلغ يجب أن يكون أكبر من صفر');
   let vendorId = input.vendorId;
   if (!input.withoutVendor && !validId(vendorId)) vendorId = (await createVendor({ name: input.vendorName, type: target === 'trip' ? 'carrier' : 'supplier' }))._id;
-  let payFrom = input.payFromAccountId ? await moneyAccount(input.payFromAccountId, { what: 'دُفعت من' }) : null;
+  // Paid from an employee's custody (owner's request 2026-11-02): staff from their own, the owner,
+  // an admin or the accountant from anyone's; the payment refuses more than they hold
+  const custodyHolder = input.employeeId ? await custodyPayer(input.payFromAccountId, input.employeeId, user) : null;
+  let payFrom = custodyHolder ? custodyHolder.account : input.payFromAccountId ? await moneyAccount(input.payFromAccountId, { what: 'دُفعت من' }) : null;
   // Cash paid by staff comes out of their office's sub box (spec v8)
-  if (payFrom && (payFrom.cashKind || 'cash') === 'cash' && !payFrom.subBox) {
+  if (payFrom && !custodyHolder && (payFrom.cashKind || 'cash') === 'cash' && !payFrom.subBox) {
     const profile = await staffProfile(user);
     const sub = !profile.anyOffice && profile.office && await resolveSubCashAccount(profile.office, payFrom.currency || 'USD');
     if (sub) payFrom = sub;
@@ -158,7 +186,7 @@ async function addCost(target, targetId, input, req) {
     return createBill({
       vendorId, withoutVendor: input.withoutVendor, day, currency, rate, idempotencyKey: input.idempotencyKey || undefined,
     duplicateDecision: input.duplicateDecision, duplicateReason: input.duplicateReason, duplicateFingerprint: input.duplicateFingerprint,
-    paidImmediatelyFrom: payFrom?._id, note: input.note, enteredFrom: target,
+    paidImmediatelyFrom: payFrom?._id, ...(custodyHolder && { employeeId: custodyHolder.employeeId }), note: input.note, enteredFrom: target,
     lines: [{
       description: String(input.description || '').trim() || label, amount, target, [target === 'trip' ? 'tripId' : 'orderId']: targetId,
       // A trip's cost by kind (spec v8): customs is a cost of the trip itself, shared by weight
@@ -262,8 +290,10 @@ async function myExpenses(user, { limit = 100 } = {}) {
   return bills.map(expenseView);
 }
 
-async function buildExpense(input, user, files) {
-  const { office } = await officeFor(user, input.office);
+// `holder`: the employee whose custody pays, when the accountant records it for them (owner's
+// request 2026-11-02); otherwise the user pays from their own custody or their office's box
+async function buildExpense(input, user, files, holder = null) {
+  const { office } = holder ? await holderOffice(holder, input.office) : await officeFor(user, input.office);
   const day = dayOf(input.day);
   await assertOpenPeriod(user, day);
   if (!validId(input.expenseTypeId)) throw fail('اختر نوع المصروف');
@@ -288,15 +318,16 @@ async function buildExpense(input, user, files) {
   }
   // Paid from the custody the staff member holds (owner's request 2026-10-04), in the custody's own
   // currency: a dinar expense from the dinar custody, valued at what that custody cost
-  if (input.payFrom === 'custody') {
+  if (holder || input.payFrom === 'custody') {
+    const payer = holder || user;
     const custody = require('./custody');
     const account = await custody.accountOf('custody', currency);
     if (!account) throw fail(`لا توجد عهدة بعملة ${currency || ''}`);
     const decimals = await require('./posting/common').decimalsOf(currency);
-    const held = (await custody.heldMinor(account, user._id)) / 10 ** decimals;
-    if (Math.round(amount * 10 ** decimals) > Math.round(held * 10 ** decimals)) throw fail(`عهدتك بعملة ${currency} (${held}) لا تكفي لهذا المصروف`);
+    const held = (await custody.heldMinor(account, payer._id)) / 10 ** decimals;
+    if (Math.round(amount * 10 ** decimals) > Math.round(held * 10 ** decimals)) throw fail(`${holder ? 'عهدة الموظف' : 'عهدتك'} بعملة ${currency} (${held}) لا تكفي لهذا المصروف`);
     return {
-      vendorId: vendor._id, day, currency, paidImmediatelyFrom: account._id, employeeId: user._id, isQuickExpense: true, officeExpense: true, office,
+      vendorId: vendor._id, day, currency, paidImmediatelyFrom: account._id, employeeId: payer._id, isQuickExpense: true, officeExpense: true, office,
       expenseTypeId: type._id, enteredFrom: 'officeExpense', note, attachments: files,
       lines: [line],
     };
@@ -308,6 +339,28 @@ async function buildExpense(input, user, files) {
     expenseTypeId: type._id, enteredFrom: 'officeExpense', note, attachments: files,
     lines: [line],
   };
+}
+
+// The office of an expense the accountant records from an employee's custody: the one chosen, else
+// the employee's own office
+async function holderOffice(holder, requested) {
+  const { offices } = await getConfig();
+  if (requested && offices.has(requested)) return { office: requested };
+  const { office } = await staffProfile(holder);
+  if (!office || !offices.has(office)) throw fail('اختر المكتب الذي صُرف فيه المصروف');
+  return { office };
+}
+
+// The accountant settles an employee's custody with an expense they paid from it (Employees screen)
+async function createCustodyExpenseFor(employeeId, input, files, req) {
+  if (!validId(employeeId)) throw fail('الموظف غير موجود', 404);
+  const holder = await User.findById(employeeId).select('firstName lastName office roles').lean();
+  if (!holder) throw fail('الموظف غير موجود', 404);
+  const data = await buildExpense({ ...input, payFrom: 'custody' }, req.user, files || [], holder);
+  return runInTransaction(async (session) => {
+    await assertOpenPeriod(req.user, data.day, { session });
+    return createBill({ ...data, idempotencyKey: input.idempotencyKey || undefined }, { session, req });
+  });
 }
 
 async function createOfficeExpense(input, files, req) {
@@ -336,7 +389,9 @@ async function updateOfficeExpense(id, input, files, req) {
     target: old.lines?.[0]?.target || 'expense', tripId: old.lines?.[0]?.tripId, costCategory: old.lines?.[0]?.costCategory,
     // A field sent empty keeps its old value, except the note, which may be cleared
     ...Object.fromEntries(Object.entries(input).filter(([field, value]) => value !== undefined && (value !== '' || field === 'note'))),
-  }, req.user, files?.length ? files : old.attachments || []);
+  }, req.user, files?.length ? files : old.attachments || [],
+  // Recorded by the accountant from another employee's custody: it stays on that custody
+  old.employeeId && String(old.employeeId) !== String(req.user._id) ? await User.findById(old.employeeId).select('firstName lastName office roles').lean() : null);
   return runInTransaction(async (session) => {
     await assertOpenPeriod(req.user, data.day, { session });
     await cancelDocument('AccountingSupplierBill', old._id, { session, req, reason: 'تعديل من شاشة المصروفات' });
@@ -398,6 +453,6 @@ async function setStaffOffice(userId, office) {
 
 module.exports = {
   options, createVendor, tripCosts, orderCosts, addTripCost, addOrderCost, cancelOwnBill,
-  officeExpenseOptions, officeExpenseTrips, myExpenses, createOfficeExpense, updateOfficeExpense, deleteOfficeExpense, reviewOfficeExpenses,
+  officeExpenseOptions, officeExpenseTrips, myExpenses, createOfficeExpense, createCustodyExpenseFor, custodyOptions, updateOfficeExpense, deleteOfficeExpense, reviewOfficeExpenses,
   staffOffices, setStaffOffice, staffProfile,
 };

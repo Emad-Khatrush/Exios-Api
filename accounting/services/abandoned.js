@@ -56,6 +56,7 @@ async function declareAbandoned(orderId, packageId, req) {
     if (order.isCanceled) throw fail('الطلب ملغى');
     if (pkg.status?.received) throw fail('الطرد سُلِّم للعميل');
     if (pkg.deliveredPackages?.abandoned?.status) throw fail('الطرد معلن متروكاً مسبقاً');
+    if (pkg.deliveredPackages?.compensation?.type) throw fail('الطرد عُوِّض كمفقود أو تالف');
     await setStatus(orderId, packageId, { status: 'abandoned', declaredAt: new Date(), declaredBy: req.user._id }, session);
     await sync(order._id, session, req.user);
     await logAudit({ req, action: 'package.abandon', model: 'Order', docId: order._id, after: { packageId, tracking: pkg.deliveredPackages?.trackingNumber } }, session);
@@ -129,6 +130,7 @@ async function orderPackages(orderId, user) {
     results.push({
       _id: pkg._id, tracking: pkg.deliveredPackages?.trackingNumber, received: !!pkg.status?.received, arrivedLibya: !!pkg.status?.arrivedLibya,
       arrived, age, overdue: !pkg.status?.received && age !== null && age >= days, abandoned: pkg.deliveredPackages?.abandoned || null,
+      compensation: pkg.deliveredPackages?.compensation?.type ? pkg.deliveredPackages.compensation : null,
     });
   }
   return { abandonAfterDays: days, canManage: !!(user?.roles?.isAdmin || await isOwner(user)), results };

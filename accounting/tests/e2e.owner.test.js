@@ -576,11 +576,53 @@ test('16. custody and loans apart, each in its own currency: given, spent by the
   // Given, spent and settled in dinars: not a cent of exchange difference
   expect(await usd('710100')).toBe(fxBefore);
 
+
   // The overview for the accountant and the admin, not for the employee
   const overview = await custody.summary({ _id: owner._id, roles: { isAccountant: true } });
   expect(overview.results.find((r) => String(r._id) === String(clerkId))).toMatchObject({ custody: { USD: 250, LYD: 0 }, loan: { USD: 0, LYD: 0 } });
   await expect(custody.summary(clerk)).rejects.toMatchObject({ statusCode: 403 });
   await expectConsistent('custody and loan');
+
+  // Paying a supplier from custody lists only who holds it, with how much; a loan account is refused
+  const holding = await custody.holders(custodyUsd._id);
+  expect(holding.currency).toBe('USD');
+  expect(holding.results.find((h) => String(h._id) === String(clerkId))).toMatchObject({ held: 250 });
+  expect((await custody.holders(custodyLyd._id)).results.some((h) => String(h._id) === String(clerkId))).toBe(false);
+  await expect(custody.holders(loanUsd._id)).rejects.toThrow('عهدة');
+
+  // A trip cost paid from custody: the employee from their own (not someone else's), the owner for them
+  const inventory = require('../../controllers/inventory');
+  const trip = (await call(inventory.createInventory, { ...as(owner), body: { voyage: 'AIR-CUSTODY', inventoryType: 'inventoryGoods', shippingType: 'air', inventoryPlace: 'tripoli', shippedCountry: 'CN' } })).body;
+  const other = (await users().insertOne({ username: 'clerk-d', firstName: 'Clerk', lastName: 'D', phone: 910000078, customerId: 'STF8', office: 'tripoli', roles: { isEmployee: true } })).insertedId;
+  expect((await staff.custodyOptions(clerk)).results.map((a) => a.holders.map((h) => String(h._id)))).toEqual([[String(clerkId)]]);
+  await expect(staff.addTripCost(trip._id, { withoutVendor: true, amount: 10, payFromAccountId: custodyUsd._id, employeeId: String(clerkId) }, { user: await users().findOne({ _id: other }) })).rejects.toMatchObject({ statusCode: 403 });
+  await expect(staff.addTripCost(trip._id, { withoutVendor: true, amount: 251, payFromAccountId: custodyUsd._id, employeeId: String(clerkId) }, { user: clerk })).rejects.toThrow('لا تكفي');
+  await staff.addTripCost(trip._id, { withoutVendor: true, amount: 20, payFromAccountId: custodyUsd._id, employeeId: String(clerkId), costCategory: 'transport' }, { user: clerk });
+  await staff.addTripCost(trip._id, { withoutVendor: true, amount: 30, payFromAccountId: custodyUsd._id, employeeId: String(clerkId) }, { user: owner });
+  await expectConsistent('trip costs from custody');
+  expect((await custody.mine(clerk)).custody.balance).toEqual({ USD: 200, LYD: 0 });
+  await staff.createCustodyExpenseFor(String(clerkId), { expenseTypeId: String(type._id), amount: 200, currency: 'USD', note: 'باقي' }, [], { user: owner });
+  await expect(staff.createCustodyExpenseFor(String(clerkId), { expenseTypeId: String(type._id), amount: 1, currency: 'USD', note: 'x' }, [], { user: owner })).rejects.toThrow('عهدة الموظف');
+  expect((await custody.mine(clerk)).custody.balance).toEqual({ USD: 0, LYD: 0 });
+});
+
+test('16a. the accountant closes a custody with an expense', async () => {
+  const staff = require('../services/staffOperations');
+  const custody = require('../services/custody');
+  const { createTransfer } = require('../services/posting/treasury');
+  const clerkId = (await users().insertOne({ username: 'clerk-e', firstName: 'Clerk', lastName: 'E', phone: 910000079, customerId: 'STF9', office: 'tripoli', roles: { isEmployee: true } })).insertedId;
+  const clerk = await users().findOne({ _id: clerkId });
+  const type = await docs.ExpenseType.findOne({ isActive: true }).lean();
+  const [box, custodyUsd] = [await account('110101'), await account('140100')];
+  await tx((session) => createTransfer({ day: today(), employeeId: String(clerkId), fromAccountId: box._id, toAccountId: custodyUsd._id, fromAmount: 250, toAmount: 250 }, { session, req: { user: owner } }));
+  // The accountant closes the rest of the custody with an expense the employee paid from it
+  // (owner's request 2026-11-02): more than the custody holds is refused
+  await expect(staff.createCustodyExpenseFor(String(clerkId), { expenseTypeId: String(type._id), amount: 251, currency: 'USD', note: 'x' }, [], { user: owner })).rejects.toThrow('عهدة الموظف');
+  const closing = await staff.createCustodyExpenseFor(String(clerkId), { expenseTypeId: String(type._id), amount: 250, currency: 'USD', note: 'فواتير متفرقة' }, [], { user: owner });
+  expect(String(closing.employeeId)).toBe(String(clerkId));
+  await expectConsistent('custody closed by the accountant');
+  expect((await custody.mine(clerk)).custody.balance).toEqual({ USD: 0, LYD: 0 });
+  expect(await usd('140100')).toBe(0);
 });
 
 test('17. supplier bills say paid, partly paid or unpaid, and can be filtered by it', async () => {

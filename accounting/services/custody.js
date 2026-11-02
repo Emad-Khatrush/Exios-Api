@@ -77,6 +77,24 @@ async function balances(kind) {
   return result;
 }
 
+// The employees who hold custody on one custody account (paying a supplier from it): name and what
+// they hold in the account's currency, largest first (owner's request 2026-11-02)
+async function holders(accountId) {
+  const found = await staffAccountKind(accountId);
+  if (found?.kind !== 'custody') throw new ErrorHandler(400, 'اختر حساب عهدة');
+  const all = [...(await balances('custody')).entries()].filter(([id]) => mongoose.isValidObjectId(id));
+  const users = await User.find({ _id: { $in: all.map(([id]) => toId(id)) } }).select('firstName lastName customerId').lean();
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  const holding = (currency) => all.filter(([id, value]) => byId.has(id) && value[currency] > 0.0001)
+    .map(([id, value]) => ({ ...byId.get(id), currency, held: value[currency] })).sort((a, b) => b.held - a.held);
+  return {
+    currency: found.currency,
+    results: holding(found.currency),
+    // Custody in the other currencies: kept apart, paid only from that currency's custody account
+    elsewhere: CURRENCIES.filter((c) => c !== found.currency).flatMap(holding),
+  };
+}
+
 // What happened on one employee's custody or loan, newest first: given, spent on an expense,
 // returned, taken from a salary, or a cancelled operation undone. Amounts in each line's currency.
 const KIND_OF = {
@@ -182,4 +200,4 @@ async function summary(user) {
   return { results, totals };
 }
 
-module.exports = { CURRENCIES, balances, movements, mine, summary, accountOf, accountsOf, staffAccountKind, heldMinor };
+module.exports = { CURRENCIES, balances, holders, movements, mine, summary, accountOf, accountsOf, staffAccountKind, heldMinor };

@@ -245,9 +245,12 @@ async function syncOrder(orderId, options = {}) {
   // A package declared abandoned (spec v8): the customer is billed only what was paid on it. The
   // unpaid part leaves the receivable against the deferred revenue, the paid part is recognised as
   // if delivered, and its whole cost goes to cost of sales. The wallet is not touched.
+  // A package closed after a compensation (lost, or damaged and closed; owner's request 2026-11-02)
+  // ends the same way.
   const abandoned = new Set([...packages].filter(([, p]) => p?.deliveredPackages?.abandoned?.status).map(([id]) => id));
+  const ended = new Set([...packages].filter(([id, p]) => abandoned.has(id) || p?.deliveredPackages?.compensation?.closed).map(([id]) => id));
   if (active) {
-    abandoned.forEach((id) => [shipmentKey(order._id, id), ...PACKAGE_FEES.map(({ key }) => key(order._id, id))].forEach((key) => {
+    ended.forEach((id) => [shipmentKey(order._id, id), ...PACKAGE_FEES.map(({ key }) => key(order._id, id))].forEach((key) => {
       if (!desired.has(key)) return;
       const paidSoFar = Math.max((state.billed.get(key) || 0) - (state.ar.get(key) || 0), 0);
       desired.set(key, Math.min(desired.get(key), paidSoFar));
@@ -408,7 +411,7 @@ async function syncOrder(orderId, options = {}) {
     if (written > 0) writtenOffKeys.add(key);
     const billed = (state.billed.get(key) || 0) - written;
     const paid = (state.ar.get(key) || 0) <= tolerance;
-    const delivered = packageId ? !!pkg?.status?.received || (active && abandoned.has(packageId)) : true;
+    const delivered = packageId ? !!pkg?.status?.received || (active && ended.has(packageId)) : true;
     // Delivery completes the shipping service regardless of collection. Unpaid amounts remain
     // on the same receivable. Payments made later never trigger a second shipping sale.
     const open = Math.max(state.ar.get(key) || 0, 0);
@@ -419,7 +422,7 @@ async function syncOrder(orderId, options = {}) {
     const want = !packageId && purchaseAccrual
       ? (purchaseCompleted ? Math.max(billed, 0) : 0)
       : billed <= 0 || !delivered ? 0 : paid || shippingAccrual ? billed : (packageId ? 0 : Math.max(billed - open, 0));
-    if (packageId && active && abandoned.has(packageId)) writtenOffKeys.add(shipmentKey(order._id, packageId));
+    if (packageId && active && ended.has(packageId)) writtenOffKeys.add(shipmentKey(order._id, packageId));
     const byAccount = state.recognized.get(key) || new Map();
     const have = [...byAccount.values()].reduce((s, v) => s + v, 0);
     recognizedNow.set(key, want);
@@ -490,7 +493,8 @@ async function syncOrder(orderId, options = {}) {
     // Free shipping (owner's offer with purchases, 2026-10-03): the package is weighed but priced at
     // zero, so it has no revenue to wait for. Its share of the trip is a cost of the order once
     // delivered: of the purchase invoice when the order has one, else of the shipping
-    const free = active && !!pkg && !!pkg.status?.received && packageCharge(pkg) === 0 && Number(pkg.deliveredPackages?.weight?.total) > 0;
+    const free = active && !!pkg && !!pkg.status?.received && packageCharge(pkg) === 0 && Number(pkg.deliveredPackages?.weight?.total) > 0
+      && !pkg.deliveredPackages?.compensation?.type;
     const recognized = (!ctx.isHistorical && active && !!pkg?.status?.received) || free || recognizedNow.get(shipmentKey(order._id, packageId)) > 0 || writtenOffKeys.has(shipmentKey(order._id, packageId));
     const trip = await internationalTrip(pkg, ctx);
     // The air or sea trip that carried it, and the domestic trip that took it on (spec v8)

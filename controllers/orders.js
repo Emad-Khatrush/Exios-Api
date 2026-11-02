@@ -145,7 +145,7 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
         // This customer view is per package. The order's manually selected status can be
         // stale, or describe other packages that have not arrived yet.
         { $match: { user: new ObjectId(id), isShipment: true, unsureOrder: false, isCanceled: false,
-          paymentList: { $elemMatch: { 'status.arrivedLibya': true, 'status.received': false } } } },
+          paymentList: { $elemMatch: { 'status.arrivedLibya': true, 'status.received': false, 'deliveredPackages.compensation.closed': { $ne: true } } } } },
         {
           $addFields: {
             paymentList: {
@@ -155,7 +155,9 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
                 cond: {
                   $and: [
                     { $eq: ["$$payment.status.arrivedLibya", true] },
-                    { $eq: ["$$payment.status.received", false] }
+                    { $eq: ["$$payment.status.received", false] },
+                    // A package closed after a compensation is never handed over
+                    { $ne: ["$$payment.deliveredPackages.compensation.closed", true] }
                   ]
                 }
               }

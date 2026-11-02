@@ -42,6 +42,12 @@ router.get('/acc/orders/:orderId/packages-state', STAFF, handle(async (req, res)
 router.post('/acc/orders/:orderId/packages/:packageId/abandon', STAFF, handle(async (req, res) => res.json(await abandoned().declareAbandoned(req.params.orderId, req.params.packageId, req))));
 router.post('/acc/orders/:orderId/packages/:packageId/restore', STAFF, handle(async (req, res) => res.json(await abandoned().restoreAbandoned(req.params.orderId, req.params.packageId, req))));
 router.post('/acc/orders/:orderId/packages/:packageId/sell', STAFF, handle(async (req, res) => res.json(await abandoned().sellAbandoned(req.params.orderId, req.params.packageId, req.body || {}, req))));
+// A lost or damaged package: admins and the owner compensate it into the wallet, or undo that
+const compensation = () => require('./services/packageCompensation');
+router.route('/acc/orders/:orderId/packages/:packageId/compensation')
+  .get(STAFF, handle(async (req, res) => res.json(await compensation().quote(req.params.orderId, req.params.packageId, req.user))))
+  .post(STAFF, handle(async (req, res) => res.json(await compensation().compensate(req.params.orderId, req.params.packageId, req.body || {}, req))))
+  .delete(STAFF, handle(async (req, res) => res.json(await compensation().undo(req.params.orderId, req.params.packageId, req))));
 
 // The package dialog: the volumetric factor, and whether this user may change a saved weight
 router.get('/acc/package-settings', STAFF, handle(async (req, res) => {
@@ -75,6 +81,8 @@ router.get('/acc/offices', STAFF, handle(async (req, res) => {
 }));
 router.post('/acc/vendors', STAFF, handle(async (req, res) => res.json(await staff.createVendor(req.body || {}))));
 
+// Custody accounts and who holds what, for a cost paid from custody (own only, unless a manager)
+router.get('/acc/custody-options', STAFF, handle(async (req, res) => res.json(await staff.custodyOptions(req.user))));
 router.route('/acc/trips/:tripId/costs')
   .get(STAFF, handle(async (req, res) => res.json(await staff.tripCosts(req.params.tripId))))
   .post(STAFF, handle(async (req, res) => res.json(await staff.addTripCost(req.params.tripId, req.body || {}, req))));

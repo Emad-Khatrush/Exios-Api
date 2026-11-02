@@ -290,6 +290,7 @@ router.post('/documents/:model/:id/cancel', byModel, P.cancel, documents.cancel)
 router.post('/documents/:model/:id/attachments', byModel, upload.array('files'), documents.addAttachments);
 
 router.get('/reports/abandoned', P.reports, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/abandoned').abandonedList())));
+router.get('/reports/compensated', P.reports, require('./controllers/util').handle(async (req, res) => res.json({ results: await require('./services/packageCompensation').compensatedList() })));
 // Sub cash boxes (spec v8): balances, and handing their money over to the main box
 router.get('/treasury/sub-boxes', can('treasury', 'reports'), require('./controllers/util').handle(async (req, res) => res.json({ results: await require('./services/subBoxes').subBoxes() })));
 router.post('/treasury/sub-boxes/:id/hand-over', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/subBoxes').handOver(req.params.id, { session, req, amount: req.body?.amount })))));
@@ -305,6 +306,8 @@ router.get('/prepaid', P.assets, documents.listPrepaid);
 router.post('/prepaid/amortize', P.assets, documents.runAmortization);
 
 router.get('/employees', can('payroll', 'purchases', 'treasury'), documents.listEmployees);
+// Who holds custody on a custody account, and how much (paying a supplier bill from custody)
+router.get('/custody-holders', can('payroll', 'purchases', 'treasury'), handle(async (req, res) => res.json(await require('./services/custody').holders(req.query.accountId))));
 const employeeDirectory = require('./controllers/employees');
 router.post('/employees', P.payroll, employeeDirectory.create);
 router.put('/employees/:id', P.payroll, employeeDirectory.update);
@@ -316,6 +319,8 @@ router.post('/employees/:id/adjustments', P.payroll, employeeDirectory.adjustmen
 router.delete('/employees/:id/adjustments/:adjustmentId', P.payroll, employeeDirectory.cancelAdjustment);
 router.post('/employees/:id/adjustments/:adjustmentId/close', P.payroll, employeeDirectory.closeCommission);
 router.post('/employees/:id/adjustments/:adjustmentId/reopen', P.payroll, employeeDirectory.reopenCommission);
+// An expense the employee paid from their custody, recorded by the accountant to settle it
+router.post('/employees/:id/custody-expense', can('payroll', 'purchases', 'treasury'), handle(async (req, res) => res.json(await require('./services/staffOperations').createCustodyExpenseFor(req.params.id, req.body || {}, [], req))));
 // One employee's custody or loan movements (?kind=custody|loan)
 router.get('/employees/:id/movements', can('payroll', 'purchases', 'treasury'), handle(async (req, res) => res.json(await require('./services/custody').movements(req.params.id, req.query.kind === 'loan' ? 'loan' : 'custody'))));
 router.get('/trips', ANY, documents.listTrips);

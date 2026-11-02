@@ -491,6 +491,9 @@ const protectedStatement = (statement) => {
   if (statement.accountingSource?.model) {
     return 'This line was written by Accounting (for example a refund on the order page). Cancel it where it was made.';
   }
+  if (statement.packageCompensation?.packageId) {
+    return 'This line compensates a lost or damaged package. Undo the compensation from the order page.';
+  }
   if (RETURN_ACTIONS.includes(statement.actionType) || (!statement.actionType && PAYMENT_RETURN.test(String(statement.description || '')))) {
     return 'This line gives a cancelled payment back to the wallet. Its amount, date, office and type cannot be changed, and it cannot be deleted.';
   }
@@ -585,6 +588,55 @@ async function updateWithdrawal(statement, body, req, session) {
   return UserStatement.findById(statement._id).session(session).populate('user');
 }
 
+// Archives and removes a statement line, gives its amount back to (or takes it from) the wallet and
+// rebuilds the running totals; the accounting reverses its entry from the deletion event. The
+// caller checks the line may be removed. Also used to undo a package compensation.
+async function removeStatement(statement, req, session, { withdrawal = false } = {}) {
+  const { currency } = statement;
+  const id = statement.user?._id || statement.user;
+  const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 }).session(session);
+  const openingBalance = getOpeningBalance(allStatements);
+
+  // Archive first, so nothing is removed or changed if the archive cannot be written
+  const snapshot = statement.toObject();
+  const [archived] = await DeletedStatement.create([{
+    originalId: statement._id,
+    user: id,
+    currency,
+    statement: {
+      ...snapshot,
+      createdBy: statement.createdBy?._id || snapshot.createdBy,
+      createdByName: statement.createdBy?.firstName ? `${statement.createdBy.firstName} ${statement.createdBy.lastName || ''}`.trim() : undefined,
+    },
+    deletedBy: req.user._id,
+    deletedAt: new Date(),
+  }], { session });
+
+  await UserStatement.deleteOne({ _id: statement._id }, { session });
+  const deletionEvent = await emitAccountingEvent('statementDeleted', statement._id, {}, req.user, { session });
+  if (withdrawal) {
+    const reversed = await require('../accounting/services/posting/operations').reverseStatement(statement._id, { session, user: req.user });
+    await finishWithdrawalEvents(statement._id, deletionEvent, reversed, session, req);
+    await require('../accounting/services/audit').logAudit({ req, action: 'withdrawal.delete', model: 'UserStatement', docId: statement._id, before: snapshot, after: { archivedId: archived._id } }, session);
+  }
+
+  // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
+  const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement), session);
+  await DeletedStatement.updateOne(
+    { _id: archived._id },
+    { $set: { walletBalanceBefore: wallet.before, walletBalanceAfter: wallet.after } },
+    { session }
+  );
+
+  await rebuildStatementTotals(
+    allStatements.filter((item) => String(item._id) !== String(statement._id)),
+    openingBalance, session
+  );
+
+  return { deletedId: statement._id, walletBalance: wallet.after, deletionEvent };
+}
+module.exports.removeStatement = removeStatement;
+
 module.exports.deleteStatement = async (req, res, next) => {
   try {
     const { statementId, id } = req.params;
@@ -606,48 +658,8 @@ module.exports.deleteStatement = async (req, res, next) => {
         const current = await Wallet.findOne({ user: id, currency: statement.currency }).session(session).lean();
         if ((current?.balance || 0) - Number(statement.amount) < -0.001) throw new ErrorHandler(400, 'The money of this deposit was already spent from the wallet. Cancel the payments made from it first.');
       }
-
-      const { currency } = statement;
-      const allStatements = await UserStatement.find({ user: id, currency }).sort({ _id: 1 }).session(session);
-      const openingBalance = getOpeningBalance(allStatements);
-
-      // Archive first, so nothing is removed or changed if the archive cannot be written
-      const snapshot = statement.toObject();
-      const [archived] = await DeletedStatement.create([{
-        originalId: statement._id,
-        user: statement.user,
-        currency,
-        statement: {
-          ...snapshot,
-          createdBy: statement.createdBy?._id || snapshot.createdBy,
-          createdByName: statement.createdBy?.firstName ? `${statement.createdBy.firstName} ${statement.createdBy.lastName || ''}`.trim() : undefined,
-        },
-        deletedBy: req.user._id,
-        deletedAt: new Date(),
-      }], { session });
-
-      await UserStatement.deleteOne({ _id: statement._id }, { session });
-      const deletionEvent = await emitAccountingEvent('statementDeleted', statement._id, {}, req.user, { session });
-      if (withdrawal) {
-        const reversed = await require('../accounting/services/posting/operations').reverseStatement(statement._id, { session, user: req.user });
-        await finishWithdrawalEvents(statement._id, deletionEvent, reversed, session, req);
-        await require('../accounting/services/audit').logAudit({ req, action: 'withdrawal.delete', model: 'UserStatement', docId: statement._id, before: snapshot, after: { archivedId: archived._id } }, session);
-      }
-
-      // Reverse the statement effect on the wallet: removing a deposit takes money out, removing a payment gives it back
-      const wallet = await adjustWalletBalance(id, currency, -signedAmount(statement), session);
-      await DeletedStatement.updateOne(
-        { _id: archived._id },
-        { $set: { walletBalanceBefore: wallet.before, walletBalanceAfter: wallet.after } },
-        { session }
-      );
-
-      await rebuildStatementTotals(
-        allStatements.filter((item) => String(item._id) !== String(statement._id)),
-        openingBalance, session
-      );
-
-      return { deletedId: statement._id, walletBalance: wallet.after };
+      const { deletionEvent, ...removed } = await removeStatement(statement, req, session, { withdrawal });
+      return removed;
     });
     res.status(200).json({ results: result });
   } catch (error) {

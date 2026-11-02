@@ -383,11 +383,12 @@ const CHECKS = {
     });
     const ids = [...byOrder.keys()].filter(mongoose.isValidObjectId).map(oid);
     const [orders, payments] = await Promise.all([
-      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true }, unsureOrder: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.domesticFee paymentList.deliveredPackages.customsFee paymentList.deliveredPackages.abandoned').lean(),
+      Order.find({ _id: { $in: ids }, isCanceled: { $ne: true }, unsureOrder: { $ne: true } }).select('orderId isPayment totalInvoice paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.domesticFee paymentList.deliveredPackages.customsFee paymentList.deliveredPackages.abandoned paymentList.deliveredPackages.compensation').lean(),
       OrderPaymentHistory.find({ order: { $in: ids } }).select('order category currency receivedAmount rate').lean(),
     ]);
-    // A claim written off or a package declared abandoned is lowered in the books on purpose (each has
-    // its own list); the system page still shows the full charge, so those orders are not compared
+    // A claim written off, a package declared abandoned or a compensated package is lowered in the
+    // books on purpose (each has its own list); the system page still shows the full charge, so those
+    // orders are not compared
     const { ClaimWriteOff } = require('../../models/documents');
     const writtenOff = new Set((await ClaimWriteOff.find({ status: 'posted', orderId: { $in: ids } }).select('orderId').lean()).map((w) => String(w.orderId)));
     const paid = new Map();
@@ -400,7 +401,7 @@ const CHECKS = {
     const items = [];
     orders.forEach((order) => {
       const books = byOrder.get(String(order._id));
-      if (writtenOff.has(String(order._id)) || (order.paymentList || []).some((pkg) => pkg.deliveredPackages?.abandoned?.status)) return;
+      if (writtenOff.has(String(order._id)) || (order.paymentList || []).some((pkg) => pkg.deliveredPackages?.abandoned?.status || pkg.deliveredPackages?.compensation?.type)) return;
       const system = {
         PUR: order.isPayment ? Math.round(Number(order.totalInvoice || 0) * 100) - (paid.get(`${order._id}|PUR`) || 0) : 0,
         SHP: (order.paymentList || []).reduce((sum, pkg) => sum + require('../claims/keys').packageChargeCents(pkg) + Math.round(Number(pkg.deliveredPackages?.domesticFee?.usd || 0) * 100) + Math.round(Number(pkg.deliveredPackages?.customsFee?.usd || 0) * 100), 0)

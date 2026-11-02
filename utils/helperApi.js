@@ -99,6 +99,9 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
     if (item.status?.received) {
       throw new ErrorHandler(400, `Package ${item.deliveredPackages?.trackingNumber || packageId} was already delivered`);
     }
+    if (item.deliveredPackages?.compensation?.closed) {
+      throw new ErrorHandler(400, `Package ${item.deliveredPackages?.trackingNumber || packageId} was compensated and closed`);
+    }
 
     const weight = Number(item.deliveredPackages?.weight?.total || 0);
     const exiosPrice = Number(item.deliveredPackages?.exiosPrice || 0);
@@ -367,7 +370,8 @@ async function updateOrderStatuses(selectedPackages, session) {
     });
     order.activity = activities;
 
-    const notReceived = order.paymentList.filter(pkg => !pkg.status.received);
+    // A package closed after a compensation is done with, as if delivered
+    const notReceived = order.paymentList.filter(pkg => !pkg.status.received && !pkg.deliveredPackages?.compensation?.closed);
 
     if (notReceived.length === 0) {
       order.orderStatus = order.isPayment ? 5 : 4;

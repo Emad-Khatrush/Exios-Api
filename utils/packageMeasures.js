@@ -152,6 +152,14 @@ function keepDeliveryState(oldOrder, packages) {
     else delete pkg.freeShippingOffer;
     if (old?.freeShippingOffer?.enabled && pkg.deliveredPackages) pkg.deliveredPackages.exiosPrice = 0;
     pkg.status = { ...(pkg.status || {}), received: !!old?.status?.received };
+    // Set only by accounting (abandoned goods, a compensation): an order edit keeps what is stored
+    if (pkg.deliveredPackages) {
+      for (const field of ['abandoned', 'compensation']) {
+        const kept = old?.deliveredPackages?.[field];
+        if (kept && (kept.status || kept.type)) pkg.deliveredPackages[field] = kept.toObject ? kept.toObject() : kept;
+        else delete pkg.deliveredPackages[field];
+      }
+    }
   });
   return packages;
 }

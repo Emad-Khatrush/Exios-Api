@@ -364,6 +364,25 @@ const orderSchema = new Schema({
           entryId: mongoose.Schema.Types.ObjectId
         }
       },
+      // Lost or partly damaged (owner's request 2026-11-02): the value of its goods given to the
+      // customer's wallet. closed: no longer delivered, billed only the shipping already paid (always
+      // for a lost package); open, a damaged one is delivered and paid as usual. Written only by
+      // accounting/services/packageCompensation.js
+      compensation: {
+        type: { type: String, enum: ['lost', 'damaged'] },
+        closed: Boolean,
+        currency: { type: String, enum: ['USD', 'LYD'] },
+        rate: Number,
+        goods: { amount: Number, usd: Number },
+        reason: String,
+        note: String,
+        // No default: an empty array would give every package an empty compensation
+        statementIds: { type: [mongoose.Schema.Types.ObjectId], default: undefined },
+        // The order's state before this compensation finished it, put back by an undo
+        orderBefore: { isFinished: Boolean, orderStatus: Number },
+        declaredAt: Date,
+        declaredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+      },
       originPrice: {
         type: Number,
         default: 0
