@@ -122,6 +122,7 @@ const ACCOUNTS = [
   a('250100', 'بطاقة كويت ترك الائتمانية - ليرة', 'Kuveyt Turk credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('250200', 'بطاقة البركة الائتمانية - ليرة', 'Albaraka credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
   a('250300', 'بطاقة Garanti الائتمانية - ليرة', 'Garanti credit card - TRY', 'liability', '25', { currency: 'TRY', isCash: true, cashKind: 'bank', office: 'turkey' }),
+  a('250400', 'بطاقة Garanti الائتمانية - دولار', 'Garanti credit card - USD', 'liability', '25', { currency: 'USD', isCash: true, cashKind: 'bank', office: 'turkey' }),
   // A partner who pays for us on their account (spec 19.4): what we owe them by their statement.
   // Aswaq ships from the UAE and Saudi Arabia and pays purchases and taxes for us; we settle in
   // cash dollars. A friend whose card buys for us (a purchase funder) gets an account like it.

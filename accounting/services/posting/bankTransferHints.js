@@ -5,8 +5,19 @@ const number = value => {
   const text = String(value);
   return Number(text.includes(',') ? text.replace(/\./g, '').replace(',', '.') : text);
 };
+const round2 = value => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 function exchangeOf(description, currency, amount) {
   const text = normalize(description);
+  if (text.includes('doviz alis') || text.includes('doviz satis')) {
+    const rateText = String(description).match(/USD\s*:\s*([\d.,]+)/i)?.[1];
+    const rate = rateText ? number(rateText) : 0;
+    if (!(rate > 0) || !Number.isFinite(rate)) return { error: 'سعر صرف Garanti غير ظاهر بوضوح؛ راجع البيان قبل الاعتماد' };
+    const buying = text.includes('doviz alis');
+    const validDirection = currency === 'TRY' ? (buying ? amount < 0 : amount > 0) : currency === 'USD' ? (buying ? amount > 0 : amount < 0) : false;
+    if (!validDirection) return { error: 'عملة الحساب أو اتجاه حركة الصرف لا يطابق وصف Döviz Alış / Satış' };
+    return { counterAmount: round2(currency === 'TRY' ? Math.abs(amount) / rate : Math.abs(amount) * rate),
+      counterCurrency: currency === 'TRY' ? 'USD' : 'TRY', exchangeRate: rate };
+  }
   if (!text.includes('karsiligi') || !text.includes('satis')) return null;
   const match = String(description).match(/([\d.,]+)\s*TRY\s*Kar[sş]ılığı\s*([\d.,]+)\s*(USD|EUR)\s*Sat[iı][sş],?\s*Kur:\s*([\d.,]+)/i);
   if (!match) return { error: 'وصف صرف غير مكتمل؛ راجع المبلغين وسعر البنك قبل الترحيل' };
@@ -23,6 +34,24 @@ function describe(line, bank, accounts) {
   const find = wanted => accounts.find(a => a.isActive !== false && !a.isGroup && (a.seedKey === wanted || a.code === wanted));
   const result = (kind, counter, reason) => ({ source: kind, account: counter || null, reason,
     requiresConfirmation: !counter || kind === 'funder_settlement', semanticTransfer: true });
+  if (['110207', '110208'].includes(code) && ['TRY', 'USD'].includes(bank.currency)) {
+    if (outgoing && text.includes('kart odemesi')) {
+      const cardCode = bank.currency === 'USD' ? '250400' : '250300';
+      return result('card_transfer', find(cardCode), 'سداد رصيد بطاقة Garanti؛ اربط الحركة بحساب البطاقة بنفس العملة ولا تسجلها كمصروف شراء جديد.');
+    }
+    if (outgoing && text.includes('faiz komisyon')) return { source: 'bank_fee', account: find('530400') || null,
+      office: 'turkey', vendorName: 'Garanti BBVA', vendorType: 'service', requiresConfirmation: true,
+      reason: 'عمولة أو رسم مصرفي من Garanti؛ يصنف على الرسوم المصرفية بعد مراجعة المبلغ.' };
+    if (text.includes('doviz alis') || text.includes('doviz satis')) {
+      const exchange = exchangeOf(line.description, bank.currency, Math.abs(line.amount) / 100 * (outgoing ? -1 : 1));
+      if (exchange?.error) return { source: 'exchange', account: null, requiresConfirmation: true, reason: exchange.error };
+      const counter = find(exchange.counterCurrency === 'USD' ? '110207' : '110208');
+      return { ...result('exchange', counter?.currency === exchange.counterCurrency ? counter : null,
+        'شراء أو بيع عملة بين حسابَي Garanti؛ يستخدم مبلغَي الكشف وسعر البنك، ولا يُسجل كإيراد أو مصروف.'), ...exchange };
+    }
+    if (!outgoing && text.includes('para transferi')) return { source: 'bank_transfer_in', account: null, office: 'turkey', requiresConfirmation: true,
+      reason: 'حوالة واردة إلى حساب Garanti؛ طابقها مع قيد التحويل أو حدد الطرف المقابل قبل اعتمادها، ولا تعتبرها إيرادًا تلقائيًا.' };
+  }
   if (code === '110201' && bank.currency === 'USD' && outgoing) {
     // Arabic RTL extraction may print "1414" as "4 ... Com 141" and glue Com
     // to the preceding Arabic word. Commission recognition must come before cash.

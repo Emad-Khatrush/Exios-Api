@@ -48,26 +48,34 @@ async function list(input = {}) {
   }; });
   for (const bill of bills.slice(0, 1000)) {
     const refunded = postedRefunds.filter(r => String(r.billId) === String(bill._id));
-    const remaining = Math.max(0, Number(bill.total) - credits.filter(c => String(c.originalBillId) === String(bill._id)).reduce((s, c) => s + Number(c.total), 0)
+    const billCredits = credits.filter(c => String(c.originalBillId) === String(bill._id));
+    const remaining = Math.max(0, Number(bill.total) - billCredits.reduce((s, c) => s + Number(c.total), 0)
       - refunded.reduce((s, r) => s + (r.originalCurrency === bill.currency ? Number(r.originalAmount || 0) : 0), 0));
     const orders = bill.lines.filter(l => l.orderId).map(l => ({ _id: l.orderId._id, number: l.orderId.orderId, description: l.description }));
     const merchantMismatch = !!merchant && !generic.has(String(bill.vendorId?._id)) && String(merchant.vendorId) !== String(bill.vendorId?._id);
     const known = !!line?.originalCurrency || original.currency !== bank.currency;
     const currencyMismatch = known && bill.currency !== original.currency;
     const excessive = known && original.amount > remaining + 0.0005;
+    const unreceivedExactCredit = known && original.currency === bill.currency
+      && billCredits.some(c => c.currency === bill.currency && c.day <= line.day && Math.abs(Number(c.total) - Number(original.amount)) < 0.0005)
+      && await payables.apBalance(payables.billKey(bill._id)) < 0;
     rows.push({ _id: `bill:${bill._id}`, kind: 'bill', billId: bill._id, source: orders.length ? 'order' : 'direct', number: bill.number, day: bill.day,
       amount: bill.total, currency: bill.currency, vendorName: bill.vendorId?.name, vendorId: bill.vendorId?._id,
       merchantMatch: !!merchant && String(merchant.vendorId) === String(bill.vendorId?._id), description: bill.lines.map(l => l.description).join('، '), orders,
       merchantMismatch, statementVendorName: merchant?.vendorName,
-      matchProblems: [...(merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : []), ...(currencyMismatch ? ['العملة الأصلية مختلفة'] : []), ...(excessive ? ['الاسترداد أكبر من المتبقي'] : []), ...(line.day && bill.day > line.day ? ['الفاتورة بعد الاسترداد'] : [])],
-      status: 'refundable', refundableAmount: remaining, canMatch: !currencyMismatch && !excessive && (!line.day || bill.day <= line.day) && remaining > 0 && bill.lines.every(l => ['order', 'expense', 'trip', 'customs'].includes(l.target)),
+      matchProblems: [...(merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : []), ...(currencyMismatch ? ['العملة الأصلية مختلفة'] : []), ...(excessive && !unreceivedExactCredit ? ['الاسترداد أكبر من المتبقي'] : []), ...(line.day && bill.day > line.day ? ['الفاتورة بعد الاسترداد'] : [])],
+      status: unreceivedExactCredit ? 'recorded_credit' : 'refundable', refundableAmount: remaining, hasUnreceivedCredit: unreceivedExactCredit,
+      canMatch: !currencyMismatch && (!excessive || unreceivedExactCredit) && (!line.day || bill.day <= line.day) && (remaining > 0 || unreceivedExactCredit) && bill.lines.every(l => ['order', 'expense', 'trip', 'customs'].includes(l.target)),
       refundLines: bill.lines.map(l => ({ _id: l._id, amount: l.amount, description: l.description, orderId: l.orderId?._id, orderNumber: l.orderId?.orderId, target: l.target })),
     });
   }
   const query = String(input.q || '').trim().toLowerCase();
   const filtered = rows.filter(r => (!input.source || input.source === 'all' || input.source === r.source) && (input.status === 'all' || r.canMatch)
     && (!query || [r.number, r.vendorName, r.description, ...r.orders.map(o => o.number)].join(' ').toLowerCase().includes(query)))
-    .sort((a, b) => Number(b.kind === 'existing_refund') - Number(a.kind === 'existing_refund') || Number(!!b.merchantMatch) - Number(!!a.merchantMatch) || Number(b.currency === original.currency) - Number(a.currency === original.currency) || b.day.localeCompare(a.day));
+    .sort((a, b) => Number(!!input.suggestedRefundId && String(b.refundId) === String(input.suggestedRefundId)) - Number(!!input.suggestedRefundId && String(a.refundId) === String(input.suggestedRefundId))
+      || Number(!!input.suggestedBillId && String(b.billId) === String(input.suggestedBillId)) - Number(!!input.suggestedBillId && String(a.billId) === String(input.suggestedBillId))
+      || Number(b.kind === 'existing_refund') - Number(a.kind === 'existing_refund') || Number(!!b.merchantMatch) - Number(!!a.merchantMatch)
+      || Number(b.currency === original.currency) - Number(a.currency === original.currency) || b.day.localeCompare(a.day));
   const page = Math.max(1, parseInt(input.page, 10) || 1);
   return { results: filtered.slice((page - 1) * 30, page * 30), total: filtered.length, page, pageSize: 30, truncated: bills.length > 1000,
     original: { ...original, known: !!line?.originalCurrency || original.currency !== bank.currency } };

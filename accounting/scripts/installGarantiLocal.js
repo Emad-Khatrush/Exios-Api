@@ -17,7 +17,7 @@ async function main() {
   const result = await runInTransaction(async session => {
     const created = [], accounts = [];
     const definitions = require('../seed/defaults').ACCOUNTS.filter(a => a.nameEn?.startsWith('Garanti '));
-    if (definitions.length !== 3) throw new Error('Expected exactly three Garanti definitions.');
+    if (definitions.length !== 4) throw new Error('Expected exactly four Garanti definitions.');
     for (const { parent, ...definition } of definitions) {
       const group = await Account.findOne({ isGroup: true, $or: [{ seedKey: parent }, { code: parent }] }).session(session);
       if (!group || group.type !== definition.type) throw new Error(`Missing or incompatible parent ${parent}`);

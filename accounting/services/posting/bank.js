@@ -1287,9 +1287,30 @@ async function classifyRows(accountId, rows, matchingSettings) {
     const billed = doc.amount < 0 && (link || type === 'expense');
     // (money received from a vendor keeps the vendor the rule names)
     const vendorName = target.vendorName || (billed ? merchantOf(doc.description) || null : null);
+    let refundProposal = {};
+    if (identifiedRefund && doc.amount > 0) {
+      const amount = Math.abs(doc.amount) / (10 ** ((await getConfig()).currencies.get(account.currency)?.decimals ?? 2));
+      const refundCandidates = await require('./bankRefund').list({ accountId, statementAmount: amount, paid: amount,
+        day: doc.day, description: doc.description, originalAmount: doc.originalAmount, originalCurrency: doc.originalCurrency,
+        from: addDays(doc.day, -180), to: doc.day });
+      const original = refundCandidates.original;
+      const completeCandidateSet = !refundCandidates.truncated && refundCandidates.total === refundCandidates.results.length;
+      const exactExisting = completeCandidateSet ? refundCandidates.results.filter(candidate => candidate.kind === 'existing_refund'
+        && candidate.canMatch && !candidate.merchantMismatch && Math.abs(dayDistance(candidate.day, doc.day)) <= 7) : [];
+      const exactBills = completeCandidateSet ? refundCandidates.results.flatMap(candidate => {
+        if (candidate.kind !== 'bill' || !candidate.canMatch || candidate.merchantMismatch || candidate.currency !== original?.currency) return [];
+        const lines = (candidate.refundLines || []).filter(line => Math.abs(Number(line.amount) - Number(original?.amount)) < 0.005);
+        return lines.length === 1 ? [{ candidate, line: lines[0] }] : [];
+      }) : [];
+      if (exactExisting.length === 1 && exactBills.length === 0) refundProposal = { suggestedRefundId: exactExisting[0].refundId,
+        refundMatchReason: 'Found one recorded refund with the same amount, date, and card account.' };
+      else if (exactExisting.length === 0 && exactBills.length === 1) refundProposal = { suggestedBillId: exactBills[0].candidate.billId,
+        suggestedRefundLineId: exactBills[0].line._id,
+        refundMatchReason: 'Found one original purchase line with the same amount, currency, and an earlier date.' };
+    }
     const reviewTarget = tripHints[index].length ? { ...target, account: null, link: null, source: 'bill', requiresConfirmation: true,
       suggestedBillId: tripHints[index][0].billId, billCandidates: tripHints[index].map(candidate => ({ ...candidate, _id: candidate.billId })) } : target;
-    return { status: twin ? 'maybeDuplicate' : 'new', entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description } : null, ...permittedHint(reviewTarget, settings), vendorName, tripCandidates: tripHints[index] };
+    return { status: twin ? 'maybeDuplicate' : 'new', entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description } : null, ...permittedHint(reviewTarget, settings), vendorName, tripCandidates: tripHints[index], ...refundProposal };
   }));
 }
 
@@ -1367,7 +1388,7 @@ async function parsePdf(buffer) {
   }
   // A bank whose layout is known is read by its own reader
   const known = readKnownFormat(text, { pages });
-  if (known && known.rows.length) return known;
+  if (known && (known.rows.length || known.format === 'Garanti BBVA - Bonus Business credit card')) return known;
   return { rows: rowsFromText(text), creditCard: isCreditCard(text), format: null };
 }
 

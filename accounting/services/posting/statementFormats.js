@@ -103,6 +103,128 @@ const albarakaCard = {
   },
 };
 
+// ---- Garanti BBVA Bonus Business credit card (TRY or foreign-currency statement) ----
+// Garanti issues separate statements for the same physical card when the payment type differs.
+// A TRY statement may show both the original foreign amount and the settled TRY amount, while a
+// USD statement shows the USD payable directly. The account currency must follow the statement.
+const garantiCard = {
+  name: 'Garanti BBVA - Bonus Business credit card',
+  creditCard: true,
+  detect: (text) => /garanti\s*bankas|garantibbva/i.test(text) && /BONUS\s+BUSINESS/i.test(text)
+    && /Ekstre\s+No\s*:/i.test(text) && /Kart\s+Numaras[ıi]/i.test(text),
+  parse(text) {
+    const normalized = String(text || '').replace(/\u00a0/g, ' ');
+    const currencyMatch = normalized.match(/Tutar\s*\(\s*(TL|TRY|USD)\s*\)/i);
+    const currency = (currencyMatch?.[1] || (normalized.match(/Toplam\s+Borcunuz\s*[\d.,]+\s*(TL|TRY|USD)/i) || [])[1] || '').toUpperCase();
+    if (!['TL', 'TRY', 'USD'].includes(currency)) return [];
+    const statementCurrency = currency === 'TL' ? 'TRY' : currency;
+    const cardNumber = (normalized.match(/Kart\s+Numaras[ıi]\s*([\d* ]{8,})/i) || [])[1]?.replace(/\s/g, '') || '';
+    const transactionSection = normalized.split(/İşlem\s*Tarihi/i).slice(1).join('\n');
+    const transactionText = transactionSection.split(/(?:^|\n)\s*Toplam\s+[\d.,]+/i)[0] || '';
+    const months = { ocak: 1, şubat: 2, mart: 3, nisan: 4, mayıs: 5, haziran: 6, temmuz: 7, ağustos: 8, eylül: 9, ekim: 10, kasım: 11, aralık: 12 };
+    const datePattern = /(?:^|\n)\s*(\d{1,2})\s+(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s*(\d{4})([^\r\n]*)/giu;
+    const rows = [];
+    for (const match of transactionText.matchAll(datePattern)) {
+      const [, dayText, monthText, year, tail] = match;
+      const amountMatch = tail.match(/([+-]?)\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+\.\d{2})\s*$/);
+      if (!amountMatch) continue;
+      const amount = trNumber(amountMatch[2]);
+      if (!(amount > 0)) continue;
+      let description = tail.slice(0, amountMatch.index).trim();
+      let originalAmount; let originalCurrency;
+      if (statementCurrency === 'TRY') {
+        const foreign = description.match(/([\d.,]+)\s*(USD|EUR|GBP)\s*$/i);
+        if (foreign) {
+          originalAmount = trNumber(foreign[1]);
+          originalCurrency = foreign[2].toUpperCase();
+          description = description.slice(0, foreign.index).trim();
+        }
+      } else {
+        originalAmount = amount;
+        originalCurrency = statementCurrency;
+      }
+      const textLower = description.toLocaleLowerCase('tr');
+      const isPayment = /ödeme|odeme|payment|teşekkür|tesekkur/.test(textLower);
+      const isRefund = !isPayment && /iade|iptal|refund|reversal|returned|chargeback|ters işlem|ters islem/.test(textLower);
+      // Card statements show purchases as positive and payments/credits as negative. The UI then
+      // flips the statement sign to the normal account movement sign.
+      const printedSign = amountMatch[1] === '-' || isPayment || isRefund ? -1 : 1;
+      const row = {
+        day: `${year}-${String(months[monthText.toLocaleLowerCase('tr')]).padStart(2, '0')}-${dayText.padStart(2, '0')}`,
+        description: description || (isPayment ? 'Garanti card payment' : isRefund ? 'Garanti card purchase refund' : 'Garanti card purchase'),
+        reference: '', amount: printedSign * amount, balanceAfter: null,
+        movementKind: isPayment ? 'card_payment' : isRefund ? 'purchase_refund' : 'purchase',
+      };
+      if (originalAmount > 0 && originalCurrency) Object.assign(row, { originalAmount, originalCurrency,
+        ...(originalCurrency === 'USD' && { settlementUsd: originalAmount }) });
+      rows.push(row);
+    }
+    return rows;
+  },
+  currency(text) {
+    const found = String(text || '').match(/Tutar\s*\(\s*(TL|TRY|USD)\s*\)/i)
+      || String(text || '').match(/Toplam\s+Borcunuz\s*[\d.,]+\s*(TL|TRY|USD)/i);
+    return found ? (found[1].toUpperCase() === 'TL' ? 'TRY' : found[1].toUpperCase()) : null;
+  },
+  cardNumber(text) { return (String(text || '').match(/Kart\s+Numaras[ıi]\s*([\d* ]{8,})/i) || [])[1]?.replace(/\s/g, '') || null; },
+};
+
+// ---- Garanti BBVA Turkish deposit-account statement (TRY and USD) ----
+// The bank prints each date, description/tag, and the amount/balance on separate PDF text lines.
+const garantiAccount = {
+  name: 'Garanti BBVA - bank account statement',
+  detect: text => /garanti\s*bankas|garantibbva/i.test(text) && /Hesap\s*Hareketleri/i.test(text)
+    && /Hesap\s*Numaras[ıi]:/i.test(text) && /Kullanılabilir\s+Bakiye/i.test(text),
+  parse(text) {
+    const normalized = String(text || '').replace(/\u00a0/g, ' ');
+    const currency = garantiAccount.currency(normalized);
+    if (!['TRY', 'USD'].includes(currency)) return [];
+    const lines = normalized.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const rows = [];
+    for (let index = 0; index < lines.length; index++) {
+      const date = lines[index].match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+      if (!date) continue;
+      const block = [];
+      for (let next = index + 1; next < lines.length && !/^\d{2}\.\d{2}\.\d{4}$/.test(lines[next]); next++) block.push(lines[next]);
+      const amountPattern = /([+-]?\s*\d+(?:\.\d{3})*,\d{2})\s*(TL|TRY|USD)\s*([+-]?\s*\d+(?:\.\d{3})*,\d{2})\s*(TL|TRY|USD)$/i;
+      const amountIndex = block.findIndex(line => amountPattern.test(line));
+      if (amountIndex < 0) continue;
+      const amountMatch = block[amountIndex].match(amountPattern);
+      if (!amountMatch || amountMatch[2].toUpperCase() !== amountMatch[4].toUpperCase()) continue;
+      const amount = trNumber(amountMatch[1].replace(/\s/g, ''));
+      const balanceAfter = trNumber(amountMatch[3].replace(/\s/g, ''));
+      if (!amount) continue;
+      const description = [...block.slice(0, amountIndex), block[amountIndex].slice(0, amountMatch.index)].join(' ').replace(/\s+/g, ' ').trim();
+      if (!description) continue;
+      const row = { day: `${date[3]}-${date[2]}-${date[1]}`, description, reference: '', amount, balanceAfter };
+      const textLower = description.toLocaleLowerCase('tr').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (textLower.includes('kart odemesi')) row.movementKind = 'card_payment';
+      const rateMatch = description.match(/USD\s*:\s*([\d.,]+)/i);
+      if ((textLower.includes('doviz alis') || textLower.includes('doviz satis')) && rateMatch) {
+        const rate = Number(rateMatch[1].replace(/,/g, ''));
+        if (Number.isFinite(rate) && rate > 0) {
+          const buying = textLower.includes('doviz alis');
+          const validDirection = currency === 'TRY' ? (buying ? amount < 0 : amount > 0) : (buying ? amount > 0 : amount < 0);
+          if (validDirection) Object.assign(row, {
+            counterAmount: round2(currency === 'TRY' ? Math.abs(amount) / rate : Math.abs(amount) * rate),
+            counterCurrency: currency === 'TRY' ? 'USD' : 'TRY', exchangeRate: rate,
+          });
+        }
+      }
+      rows.push(row);
+      index += amountIndex + 1;
+    }
+    return rows;
+  },
+  currency(text) {
+    const balance = String(text || '').match(/Bakiye\s*:\s*[\d.,]+\s*(TL|TRY|USD)/i)
+      || String(text || '').match(/Kullanılabilir\s+Bakiye\s*:\s*[\d.,]+\s*(TL|TRY|USD)/i);
+    return balance ? (balance[1].toUpperCase() === 'TL' ? 'TRY' : balance[1].toUpperCase()) : null;
+  },
+  accountNumber(text) { return (String(text || '').match(/Hesap\s*Numaras[ıi]:\s*\d+\s*-\s*(\d+)/i) || [])[1] || null; },
+  iban(text) { return (String(text || '').match(/IBAN:\s*([A-Z]{2}(?:\s*\d){24})/i) || [])[1]?.replace(/\s/g, '') || null; },
+};
+
 // ---- Albaraka Türk current account export (Tarih / Fiş No / Açıklama / Tutar) ----
 // "28.09.202612646797784.52 TRY Karşılığı 2000.00 USD Satış, Kur: 48.89226-2000.00"
 // "23.09.20261306EMAD SULEIMAN ALI SULEIMAN KHATRUSH/Ortaklık/Şirket Yetkilisi 13000.00"
@@ -238,12 +360,14 @@ const wasl = {
 };
 
 // Kuveyt Türk card is read by the general reader (its amounts are followed by "TL").
-const FORMATS = [kuveytAccount, albarakaCard, albarakaAccount, almutaheda, aswaq, wasl];
+const FORMATS = [garantiCard, garantiAccount, kuveytAccount, albarakaCard, albarakaAccount, almutaheda, aswaq, wasl];
 
 function readKnownFormat(text, { pages } = {}) {
   const format = FORMATS.find((item) => item.detect(text));
   if (!format) return null;
-  return { format: format.name, creditCard: !!format.creditCard, rows: format.parse(text, pages) };
+  return { format: format.name, creditCard: !!format.creditCard, rows: format.parse(text, pages),
+    ...(format.currency && { currency: format.currency(text) }), ...(format.cardNumber && { cardNumber: format.cardNumber(text) }),
+    ...(format.accountNumber && { accountNumber: format.accountNumber(text) }), ...(format.iban && { iban: format.iban(text) }) };
 }
 
 module.exports = { readKnownFormat, FORMATS };

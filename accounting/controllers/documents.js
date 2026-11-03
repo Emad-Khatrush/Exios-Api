@@ -520,9 +520,9 @@ module.exports.deleteBankRule = handle(async (req, res) => res.json(await inTx((
 // Rows read from a PDF statement, for checking before they are imported
 module.exports.parseBankPdf = handle(async (req, res) => {
   if (!req.file) throw badRequest('ارفع ملف PDF');
-  const { rows, creditCard, format } = await bank.parsePdf(req.file.buffer);
+  const { rows, creditCard, format, currency, cardNumber, accountNumber, iban } = await bank.parsePdf(req.file.buffer);
   if (!rows.length) throw badRequest('لم يُقرأ أي سطر من الملف. إن كان الكشف صورة ممسوحة فاطلبه من البنك Excel أو PDF نصي.');
-  res.json({ rows, creditCard, format: format || null });
+  res.json({ rows, creditCard, format: format || null, currency: currency || null, cardNumber: cardNumber || null, accountNumber: accountNumber || null, iban: iban || null });
 });
 
 module.exports.ignoreBankLine = (ignored) => handle(async (req, res) => {

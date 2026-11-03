@@ -75,12 +75,13 @@ module.exports.create = handle(async (req, res) => {
   if (!ACCOUNT_TYPES.includes(body.type)) throw badRequest('نوع الحساب مطلوب');
   if (await Account.exists({ code: String(body.code).trim() })) throw badRequest('رقم الحساب مستخدم');
   await validateFields(body);
-  await validateParent(body.parentId, body.type);
+  const parent = await validateParent(body.parentId, body.type);
   if (body.isGroup && (body.isCash || body.currency)) throw badRequest('المجموعة لا تكون خزينة ولا بعملة');
   if (body.isCash) {
     if (!body.currency) throw badRequest('الخزينة تحتاج عملة');
     if (!body.office) throw badRequest('الخزينة تحتاج مكتباً');
-    if (body.type !== 'asset') throw badRequest('الخزينة حساب أصول');
+    const creditCard = body.type === 'liability' && body.cashKind === 'bank' && parent?.code === '25';
+    if (body.type !== 'asset' && !creditCard) throw badRequest('يُسمح بحساب التزام محدد لبطاقة ائتمانية ضمن مجموعة البطاقات فقط.');
     body.cashKind = body.cashKind || 'cash';
     body.requires = [...new Set([...(body.requires || []), 'office'])];
   }
