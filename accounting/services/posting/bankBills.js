@@ -1,20 +1,71 @@
 const { SupplierBill } = require('../../models/documents');
+const { JournalEntry } = require('../../models');
 const { originalOf } = require('./bankAmounts');
 const { addDays } = require('../dates');
 const clean = value => String(value || '').toLocaleLowerCase('tr').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/ı/g, 'i').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
-async function candidatesFor(line, bank, { session, vendorName, counterAccountId } = {}) {
+const findBills = (currency, from, to, session) => SupplierBill.find({ status: { $in: ['draft', 'posted'] }, isCreditNote: { $ne: true }, currency,
+  day: { $gte: from, $lte: to } }).populate('vendorId', 'name').populate('lines.orderId', 'orderId').session(session || null).lean();
+
+// The open payable of many bills in one query (same sum as payables.apBalance, per bill)
+async function apBalances(billIds, session) {
+  const { billKey } = require('./payables');
+  const keys = billIds.map(id => billKey(id));
+  if (!keys.length) return new Map();
+  const rows = await JournalEntry.aggregate([
+    { $match: { 'lines.apKey': { $in: keys } } },
+    { $unwind: '$lines' },
+    { $match: { 'lines.apKey': { $in: keys } } },
+    { $group: { _id: '$lines.apKey', balance: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
+  ]).session(session || null);
+  const byKey = new Map(rows.map(row => [row._id, row.balance || 0]));
+  return new Map(billIds.map((id, index) => [String(id), byKey.get(keys[index]) || 0]));
+}
+
+// For reading many statement lines at once (suggestions, the import preview): the bills of the
+// whole date range are read once per currency, with all their open balances in one query,
+// instead of again for every line. Read-only; results are the same as without it.
+function billCache(days, session) {
+  const sorted = days.filter(Boolean).sort();
+  const from = sorted.length ? addDays(sorted[0], -7) : null;
+  const to = sorted.length ? addDays(sorted[sorted.length - 1], 7) : null;
+  const byCurrency = new Map();
+  const balances = new Map();
+  const load = async (currency) => {
+    const bills = await findBills(currency, from, to, session).exec();
+    const open = await apBalances(bills.filter(bill => bill.status === 'posted').map(bill => bill._id), session);
+    open.forEach((balance, id) => balances.set(id, balance));
+    return bills;
+  };
+  return {
+    bills(currency, dayFrom, dayTo) {
+      if (!from || dayFrom < from || dayTo > to) return findBills(currency, dayFrom, dayTo, session);
+      if (!byCurrency.has(currency)) byCurrency.set(currency, load(currency));
+      return byCurrency.get(currency).then(bills => bills.filter(bill => bill.day >= dayFrom && bill.day <= dayTo));
+    },
+    async open(billId) {
+      const key = String(billId);
+      if (!balances.has(key)) {
+        const { apBalance, billKey } = require('./payables');
+        balances.set(key, await apBalance(billKey(billId), session));
+      }
+      return balances.get(key);
+    },
+  };
+}
+
+async function candidatesFor(line, bank, { session, vendorName, counterAccountId, cache } = {}) {
   if (line.amount >= 0) return [];
   const original = originalOf(line, bank.currency || 'USD');
-  const bills = await SupplierBill.find({ status: { $in: ['draft', 'posted'] }, isCreditNote: { $ne: true }, currency: original.currency,
-    day: { $gte: addDays(line.day, -7), $lte: addDays(line.day, 7) } }).populate('vendorId', 'name')
-    .populate('lines.orderId', 'orderId').session(session || null).lean();
+  const from = addDays(line.day, -7), to = addDays(line.day, 7);
+  // Copies: the cached bills are shared between lines
+  const bills = cache ? (await cache.bills(original.currency, from, to)).map(bill => ({ ...bill })) : await findBills(original.currency, from, to, session);
   const description = clean(line.description); const name = clean(vendorName);
   const eligible = [];
   const { apBalance, billKey } = require('./payables');
   for (const bill of bills) {
     if (counterAccountId && !bill.lines.every(l => l.target === 'expense' && String(l.accountId) === String(counterAccountId))) continue;
-    bill.openUsd = bill.status === 'posted' ? await apBalance(billKey(bill._id), session) : null;
+    bill.openUsd = bill.status === 'posted' ? await (cache ? cache.open(bill._id) : apBalance(billKey(bill._id), session)) : null;
     if (bill.status === 'posted' && bill.openUsd <= 0) continue;
     eligible.push(bill);
   }
@@ -63,4 +114,4 @@ async function selectBill(line, bank, input, session) {
   return null;
 }
 
-module.exports = { candidatesFor, brief, selectBill };
+module.exports = { candidatesFor, billCache, brief, selectBill };

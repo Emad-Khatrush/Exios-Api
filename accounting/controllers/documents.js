@@ -480,7 +480,18 @@ module.exports.listBankLines = handle(async (req, res) => {
 });
 
 module.exports.importBankLines = handle(async (req, res) => {
+  // background: the page follows the progress at GET bank/import/:jobId (large files outlast the request timeout)
+  if (req.body.background === true) {
+    if (!isObjectId(req.body.accountId)) throw badRequest('اختر الحساب');
+    if (!Array.isArray(req.body.rows) || !req.body.rows.length) throw badRequest('لا سطور للاستيراد');
+    return res.status(202).json(require('../services/posting/bankImportJobs').start(req.body.accountId, req.body.rows, { req, matchingSettings: req.body.matchingSettings }));
+  }
   res.json(await bank.importStatement(req.body.accountId, req.body.rows, { req, matchingSettings: req.body.matchingSettings }));
+});
+module.exports.bankImportStatus = handle(async (req, res) => {
+  const job = require('../services/posting/bankImportJobs').status(req.params.jobId);
+  if (!job) return res.status(404).json({ message: 'لم تعد عملية الاستيراد موجودة على الخادم (ربما أُعيد تشغيله). حدّث الصفحة وراجع سطور الكشف؛ إعادة استيراد نفس الملف لا تكرر السطور.' });
+  res.json(job);
 });
 module.exports.bankLineDetails = handle(async (req, res) => {
   res.json(await require('../services/posting/bankLineDetails').details(req.params.id));

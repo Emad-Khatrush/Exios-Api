@@ -359,6 +359,7 @@ router.route('/bank/rules').get(P.treasury, documents.listBankRules).post(P.trea
 router.delete('/bank/rules/:id', P.treasury, documents.deleteBankRule);
 router.post('/bank/parse-pdf', P.treasury, upload.single('file'), documents.parseBankPdf);
 router.post('/bank/import', P.treasury, documents.importBankLines);
+router.get('/bank/import/:jobId', P.treasury, documents.bankImportStatus);
 router.post('/bank/auto-match', P.treasury, documents.autoMatchBank);
 router.get('/bank/local-reset/available', P.treasury, P.cancel, handle(async (req, res) => res.json({ available: require('./services/posting/localBankReset').available(req) })));
 router.post('/bank/local-reset/preview', P.treasury, P.cancel, handle(async (req, res) => res.json(await require('./services/posting/localBankReset').preview(req.body || {}, { req }))));

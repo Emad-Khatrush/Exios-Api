@@ -18,7 +18,7 @@ const { getConfig } = require('../config');
 const Order = require('../../../models/order');
 const { readKnownFormat } = require('./statementFormats');
 const { originalOf, paymentValue, currencyName } = require('./bankAmounts');
-const { candidatesFor, brief: briefBill, selectBill } = require('./bankBills');
+const { candidatesFor, billCache, brief: briefBill, selectBill } = require('./bankBills');
 const bankMerchants = require('./bankMerchants');
 const bankTransferHints = require('./bankTransferHints');
 const alipayReconciliation = require('./alipayReconciliation');
@@ -193,7 +193,7 @@ async function importLines(accountId, rows, { session, req, deferPosting = false
     { $inc: { postingVersion: 1 } },
     { session },
   );
-  if (locked.modifiedCount !== 1) throw fail('Ø­Ø³Ø§Ø¨ Ø§Ù„Ø¨Ù†Ùƒ ØºÙŠØ± Ù…ØªØ§Ø­ Ù„Ø§Ø³ØªÙŠØ±Ø§Ø¯ Ø§Ù„ÙƒØ´Ù');
+  if (locked.modifiedCount !== 1) throw fail('حساب البنك غير متاح لاستيراد الكشف');
   const batchId = crypto.randomUUID();
   const docs = await toDocs(account, rows, { importBatchId: batchId, createdBy: req?.user?._id });
 
@@ -233,15 +233,21 @@ async function importLines(accountId, rows, { session, req, deferPosting = false
   return { batchId, count: fresh.length, skipped: docs.length - fresh.length, matched, posted, notPosted };
 }
 
-async function importStatement(accountId, rows, { req, matchingSettings }) {
+// onProgress({ phase: 'saving' | 'posting', done, total }): for the import progress screen
+async function importStatement(accountId, rows, { req, matchingSettings, onProgress = () => {} }) {
   matchingSettings = preferences(matchingSettings);
   const { runInTransaction } = require('../transaction');
+  onProgress({ phase: 'saving', done: 0, total: rows.length });
   const result = await runInTransaction(session => importLines(accountId, rows, { session, req, deferPosting: true, matchingSettings }));
   const account = await bankAccount(accountId);
   const docs = await toDocs(account, rows);
+  const toPost = rows.filter(row => !row.ignore && (row.counterAccountId || row.link || row.billId || row.purchaseMatch)).length;
+  let handled = 0;
+  onProgress({ phase: 'posting', done: 0, total: toPost });
   for (const [index, doc] of docs.entries()) {
     const row = rows[index];
     if (row.ignore || !(row.counterAccountId || row.link || row.billId || row.purchaseMatch)) continue;
+    onProgress({ phase: 'posting', done: handled++, total: toPost });
     const line = await BankStatementLine.findOne({ accountId, fingerprint: doc.fingerprint, importBatchId: result.batchId, lineStatus: 'unmatched' }).lean();
     if (!line) continue;
     try {
@@ -1077,6 +1083,8 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   const movements = await unmatchedMovements(accountId);
   const result = {};
   const repeats = await evidence.repeatedReferences(accountId, lines.filter(l => l.duplicateReviewPending));
+  const bank = await bankAccount(accountId);
+  const bills = billCache(lines.map(line => line.day));
   for (const [index, line] of lines.entries()) {
     if (line.duplicateReviewPending) {
       result[line._id] = { account: null, requiresConfirmation: true, duplicates: [], source: 'statement_repeat',
@@ -1095,7 +1103,7 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
     }
     const twins = movements.filter((m) => m.amount === line.amount && dayDistance(m.day, line.day) <= DUPLICATE_DAYS);
     const link = settings.engines.includes('purchases') && !settings.requireIdentity && links[index] && dayDistance(links[index].day, line.day) <= settings.proposalDays ? links[index] : null;
-    const billHint = guess(line).semanticTransfer || !settings.engines.includes('purchases') ? null : await existingBillHint(line, await bankAccount(accountId), guess(line).vendorName, settings);
+    const billHint = guess(line).semanticTransfer || !settings.engines.includes('purchases') ? null : await existingBillHint(line, bank, guess(line).vendorName, settings, bills);
     result[line._id] = {
       ...(guess(line).semanticTransfer ? guess(line) : billHint || (link ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link,
         requiresConfirmation: true, reason: 'اقتراح بالمبلغ والعملة وقرب التاريخ فقط؛ راجع هوية المورد والطلبية من قائمة المطابقة قبل الاعتماد.' } : guess(line))),
@@ -1144,8 +1152,8 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   return result;
 }
 
-async function existingBillHint(line, bank, vendorName, settings = preferences()) {
-  const candidates = (await candidatesFor(line, bank, { vendorName })).filter(b => b.dayDifference <= settings.proposalDays && (!settings.requireIdentity || b.identified));
+async function existingBillHint(line, bank, vendorName, settings = preferences(), cache) {
+  const candidates = (await candidatesFor(line, bank, { vendorName, cache })).filter(b => b.dayDifference <= settings.proposalDays && (!settings.requireIdentity || b.identified));
   if (!candidates.length) return null;
   const bill = candidates[0];
   return { source: 'bill', billId: null, suggestedBillId: bill?._id || null, requiresConfirmation: true, billCandidates: candidates.map(briefBill),
@@ -1253,6 +1261,7 @@ async function classifyRows(accountId, rows, matchingSettings) {
   const wip = await resolveAccount('purchase_cost_wip');
   const { accountsById } = await getConfig();
   const taken = new Set();
+  const bills = billCache(days);
   return Promise.all(docs.map(async (doc, index) => {
     if (known.has(doc.fingerprint)) return { status: 'imported' };
     if (referenceRepeats.has(doc.fingerprint)) return { status: 'possibleImported', requiresConfirmation: true,
@@ -1276,7 +1285,7 @@ async function classifyRows(accountId, rows, matchingSettings) {
       entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description } : null,
     };
     const link = settings.engines.includes('purchases') && !settings.requireIdentity && links[index] && dayDistance(links[index].day, doc.day) <= settings.proposalDays ? links[index] : null;
-    const billHint = guess(doc).semanticTransfer || !settings.engines.includes('purchases') ? null : await existingBillHint(doc, account, guess(doc).vendorName, settings);
+    const billHint = guess(doc).semanticTransfer || !settings.engines.includes('purchases') ? null : await existingBillHint(doc, account, guess(doc).vendorName, settings, bills);
     const target = identifiedRefund ? { ...guess(doc), source: 'refund', isRefund: true, requiresConfirmation: true,
       refundAccount: guess(doc).account, account: null, reason: 'مبلغ وارد من مورد مشتريات؛ يلزم اعتماد المطابقة مع الأصل' } : guess(doc).semanticTransfer ? guess(doc) : billHint || (link
       ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link,
