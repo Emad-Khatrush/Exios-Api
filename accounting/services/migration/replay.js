@@ -143,7 +143,8 @@ function buildTimeline(sources, config, vendors) {
   // original delivery day. Preserve that transition if a migration is rebuilt.
   sources.orders.forEach(order => (order.paymentList || []).forEach(pkg => {
     if (pkg.shippingRecognitionFrom) add(pkg.shippingRecognitionFrom, 'delivery', 'shippingRecognition', pkg._id, ctx => syncOrder(order._id, ctx));
-    if (pkg.freeShippingOffer?.enabled) add(pkg.freeShippingOffer.effectiveFrom || pkg.freeShippingOffer.appliedAt, 'delivery', 'freeShippingOffer', pkg._id, ctx => syncOrder(order._id, ctx));
+    if (pkg.freeShippingOffer?.appliedAt) add(pkg.freeShippingOffer.effectiveFrom || pkg.freeShippingOffer.appliedAt, 'delivery', 'freeShippingOffer', pkg._id, ctx => syncOrder(order._id, ctx));
+    if (pkg.freeShippingOffer?.cancelledAt) add(pkg.freeShippingOffer.cancelledAt, 'delivery', 'freeShippingOfferCancel', pkg._id, ctx => syncOrder(order._id, ctx));
   }));
 
   sources.statements.forEach((statement) => {

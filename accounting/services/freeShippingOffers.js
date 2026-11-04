@@ -71,6 +71,10 @@ async function review({ orderId, session } = {}) {
       const recognized = -claim.filter(row => revenueIds.has(String(row._id.account))).reduce((sum, row) => sum + row.net, 0);
       const price = Number(pkg.deliveredPackages?.exiosPrice || 0);
       const charge = packageChargeCents(pkg);
+      const previousPrice = Number(pkg.freeShippingOffer?.previousUnitPrice);
+      const restoredWeight = Number(pkg.deliveredPackages?.weight?.total || 0);
+      const restoredCharge = pkg.freeShippingOffer?.enabled && Number.isFinite(previousPrice) && Number.isFinite(restoredWeight)
+        ? Math.round(Number((restoredWeight * previousPrice).toFixed(2)) * 100) : 0;
       const hasPayment = payments.some(payment => String(payment.order) === String(order._id));
       const hasDebt = debts.some(debt => String(debt.order) === String(order._id));
       const hasPending = pending.some(event => String(event.refId) === String(order._id) || String(event.payload?.target?.orderId) === String(order._id));
@@ -96,6 +100,7 @@ async function review({ orderId, session } = {}) {
         customer: users.get(String(order.user)) || null, tracking: pkg.deliveredPackages?.trackingNumber || '', date: order.createdAt,
         invoiceType: order.isShipment ? 'combined' : 'purchase',
         invoiceMinor: Math.round(Number(order.totalInvoice) * 100), chargeMinor: charge, billedMinor: billed,
+        restoredChargeMinor: restoredCharge,
         openMinor: open, paidMinor: paid, revenueMinor: recognized, currentCostMinor: currentCost,
         purchaseCostMinor: expectedCost, purchaseBookedCostMinor: purchaseBookedCost, profitImpactMinor: -recognized - (expectedCost - currentCost),
         delivered: !!pkg.status?.received, enabled: !!pkg.freeShippingOffer?.enabled, offerReason: pkg.freeShippingOffer?.reason,
@@ -158,4 +163,41 @@ async function apply(input, req) {
   });
 }
 
-module.exports = { review, apply };
+async function cancel(input, req) {
+  const orderId = String(input.orderId || '');
+  const packageId = String(input.packageId || '');
+  const reason = String(input.reason || '').trim();
+  if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(packageId)) throw fail(400, 'Invalid order or package selection');
+  if (!reason || reason.length > 1000) throw fail(400, 'Enter a cancellation reason');
+  return runInTransaction(async session => {
+    const settings = await lockPeriod(session);
+    const order = await Order.findOneAndUpdate({ _id: orderId }, { $inc: { accountingMutationVersion: 1 } },
+      { new: true, session, timestamps: false });
+    if (!order) throw fail(404, 'Order no longer exists');
+    if (!order.isPayment || order.isRemittance || order.isCanceled || order.isDeleted) throw fail(409, 'This order cannot have a free-shipping offer cancelled');
+    const pkg = order.paymentList.id(packageId);
+    if (!pkg?.freeShippingOffer?.enabled) throw fail(409, 'No active free-shipping offer exists for this package');
+    if (pkg.creditDeliveryInvoiceId || Number(pkg.deliveredPackages?.receivedShipmentUSD) > 0 || Number(pkg.deliveredPackages?.receivedShipmentLYD) > 0) {
+      throw fail(409, 'This package has a deferred delivery or recorded collection. Review its delivery and collected amounts before reversing the offer.');
+    }
+    const previousPrice = Number(pkg.freeShippingOffer.previousUnitPrice);
+    if (!pkg.deliveredPackages || !Number.isFinite(previousPrice) || previousPrice < 0 || Number(pkg.deliveredPackages.exiosPrice || 0) !== 0) {
+      throw fail(409, 'Could not verify the original shipping price. Review the package before cancelling the offer.');
+    }
+    const before = pkg.toObject();
+    const day = settings?.lockDate && today() <= settings.lockDate ? addDays(settings.lockDate, 1) : today();
+    pkg.freeShippingOffer.enabled = false;
+    pkg.freeShippingOffer.cancelledAt = new Date(day);
+    pkg.freeShippingOffer.cancelledBy = req.user._id;
+    pkg.freeShippingOffer.cancellationReason = reason;
+    pkg.deliveredPackages.exiosPrice = previousPrice;
+    await order.save({ session });
+    if (settings?.liveEnabled) await syncOrder(order._id, { session, user: req.user, date: day });
+    else await require('./events').emitAccountingEvent('order', order._id, {}, req.user, { session });
+    await logAudit({ req, action: 'shipping.freeOffer.cancel', model: 'Order', docId: order._id,
+      before: { package: before }, after: { packageId, package: pkg.toObject(), restoredUnitPrice: previousPrice, day, reason } }, session);
+    return { orderId, packageId, restoredUnitPrice: previousPrice, day };
+  });
+}
+
+module.exports = { review, apply, cancel };

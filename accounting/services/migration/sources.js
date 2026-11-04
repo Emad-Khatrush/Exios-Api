@@ -86,9 +86,16 @@ async function loadSources(cutoff) {
       paymentList: (order.paymentList || []).map((pkg) => {
         const delivery = deliveries.get(String(pkg._id));
         const offer = pkg.freeShippingOffer;
-        const beforeOffer = offer?.enabled && new Date(offer.effectiveFrom || offer.appliedAt) > when;
+        // The offer as it stood on the cutoff: not yet applied → the old price; active → free;
+        // cancelled by then → the package as it is now (its price may have been edited since)
+        const appliedAt = (offer?.effectiveFrom || offer?.appliedAt) && new Date(offer.effectiveFrom || offer.appliedAt);
+        const cancelledAt = offer?.cancelledAt && new Date(offer.cancelledAt);
+        const notYet = !!appliedAt && appliedAt > when;
+        const active = !!appliedAt && !notYet && (!cancelledAt || cancelledAt > when);
         return { ...pkg,
-          ...(beforeOffer && { freeShippingOffer: { ...offer, enabled: false }, deliveredPackages: { ...pkg.deliveredPackages, exiosPrice: offer.previousUnitPrice } }),
+          ...((notYet || active) && { freeShippingOffer: { ...offer, enabled: active }, deliveredPackages: {
+            ...pkg.deliveredPackages, exiosPrice: active ? 0 : offer.previousUnitPrice,
+          } }),
           status: { ...(pkg.status || {}), received: !!(delivery && delivery.at <= when) } };
       }),
     };

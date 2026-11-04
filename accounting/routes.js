@@ -161,6 +161,7 @@ router.get('/shipping-recognition/review', P.reports, handle(async (req, res) =>
 router.post('/shipping-recognition/apply', ownerOnly, handle(async (req, res) => res.json(await require('./services/shippingRecognition').apply(req.body, req))));
 router.get('/free-shipping/review', P.reports, handle(async (req, res) => res.json(await require('./services/freeShippingOffers').review({ orderId: req.query.orderId }))));
 router.post('/free-shipping/apply', ownerOnly, handle(async (req, res) => res.json(await require('./services/freeShippingOffers').apply(req.body, req))));
+router.post('/free-shipping/cancel', ownerOnly, handle(async (req, res) => res.json(await require('./services/freeShippingOffers').cancel(req.body, req))));
 router.get('/reports/purchases', P.reports, statements.purchases);
 router.get('/reports/receivables', P.reports, statements.receivables);
 router.get('/reports/customer-statement/:id', P.reports, statements.customerStatement);

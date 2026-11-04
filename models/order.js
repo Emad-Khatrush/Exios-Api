@@ -240,6 +240,9 @@ const orderSchema = new Schema({
       appliedAt: Date,
       effectiveFrom: Date,
       appliedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      cancelledAt: Date,
+      cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      cancellationReason: String,
     },
     link: {
       type: String,
