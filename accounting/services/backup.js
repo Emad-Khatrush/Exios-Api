@@ -239,23 +239,22 @@ async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), che
   const run = await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
   const heartbeat = setInterval(() => renewLock(owner, lockTtlMs).catch(() => {}), heartbeatMs);
   if (heartbeat.unref) heartbeat.unref();
-  // Every stream of the run, destroyed if it passes maxMs so nothing keeps hanging
+  // Every stream of the run, destroyed when it is stopped (time limit or the owner's cancel) so
+  // nothing keeps hanging
   const streams = new Set();
   const track = (stream) => { streams.add(stream); return stream; };
-  let timer;
-  const timeout = new Promise((resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error(`تجاوزت النسخة ${Math.round(maxMs / 60000) || 1} دقيقة فأُلغيت. أعد المحاولة؛ إن تكرر فراجع اتصال الخادم بمخزن Google.`);
-      streams.forEach((stream) => stream.destroy(error));
-      reject(error);
-    }, maxMs);
+  let abort;
+  const stopped = new Promise((resolve, reject) => {
+    abort = (error) => { streams.forEach((stream) => stream.destroy(error)); reject(error); };
   });
-  timeout.catch(() => {});
-  // The work keeps a handler of its own: if the time limit wins, its later failure is not unhandled
+  stopped.catch(() => {});
+  const timer = setTimeout(() => abort(new Error(`تجاوزت النسخة ${Math.round(maxMs / 60000) || 1} دقيقة فأُلغيت. أعد المحاولة؛ إن تكرر فراجع اتصال الخادم بمخزن Google.`)), maxMs);
+  active = { runId: run._id, abort };
+  // The work keeps a handler of its own: if it is stopped, its later failure is not unhandled
   const work = dumpAndUpload(bucket, { checkPublic, track });
   work.catch(() => {});
   try {
-    const done = await Promise.race([timeout, work]);
+    const done = await Promise.race([stopped, work]);
     Object.assign(run, { status: 'done', ...done, finishedAt: new Date() });
     await run.save();
     return run.toObject();
@@ -266,8 +265,29 @@ async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), che
   } finally {
     clearTimeout(timer);
     clearInterval(heartbeat);
+    if (active?.runId === run._id) active = null;
     await releaseLock(owner).catch(() => {});
   }
+}
+
+// The run going on in this server, so the owner can stop it
+let active = null;
+
+// The owner's «إلغاء النسخة الجارية»: stops the run going on here, and closes any run left
+// 'running' elsewhere (a restart, or a lock from before the heartbeat). A backup only reads the
+// database, so stopping one never touches its data; the owner can start a new one at once.
+async function cancelRunning(user) {
+  const who = [user?.firstName, user?.lastName].filter(Boolean).join(' ');
+  const reason = `أُلغيت يدوياً${who ? ` (${who})` : ''}`;
+  if (active) {
+    const { runId, abort } = active;
+    abort(new Error(reason));
+    // The run records itself as failed and frees its lock
+    for (let i = 0; i < 50 && active?.runId === runId; i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await locks().updateOne({ _id: 'backup' }, { $set: { until: new Date(0) }, $unset: { owner: '' } });
+  const closed = await BackupRun.updateMany({ status: 'running' }, { $set: { status: 'failed', error: reason, finishedAt: new Date() } });
+  return { cancelled: true, closed: closed.modifiedCount };
 }
 
 // Checked every hour: from BACKUP_HOUR (Libya time) one daily backup, retried up to 3 times
@@ -331,4 +351,4 @@ async function startManual(user) {
   return { started: true };
 }
 
-module.exports = { writeDump, runBackup, startDailyBackup, overview, downloadUrl, startManual, expired, fileName, BackupRun };
+module.exports = { writeDump, runBackup, cancelRunning, startDailyBackup, overview, downloadUrl, startManual, expired, fileName, BackupRun };
