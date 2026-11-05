@@ -33,7 +33,7 @@ const userStatementSchema = new Schema({
   // The account the money went into (or came out of), chosen on the deposit screen: a cash box,
   // a bank or a partner's current account such as Wasl (spec 19.4). Without it, the office's box.
   accountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
-  withdrawalSource: { type: String, enum: ['box', 'custody'] },
+  withdrawalSource: { type: String, enum: ['box', 'custody', 'bank'] },
   custodyEmployeeId: { type: Schema.Types.ObjectId, ref: 'User' },
   matchingVersion: { type: Number, default: 0 },
   walletExchangeId: { type: Schema.Types.ObjectId, ref: 'WalletExchange', immutable: true },

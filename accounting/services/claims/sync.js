@@ -165,12 +165,12 @@ async function orderLedger(orderId, ctx) {
   return state;
 }
 
-async function post(ctx, type, key, description, lines, fallbacks = []) {
+async function post(ctx, type, key, description, lines, fallbacks = [], date = ctx.date) {
   const seq = await nextSeq(`EV:${type}:${key}`, ctx.session);
   return postEntry({
     eventType: type,
     eventKey: `${type}:${key}:${seq}`,
-    date: ctx.date,
+    date,
     description,
     source: { model: 'Order', id: ctx.order._id },
     isHistorical: !!ctx.isHistorical,
@@ -178,6 +178,33 @@ async function post(ctx, type, key, description, lines, fallbacks = []) {
     fallbacks,
     lines,
   }, { session: ctx.session, user: ctx.user });
+}
+
+// The day a cost newly moved to cost of sales belongs to (matching principle). A cost entered late
+// for a service already recognised (a purchase line matched on 11-04 for a purchase of 10-10, the
+// order recognised in October) belongs to the later of its own day and the day its revenue was
+// recognised, never to the day it was typed. A cost whose revenue is recognised in this same sync
+// (or never, as a free package) keeps the sync's date. A locked period is moved to the first open
+// day by the ledger.
+async function costRecognitionDate(ctx, wip, recognitionKey) {
+  const eventDay = toDay(ctx.date);
+  if (ctx.isHistorical) return ctx.date;
+  const [cost] = await JournalEntry.aggregate([
+    { $match: { status: 'posted', eventType: { $ne: 'COST_RECOGNITION' }, day: { $lte: eventDay }, lines: { $elemMatch: { ...wip, debit: { $gt: 0 } } } } },
+    { $group: { _id: null, day: { $max: '$day' } } },
+  ]).session(ctx.session);
+  if (!cost) return ctx.date;
+  let day = cost.day;
+  if (recognitionKey) {
+    const escaped = recognitionKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const [revenue] = await JournalEntry.aggregate([
+      { $match: { status: 'posted', eventType: 'RECOGNITION', eventKey: { $regex: `^RECOGNITION:${escaped}:` }, day: { $lte: eventDay } } },
+      { $group: { _id: null, day: { $max: '$day' } } },
+    ]).session(ctx.session);
+    if (!revenue) return ctx.date;
+    if (revenue.day > day) day = revenue.day;
+  }
+  return day < eventDay ? day : ctx.date;
 }
 
 // A line moving `amount` cents from `from` to `to` (debit `to`, credit `from`); negative flips it
@@ -479,11 +506,13 @@ async function syncOrder(orderId, options = {}) {
     const costAccount = purchaseWant > state.purchaseCostRecognized
       ? (order.isRemittance ? a.cost_remittance : a.cost_purchase_invoices)
       : (state.remittanceCostRecognized > 0 ? a.cost_remittance : a.cost_purchase_invoices);
+    const date = purchaseWant > state.purchaseCostRecognized
+      ? await costRecognitionDate(ctx, { accountId: a.purchase_cost_wip._id, orderId: order._id }, purchaseKey(order._id)) : ctx.date;
     posted.push(await post(ctx, 'COST_RECOGNITION', purchaseKey(order._id), `تكلفة فاتورة شراء - طلب ${order.orderId}`, move(
       purchaseWant - state.purchaseCostRecognized,
       { accountId: costAccount._id, ...dims },
       { accountId: a.purchase_cost_wip._id, ...dims },
-    )));
+    ), [], date));
   }
 
   const packageIds = new Set([...packages.keys(), ...[...state.shipCost.keys()].map((k) => k.split('|')[0])]);
@@ -516,9 +545,12 @@ async function syncOrder(orderId, options = {}) {
       for (const accountId of new Set([...byAccount.keys(), targetId])) {
         const delta = (accountId === targetId ? want : 0) - (byAccount.get(accountId) || 0);
         if (!delta) continue;
+        // A trip cost entered after the package's shipping was recognised belongs to that period
+        const date = delta > 0 && !free
+          ? await costRecognitionDate(ctx, { accountId: a.trip_cost_wip._id, tripId: oid(tripId) }, shipmentKey(order._id, packageId)) : ctx.date;
         posted.push(await post(ctx, 'COST_RECOGNITION', `${packageId}:${tripId}`, `حصة الطرد ${tracking} من تكلفة الرحلة${free ? ' (شحن مجاني ضمن فاتورة الشراء)' : ''} - طلب ${order.orderId}`, move(
           delta, { accountId: oid(accountId), ...dims }, { accountId: a.trip_cost_wip._id, ...dims },
-        )));
+        ), [], date));
       }
     }
   }
@@ -536,11 +568,13 @@ async function syncOrder(orderId, options = {}) {
     const want = recognized ? cost.total : 0;
     if (want === cost.recognized) continue;
     const dims = { orderId: order._id, packageId: oid(packageId), office, arKey: key };
+    const date = want > cost.recognized && sold
+      ? await costRecognitionDate(ctx, { accountId: a.customs_cost_wip._id, orderId: order._id, packageId: oid(packageId) }, key) : ctx.date;
     posted.push(await post(ctx, 'COST_RECOGNITION', key, `تكلفة تخليص جمركي ${pkg?.deliveredPackages?.trackingNumber || packageId} - طلب ${order.orderId}`, move(
       want - cost.recognized,
       { accountId: a.cost_customs._id, ...dims },
       { accountId: a.customs_cost_wip._id, ...dims },
-    )));
+    ), [], date));
   }
 
   if (!active) await hideCancelledClaims(order._id, ctx);

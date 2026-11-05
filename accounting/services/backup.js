@@ -13,6 +13,10 @@ const mongoose = require('mongoose');
 const moment = require('moment-timezone');
 const archiver = require('archiver');
 const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { TZ, today } = require('./dates');
 const ErrorHandler = require('../../utils/errorHandler');
 
@@ -173,16 +177,29 @@ const releaseLock = () => mongoose.connection.db.collection('systembackuplocks')
 
 async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), checkPublic = true } = {}) {
   if (!(await takeLock())) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
-  const run = await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
+  // With the lock held no run is in progress: one still 'running' was cut off (a server restart)
+  await BackupRun.updateMany({ status: 'running' }, { $set: { status: 'failed', error: 'انقطعت المحاولة (أُعيد تشغيل الخادم أثناءها)', finishedAt: new Date() } });
+  const run =await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
   try {
     const db = mongoose.connection.db;
     const name = fileName(db.databaseName);
     const file = bucket.file(name);
-    const result = await writeDump(db, file.createWriteStream({
-      resumable: true,
-      contentType: 'application/zip',
-      metadata: { cacheControl: 'private, no-store' },
-    }));
+    // The dump is written to the server's disk first, then uploaded. Streaming it straight to the
+    // bucket made the reads wait for the upload, and once the run passed Atlas's snapshot window
+    // (5 minutes) every read failed with "Read timestamp ... is older than the oldest available
+    // timestamp" (2026-11-04). Read alone, the database takes seconds.
+    const temp = path.join(os.tmpdir(), `exios-backup-${process.pid}-${Date.now()}.zip`);
+    let result;
+    try {
+      result = await writeDump(db, fs.createWriteStream(temp, { flags: 'wx' }));
+      await pipeline(fs.createReadStream(temp), file.createWriteStream({
+        resumable: true,
+        contentType: 'application/zip',
+        metadata: { cacheControl: 'private, no-store' },
+      }));
+    } finally {
+      await fs.promises.rm(temp, { force: true });
+    }
     // Refuse a bucket anyone can read: the file would be open to the internet
     if (checkPublic) {
       const response = await fetch(`https://storage.googleapis.com/${bucket.name}/${name}`, { method: 'HEAD' }).catch(() => null);

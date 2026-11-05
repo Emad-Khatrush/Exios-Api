@@ -543,7 +543,7 @@ async function updateWithdrawal(statement, body, req, session) {
   let funding;
   // An unchanged office/source keeps its explicitly recorded cash account. Changing
   // the office mapping later must not silently move an edited withdrawal to another box.
-  if (source === 'box' && (statement.withdrawalSource || 'box') === 'box' && String(office || '') === String(statement.office || '') && statement.accountId) {
+  if (['box', 'bank'].includes(source) && (statement.withdrawalSource || 'box') === source && String(office || '') === String(statement.office || '') && statement.accountId) {
     const account = await require('../accounting/models').Account.findById(statement.accountId).session(session).lean();
     if (!account?.isActive || account.isGroup || !account.isCash || (account.currency || 'USD') !== statement.currency) throw new ErrorHandler(400, 'The original withdrawal account is unavailable. Choose a valid withdrawal source before saving.');
     funding = { account, office };
@@ -562,7 +562,7 @@ async function updateWithdrawal(statement, body, req, session) {
   statement.note = body.note === undefined ? statement.note : String(body.note);
   statement.actionType = 'withdrawal'; statement.withdrawalSource = source;
   statement.office = funding.office || office;
-  statement.accountId = source === 'box' ? funding.account._id : undefined;
+  statement.accountId = source === 'custody' ? undefined : funding.account._id;
   statement.custodyEmployeeId = source === 'custody' ? statement.createdBy : undefined;
   if (body.rate !== undefined) {
     if (body.rate !== '' && body.rate !== null && (!Number.isFinite(Number(body.rate)) || Number(body.rate) <= 0)) throw new ErrorHandler(400, 'سعر الصرف يجب أن يكون موجبًا');
@@ -971,7 +971,7 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
     if (actionType === 'exchange') throw new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل طرفي التحويل معًا');
     const withdrawalSource = req.body.withdrawalSource || 'box';
-    if (actionType === 'withdrawal' && !['box', 'custody'].includes(withdrawalSource)) throw new ErrorHandler(400, 'اختر مصدر السحب النقدي');
+    if (actionType === 'withdrawal' && !['box', 'custody', 'bank'].includes(withdrawalSource)) throw new ErrorHandler(400, 'اختر مصدر السحب النقدي');
     if (actionType === 'withdrawal' && withdrawalSource === 'custody') {
       const { settings } = await require('../accounting/services/config').getConfig();
       if (!settings?.liveEnabled) throw new ErrorHandler(400, 'السحب من العهدة يحتاج إلى تفعيل الترحيل المحاسبي المباشر');

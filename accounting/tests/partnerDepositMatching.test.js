@@ -49,6 +49,29 @@ describe('bank deposit destinations survive posting and date edits', () => {
     body: { createdAt: '2026-10-31T12:00:00Z', amount: 605, currency: 'LYD', description: 'Customer bank deposit', office: 'bank', actionType: 'bank', ...body } });
   const subBalance = async () => getBalance((await account('110122'))._id);
 
+  const withdraw = (body = {}) => call(controller.useBalanceOfWallet, { params: { id: String(customer) }, user: clerk,
+    body: { createdAt: '2026-10-31T13:00:00Z', amount: 200, currency: 'LYD', description: 'Paid from the bank', actionType: 'withdrawal', withdrawalSource: 'bank', office: 'bank', ...body } });
+
+  test('a wallet withdrawal paid from the Libyan bank credits the bank, not a cash box', async () => {
+    await addBankDeposit(); await processQueue();
+    await withdraw(); await processQueue();
+    const statement = await UserStatement.findOne({ actionType: 'withdrawal' });
+    expect(statement).toMatchObject({ withdrawalSource: 'bank', office: 'bank' });
+    expect(String(statement.accountId)).toBe(String(libyan._id));
+    expect((await getBalance(libyan._id)).foreign).toBe(405000);
+    expect((await subBalance()).foreign).toBe(0);
+    expect((await Wallet.findOne({ user: customer, currency: 'LYD' })).balance).toBe(405);
+    expect(await AccountingEvent.countDocuments({ status: 'failed' })).toBe(0);
+  });
+
+  test('a bank withdrawal needs a bank mapped in its currency and leaves the wallet untouched otherwise', async () => {
+    await addBankDeposit(); await processQueue();
+    await expect(withdraw({ office: 'tripoli' })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(withdraw({ office: 'almutahidaTrBank' })).rejects.toMatchObject({ statusCode: 400 });
+    expect((await Wallet.findOne({ user: customer, currency: 'LYD' })).balance).toBe(605);
+    expect(await UserStatement.countDocuments({ actionType: 'withdrawal' })).toBe(0);
+  });
+
   test('an employee bank deposit pins the bank and never credits the employee sub cash box', async () => {
     await addBankDeposit();
     expect(String((await UserStatement.findOne()).accountId)).toBe(String(libyan._id));

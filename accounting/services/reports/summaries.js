@@ -200,12 +200,18 @@ async function tripSummary(tripId) {
   const packageRows = packageIds.length ? await ledgerBy(packageMatch, packageMatch, { packageId: '$lines.packageId' }) : [];
 
   const orders = packageIds.length ? await Order.find({ 'paymentList._id': { $in: packageIds.map(oid) } })
-    .select('orderId isCanceled paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.volumetric paymentList.deliveredPackages.domesticFee').lean() : [];
+    .select('orderId isCanceled paymentList._id paymentList.status.received paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.deliveredPackages.volumetric paymentList.deliveredPackages.domesticFee paymentList.deliveredPackages.compensation paymentList.deliveredPackages.abandoned').lean() : [];
   const wanted = new Set(packageIds.map(String));
   const packages = new Map();
   orders.forEach((order) => (order.paymentList || []).forEach((pkg) => {
     if (!wanted.has(String(pkg._id))) return;
+    // A compensated package (lost or damaged) and one declared abandoned. Closed by either, it is
+    // never delivered: no revenue beyond what was paid, its cost in cost of sales.
+    const comp = pkg.deliveredPackages?.compensation;
+    const compensation = comp?.type ? { type: comp.type, closed: !!comp.closed } : null;
+    const abandoned = !!pkg.deliveredPackages?.abandoned?.status;
     packages.set(String(pkg._id), {
+      compensation, abandoned, closed: abandoned || !!compensation?.closed,
       packageId: pkg._id, orderId: order._id, orderNumber: order.orderId, isCanceled: !!order.isCanceled, tracking: pkg.deliveredPackages?.trackingNumber, delivered: !!pkg.status?.received,
       // The chargeable weight, and whether it is the volumetric one (spec v8)
       weight: Number(pkg.deliveredPackages?.weight?.total || 0), volumetric: !!pkg.deliveredPackages?.volumetric?.enabled, actualWeight: pkg.deliveredPackages?.weight?.actual, charge: international ? require('../claims/keys').packageChargeCents(pkg) : Math.round(Number(pkg.deliveredPackages?.domesticFee?.usd || 0) * 100),
@@ -236,7 +242,8 @@ async function tripSummary(tripId) {
   const list = [...packages.values()].sort((a, b) => String(a.orderNumber).localeCompare(String(b.orderNumber)));
   const revenue = list.reduce((sum, p) => sum + p.revenue, 0);
   const costReview = await require('../accountingReview').tripCostStatus(tripId);
-  const undelivered = list.filter(p => !p.isCanceled && !p.delivered).length;
+  // A closed package will never be delivered: it does not keep the profit provisional
+  const undelivered = list.filter(p => !p.isCanceled && !p.delivered && !p.closed).length;
   return {
     trip: { _id: trip._id, voyage: trip.voyage, shippingType: trip.shippingType, status: trip.status, inventoryType: trip.inventoryType },
     allocationBase: 'weight', international,

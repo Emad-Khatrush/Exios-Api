@@ -181,3 +181,21 @@ test('two packages: closing one leaves the order as it is; delivering the other 
   await expectConsistent('the other delivered');
   expect(await Order.findById(order._id).lean()).toMatchObject({ isFinished: true, orderStatus: 4 });
 });
+
+test('the trip view: a closed package has no revenue, is flagged, and does not keep the profit provisional', async () => {
+  const { order, pkg } = await shipment(2, 10);
+  const damaged = await shipment(1, 10);
+  await run(order, pkg, { type: 'lost', currency: 'USD', goodsAmount: 20, reason: 'ضاع' });
+  await run(damaged.order, damaged.pkg, { type: 'damaged', currency: 'USD', goodsAmount: 5, reason: 'كسر' });
+  const { insertedId } = await mongoose.connection.collection('inventories').insertOne({
+    voyage: `TRIP-COMP-${Date.now()}`, inventoryType: 'inventoryGoods', shippingType: 'air', status: 'finished',
+    orders: [{ paymentList: { _id: pkg._id } }, { paymentList: { _id: damaged.pkg._id } }],
+  });
+  const trip = await require('../services/reports/summaries').tripSummary(insertedId);
+  const lost = trip.packages.find((p) => String(p.packageId) === String(pkg._id));
+  expect(lost).toMatchObject({ compensation: { type: 'lost', closed: true }, closed: true, abandoned: false, revenue: 0, open: 0 });
+  const open = trip.packages.find((p) => String(p.packageId) === String(damaged.pkg._id));
+  expect(open).toMatchObject({ compensation: { type: 'damaged', closed: false }, closed: false });
+  // Only the damaged package, still to be delivered, counts as undelivered
+  expect(trip.totals.undeliveredPackages).toBe(1);
+});

@@ -191,3 +191,22 @@ test('light trip projection preserves explicit and legacy package links', async 
     expect(p.trip.orders).toBeUndefined();
   });
 });
+
+test('not active orders (unsureOrder) have their own filter and counters; finished and cancelled ones stay out', async () => {
+  await order('NA-PURCHASE', { unsureOrder: true, orderStatus: 0 });
+  await order('NA-SHIPPING', { unsureOrder: true, isPayment: false, isShipment: true });
+  await order('NA-ACTIVE', { unsureOrder: false, orderStatus: 0 });
+  await order('NA-FINISHED', { unsureOrder: true, isFinished: true });
+  await order('NA-CANCELED', { unsureOrder: true, isCanceled: true });
+  for (const quick of [undefined, 'true']) for (const search of ['', 'NA-']) {
+    const result = await fetch({ stage: 'notActive', quick, search });
+    // Like every category, a search also covers finished orders; cancelled ones never show
+    expect(result.orders.map(o => o.orderId).sort()).toEqual(search ? ['NA-FINISHED', 'NA-PURCHASE', 'NA-SHIPPING'] : ['NA-PURCHASE', 'NA-SHIPPING']);
+    expect(result.orders.every(o => o.unsureOrder === true)).toBe(true);
+  }
+  const categories = await fetch({ countsOnly: 'true', countsPart: 'categories' });
+  expect(categories.counts.notActive).toBe(2);
+  const matrix = await fetch({ countsOnly: 'true', countsPart: 'matrix' });
+  expect(matrix.countsByPayment.all.notActive).toBe(2);
+  expect((await fetch({ countsOnly: 'true', stage: 'notActive' })).counts.notActive).toBe(2);
+});

@@ -176,7 +176,16 @@ async function cashOffice(createdBy, recordOffice, session) {
 
 // Cash withdrawals must have a valid funding account before the wallet is touched.
 async function resolveWithdrawalAccount(user, recordOffice, currency, source, session) {
-  if (!['box', 'custody'].includes(source)) throw fail('اختر مصدر السحب النقدي');
+  if (!['box', 'custody', 'bank'].includes(source)) throw fail('اختر مصدر السحب النقدي');
+  if (source === 'bank') {
+    // Paid to the customer from a company bank (the Libyan bank, Al-Mutahida): the same bank
+    // places as the deposit screen, resolved to their mapped account in this currency
+    const { STATEMENT_OFFICE_ALIASES } = require('../../seed/defaults');
+    if (!recordOffice || !Object.prototype.hasOwnProperty.call(STATEMENT_OFFICE_ALIASES, recordOffice)) throw fail('اختر البنك الذي يُصرف منه');
+    const account = await require('../moneyAccounts').resolveDepositAccount({ office: recordOffice, currency });
+    if (!account?.isActive || !account.isCash || (account.currency || 'USD') !== currency) throw fail(`لا يوجد حساب ${currency} لهذا البنك`);
+    return { account, office: recordOffice };
+  }
   if (source === 'custody') {
     const account = await require('../custody').accountOf('custody', currency);
     if (!account?.isActive || (account.currency || 'USD') !== currency) throw fail(`لا توجد عهدة متاحة بعملة ${currency}`);

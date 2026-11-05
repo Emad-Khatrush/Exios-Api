@@ -26,6 +26,8 @@ const STAGES = {
   unpaid: { ...ACTIVE, paymentState: 'unpaid' }, partial: { ...ACTIVE, paymentState: 'partial' },
   hasProblem: { ...ACTIVE, hasProblem: true }, finished: { isFinished: true },
   blocked: { ...ACTIVE, shippingBlocked: true },
+  // Marked "Not active order" on the invoice (unsureOrder): kept out of purchase follow-up
+  notActive: { ...ACTIVE, unsureOrder: true },
 };
 const PAYMENT_FILTERS = {
   all: {}, paid: { paymentState: 'paid' }, unpaid: { paymentState: 'unpaid' },
@@ -35,7 +37,7 @@ const PAYMENT_FILTERS = {
 function counterGroup(withPayments) {
   const yes = field => ({ $eq: [{ $ifNull: [`$${field}`, false] }, true] });
   return { $group: { _id: {
-    finished: yes('isFinished'), purchase: yes('isPayment'), shipping: yes('isShipment'), problem: yes('hasProblem'), blocked: yes('shippingBlocked'),
+    finished: yes('isFinished'), purchase: yes('isPayment'), shipping: yes('isShipment'), problem: yes('hasProblem'), blocked: yes('shippingBlocked'), notActive: yes('unsureOrder'),
     waiting: { $and: [{ $eq: ['$unsureOrder', false] }, { $eq: ['$orderStatus', 0] }, { $eq: ['$isPayment', true] }, { $eq: ['$isCanceled', false] }] },
     purchaseFollowUp: PURCHASE_FOLLOW_UP_RULE,
     ...(withPayments ? { payment: '$paymentState' } : {}),
@@ -59,6 +61,7 @@ function counterMatrix(rows, includeFinished = false) {
       if (flags.purchaseFollowUp) categories.push('purchaseFollowUp');
       if (flags.problem) categories.push('hasProblem');
       if (flags.blocked) categories.push('blocked');
+      if (flags.notActive) categories.push('notActive');
       if (flags.payment === 'unpaid' || flags.payment === 'partial') categories.push(flags.payment);
     }
     const payments = ['all', ...(flags.payment !== 'all' && Object.hasOwnProperty.call(PAYMENT_FILTERS, flags.payment) ? [flags.payment] : [])];
@@ -237,7 +240,7 @@ exports.list = async (req, res, next) => {
       waitingPurchase: { $and: [{ $eq: ['$unsureOrder', false] }, { $eq: ['$orderStatus', 0] }, { $eq: ['$isPayment', true] }, { $eq: ['$isCanceled', false] }] },
       purchaseFollowUp: PURCHASE_FOLLOW_UP_RULE,
       unpaid: { $eq: ['$paymentState', 'unpaid'] }, partial: { $eq: ['$paymentState', 'partial'] },
-      hasProblem: '$hasProblem', blocked: { $eq: ['$shippingBlocked', true] }, finished: '$isFinished',
+      hasProblem: '$hasProblem', blocked: { $eq: ['$shippingBlocked', true] }, notActive: { $eq: ['$unsureOrder', true] }, finished: '$isFinished',
     };
     const activeRule = search ? true : { $ne: [{ $ifNull: ['$isFinished', false] }, true] };
     let result;

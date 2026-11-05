@@ -107,3 +107,25 @@ test('the public uploads bucket is refused', async () => {
   await expect(backup.runBackup()).rejects.toMatchObject({ statusCode: 400 });
   Object.assign(process.env, before);
 });
+
+test('the database is read in full before the upload starts; the server copy is removed; a cut-off run is closed', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exios-bucket-'));
+  const bucket = fakeBucket(dir);
+  const leftovers = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`exios-backup-${process.pid}-`));
+  // A run left 'running' by a restart
+  const stale = await backup.BackupRun.create({ day: '2026-11-04', trigger: 'daily', status: 'running', startedAt: new Date() });
+  // The upload only begins once the dump is complete on disk (the snapshot is no longer read)
+  let completeAtUpload = false;
+  const file = bucket.file;
+  bucket.file = (name) => ({ ...file(name), createWriteStream: () => {
+    const temp = leftovers().map((n) => path.join(os.tmpdir(), n))[0];
+    completeAtUpload = !!temp && new AdmZip(temp).getEntry('README.txt') !== null;
+    return file(name).createWriteStream();
+  } });
+  const run = await backup.runBackup({ trigger: 'manual', bucket, checkPublic: false });
+  expect(run.status).toBe('done');
+  expect(completeAtUpload).toBe(true);
+  expect(new AdmZip(path.join(dir, run.file)).getEntry('manifest.json')).not.toBeNull();
+  expect(leftovers()).toEqual([]);
+  expect(await backup.BackupRun.findById(stale._id).lean()).toMatchObject({ status: 'failed' });
+});
