@@ -22,7 +22,6 @@ const ErrorHandler = require('../../utils/errorHandler');
 
 const PREFIX = 'db-backups/';
 const NAME = /^db-backups\/exios-([\w.-]+)-(\d{4}-\d{2}-\d{2})-(\d{4})\.zip$/;
-const LOCK_MINUTES = 120;
 const MAX_DAILY_ATTEMPTS = 3;
 // The WhatsApp session logs in as the company number: it is not put in a downloadable file
 const SKIPPED = (name) => name.startsWith('system.') || /^whatsapp/i.test(name);
@@ -158,13 +157,21 @@ function expired(names, { keepDays, now = new Date() }) {
   return parsed.filter((file) => file.day < cutoff && !(firstOfMonth.has(file.name) && file.day.slice(0, 7) > monthCutoff)).map((file) => file.name);
 }
 
-// Only one backup at a time, across every server instance
-async function takeLock() {
+// Only one backup at a time, across every server instance. The lock is short and kept alive by
+// the run (a heartbeat): a run killed by a restart stops renewing it, so it frees itself within
+// two minutes instead of two hours (2026-11-05: a run stayed «جارية» and the button disabled).
+const LOCK_TTL_MS = 2 * 60 * 1000;
+const HEARTBEAT_MS = 30 * 1000;
+// A run still going after this is stopped and recorded as failed, never left hanging
+const MAX_RUN_MS = () => Number(process.env.BACKUP_MAX_MINUTES || 20) * 60 * 1000;
+const locks = () => mongoose.connection.db.collection('systembackuplocks');
+
+async function takeLock(owner, ttlMs = LOCK_TTL_MS) {
   const now = new Date();
   try {
-    await mongoose.connection.db.collection('systembackuplocks').updateOne(
+    await locks().updateOne(
       { _id: 'backup', $or: [{ until: { $lt: now } }, { until: { $exists: false } }] },
-      { $set: { until: new Date(now.getTime() + LOCK_MINUTES * 60 * 1000) } },
+      { $set: { until: new Date(now.getTime() + ttlMs), owner } },
       { upsert: true },
     );
     return true;
@@ -173,55 +180,83 @@ async function takeLock() {
     throw error;
   }
 }
+// Only the run that holds the lock renews or frees it
+const renewLock = (owner, ttlMs = LOCK_TTL_MS) => locks().updateOne({ _id: 'backup', owner }, { $set: { until: new Date(Date.now() + ttlMs) } });
 // A run still 'running' while nobody holds the lock was cut off (a server restart): it is closed
 // as failed, else the page keeps «نسخة الآن» disabled forever (2026-11-04 09:45). A live run
-// holds the lock (and one left by a crash frees it after LOCK_MINUTES), so it is never touched.
+// renews the lock every 30 seconds, so it is never touched.
 async function closeCutOffRuns({ lockFree = true } = {}) {
   if (!lockFree) {
-    const lock = await mongoose.connection.db.collection('systembackuplocks').findOne({ _id: 'backup' });
+    const lock = await locks().findOne({ _id: 'backup' });
     if (lock?.until && lock.until > new Date()) return;
   }
   await BackupRun.updateMany({ status: 'running' }, { $set: { status: 'failed', error: 'انقطعت المحاولة (أُعيد تشغيل الخادم أثناءها)', finishedAt: new Date() } });
 }
 
-const releaseLock = () => mongoose.connection.db.collection('systembackuplocks').updateOne({ _id: 'backup' }, { $set: { until: new Date(0) } });
+const releaseLock = (owner) => locks().updateOne({ _id: 'backup', owner }, { $set: { until: new Date(0) } });
 
-async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), checkPublic = true } = {}) {
-  if (!(await takeLock())) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
+// Dumps the database to the server's disk, then uploads it, then prunes old backups. The dump is
+// written to disk first: streaming it straight to the bucket made the reads wait for the upload,
+// and once the run passed Atlas's snapshot window (5 minutes) every read failed with "Read
+// timestamp ... is older than the oldest available timestamp" (2026-11-04). Read alone, the
+// database takes seconds.
+async function dumpAndUpload(bucket, { checkPublic, track }) {
+  const db = mongoose.connection.db;
+  const name = fileName(db.databaseName);
+  const file = bucket.file(name);
+  const temp = path.join(os.tmpdir(), `exios-backup-${process.pid}-${Date.now()}.zip`);
+  let result;
+  try {
+    result = await writeDump(db, track(fs.createWriteStream(temp, { flags: 'wx' })));
+    await pipeline(track(fs.createReadStream(temp)), track(file.createWriteStream({
+      resumable: true,
+      contentType: 'application/zip',
+      metadata: { cacheControl: 'private, no-store' },
+    })));
+  } finally {
+    await fs.promises.rm(temp, { force: true });
+  }
+  // Refuse a bucket anyone can read: the file would be open to the internet
+  if (checkPublic) {
+    const response = await fetch(`https://storage.googleapis.com/${bucket.name}/${name}`, { method: 'HEAD' }).catch(() => null);
+    if (response?.ok) {
+      await file.delete({ ignoreNotFound: true });
+      throw new Error(`المخزن ${bucket.name} عام (يُقرأ بلا تسجيل دخول)، فحُذفت النسخة. اجعله خاصاً ثم أعد المحاولة.`);
+    }
+  }
+  const [files] = await bucket.getFiles({ prefix: PREFIX });
+  const toDelete = expired(files.map((f) => f.name), { keepDays: settings().keepDays });
+  for (const old of toDelete) await bucket.file(old).delete({ ignoreNotFound: true });
+  return { file: name, bytes: result.bytes, collections: result.collections.length, documents: result.documents, deleted: toDelete };
+}
+
+// limits: { maxMs, heartbeatMs, lockTtlMs } for tests; the defaults are the ones above
+async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), checkPublic = true, limits = {} } = {}) {
+  const { maxMs = MAX_RUN_MS(), heartbeatMs = HEARTBEAT_MS, lockTtlMs = LOCK_TTL_MS } = limits;
+  const owner = new mongoose.Types.ObjectId();
+  if (!(await takeLock(owner, lockTtlMs))) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
   await closeCutOffRuns();
   const run = await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
+  const heartbeat = setInterval(() => renewLock(owner, lockTtlMs).catch(() => {}), heartbeatMs);
+  if (heartbeat.unref) heartbeat.unref();
+  // Every stream of the run, destroyed if it passes maxMs so nothing keeps hanging
+  const streams = new Set();
+  const track = (stream) => { streams.add(stream); return stream; };
+  let timer;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`تجاوزت النسخة ${Math.round(maxMs / 60000) || 1} دقيقة فأُلغيت. أعد المحاولة؛ إن تكرر فراجع اتصال الخادم بمخزن Google.`);
+      streams.forEach((stream) => stream.destroy(error));
+      reject(error);
+    }, maxMs);
+  });
+  timeout.catch(() => {});
+  // The work keeps a handler of its own: if the time limit wins, its later failure is not unhandled
+  const work = dumpAndUpload(bucket, { checkPublic, track });
+  work.catch(() => {});
   try {
-    const db = mongoose.connection.db;
-    const name = fileName(db.databaseName);
-    const file = bucket.file(name);
-    // The dump is written to the server's disk first, then uploaded. Streaming it straight to the
-    // bucket made the reads wait for the upload, and once the run passed Atlas's snapshot window
-    // (5 minutes) every read failed with "Read timestamp ... is older than the oldest available
-    // timestamp" (2026-11-04). Read alone, the database takes seconds.
-    const temp = path.join(os.tmpdir(), `exios-backup-${process.pid}-${Date.now()}.zip`);
-    let result;
-    try {
-      result = await writeDump(db, fs.createWriteStream(temp, { flags: 'wx' }));
-      await pipeline(fs.createReadStream(temp), file.createWriteStream({
-        resumable: true,
-        contentType: 'application/zip',
-        metadata: { cacheControl: 'private, no-store' },
-      }));
-    } finally {
-      await fs.promises.rm(temp, { force: true });
-    }
-    // Refuse a bucket anyone can read: the file would be open to the internet
-    if (checkPublic) {
-      const response = await fetch(`https://storage.googleapis.com/${bucket.name}/${name}`, { method: 'HEAD' }).catch(() => null);
-      if (response?.ok) {
-        await file.delete({ ignoreNotFound: true });
-        throw new Error(`المخزن ${bucket.name} عام (يُقرأ بلا تسجيل دخول)، فحُذفت النسخة. اجعله خاصاً ثم أعد المحاولة.`);
-      }
-    }
-    const [files] = await bucket.getFiles({ prefix: PREFIX });
-    const toDelete = expired(files.map((f) => f.name), { keepDays: settings().keepDays });
-    for (const old of toDelete) await bucket.file(old).delete({ ignoreNotFound: true });
-    Object.assign(run, { status: 'done', file: name, bytes: result.bytes, collections: result.collections.length, documents: result.documents, deleted: toDelete, finishedAt: new Date() });
+    const done = await Promise.race([timeout, work]);
+    Object.assign(run, { status: 'done', ...done, finishedAt: new Date() });
     await run.save();
     return run.toObject();
   } catch (error) {
@@ -229,7 +264,9 @@ async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), che
     await run.save();
     throw error;
   } finally {
-    await releaseLock().catch(() => {});
+    clearTimeout(timer);
+    clearInterval(heartbeat);
+    await releaseLock(owner).catch(() => {});
   }
 }
 
