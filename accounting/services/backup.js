@@ -36,6 +36,10 @@ const runSchema = new mongoose.Schema({
   collections: Number,
   documents: Number,
   deleted: [String],
+  // 'snapshot' (one instant) or 'per-collection' (the snapshot expired, read again without it)
+  consistency: String,
+  // How long each step took (ms), to see where the time goes
+  timing: { snapshotFailed: Boolean, snapshotMs: Number, dumpMs: Number, uploadMs: Number },
   error: String,
   startedAt: Date,
   finishedAt: Date,
@@ -56,8 +60,10 @@ function defaultBucket() {
   return require('../../utils/googleClould').storage.bucket(bucketName);
 }
 
-// Writes the database into `output` as a zip; resolves with what was written
-async function writeDump(db, output) {
+// Writes the database into `output` as a zip; resolves with what was written.
+// snapshot (default): every collection as of one instant. Without it each collection is read in
+// full one after the other, as `mongodump` does by default.
+async function writeDump(db, output, { snapshot = true } = {}) {
   const zip = archiver('zip', { zlib: { level: 6 } });
   const done = new Promise((resolve, reject) => {
     output.on('finish', resolve);
@@ -79,10 +85,11 @@ async function writeDump(db, output) {
   const all = (await db.listCollections({}, { nameOnly: false }).toArray())
     .filter((c) => c.type !== 'view' && !SKIPPED(c.name))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const manifest = { database: dbName, createdAt: new Date().toISOString(), skipped: 'system.*, whatsapp*', collections: [] };
+  const manifest = { database: dbName, createdAt: new Date().toISOString(), skipped: 'system.*, whatsapp*',
+    consistency: snapshot ? 'snapshot' : 'per-collection', collections: [] };
   // One snapshot for every collection: a payment committed while the dump is streaming
   // must not appear in the journal without its corresponding wallet/order documents.
-  const session = db.client.startSession({ snapshot: true });
+  const session = snapshot ? db.client.startSession({ snapshot: true }) : undefined;
   try {
     for (const info of all) {
       const collection = db.collection(info.name);
@@ -112,9 +119,13 @@ async function writeDump(db, output) {
     output.destroy();
     throw error;
   } finally {
-    await session.endSession();
+    if (session) await session.endSession();
   }
 }
+
+// Atlas keeps a snapshot only a few minutes (less on shared plans); past that every read fails
+const isSnapshotTooOld = (error) => error?.code === 239 || error?.codeName === 'SnapshotTooOld'
+  || /older than the oldest available timestamp/i.test(error?.message || '');
 
 const readme = (dbName) => `Exios database backup (${dbName})
 =====================================
@@ -206,13 +217,28 @@ async function dumpAndUpload(bucket, { checkPublic, track }) {
   const file = bucket.file(name);
   const temp = path.join(os.tmpdir(), `exios-backup-${process.pid}-${Date.now()}.zip`);
   let result;
+  const timing = { snapshotFailed: false };
   try {
-    result = await writeDump(db, track(fs.createWriteStream(temp, { flags: 'wx' })));
+    // A snapshot first; if Atlas has already dropped it, the same run reads again without one
+    // (2026-11-05: the snapshot expired even with the upload separated)
+    let started = Date.now();
+    try {
+      result = await writeDump(db, track(fs.createWriteStream(temp, { flags: 'w' })));
+    } catch (error) {
+      if (!isSnapshotTooOld(error)) throw error;
+      timing.snapshotFailed = true;
+      timing.snapshotMs = Date.now() - started;
+      started = Date.now();
+      result = await writeDump(db, track(fs.createWriteStream(temp, { flags: 'w' })), { snapshot: false });
+    }
+    timing.dumpMs = Date.now() - started;
+    started = Date.now();
     await pipeline(track(fs.createReadStream(temp)), track(file.createWriteStream({
       resumable: true,
       contentType: 'application/zip',
       metadata: { cacheControl: 'private, no-store' },
     })));
+    timing.uploadMs = Date.now() - started;
   } finally {
     await fs.promises.rm(temp, { force: true });
   }
@@ -227,7 +253,8 @@ async function dumpAndUpload(bucket, { checkPublic, track }) {
   const [files] = await bucket.getFiles({ prefix: PREFIX });
   const toDelete = expired(files.map((f) => f.name), { keepDays: settings().keepDays });
   for (const old of toDelete) await bucket.file(old).delete({ ignoreNotFound: true });
-  return { file: name, bytes: result.bytes, collections: result.collections.length, documents: result.documents, deleted: toDelete };
+  return { file: name, bytes: result.bytes, collections: result.collections.length, documents: result.documents, deleted: toDelete,
+    consistency: result.consistency, timing };
 }
 
 // limits: { maxMs, heartbeatMs, lockTtlMs } for tests; the defaults are the ones above
