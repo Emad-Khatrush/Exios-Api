@@ -173,13 +173,23 @@ async function takeLock() {
     throw error;
   }
 }
+// A run still 'running' while nobody holds the lock was cut off (a server restart): it is closed
+// as failed, else the page keeps «نسخة الآن» disabled forever (2026-11-04 09:45). A live run
+// holds the lock (and one left by a crash frees it after LOCK_MINUTES), so it is never touched.
+async function closeCutOffRuns({ lockFree = true } = {}) {
+  if (!lockFree) {
+    const lock = await mongoose.connection.db.collection('systembackuplocks').findOne({ _id: 'backup' });
+    if (lock?.until && lock.until > new Date()) return;
+  }
+  await BackupRun.updateMany({ status: 'running' }, { $set: { status: 'failed', error: 'انقطعت المحاولة (أُعيد تشغيل الخادم أثناءها)', finishedAt: new Date() } });
+}
+
 const releaseLock = () => mongoose.connection.db.collection('systembackuplocks').updateOne({ _id: 'backup' }, { $set: { until: new Date(0) } });
 
 async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), checkPublic = true } = {}) {
   if (!(await takeLock())) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
-  // With the lock held no run is in progress: one still 'running' was cut off (a server restart)
-  await BackupRun.updateMany({ status: 'running' }, { $set: { status: 'failed', error: 'انقطعت المحاولة (أُعيد تشغيل الخادم أثناءها)', finishedAt: new Date() } });
-  const run =await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
+  await closeCutOffRuns();
+  const run = await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
   try {
     const db = mongoose.connection.db;
     const name = fileName(db.databaseName);
@@ -247,7 +257,8 @@ function startDailyBackup() {
 // The backups in the bucket and the latest runs, for the owner's page
 async function overview() {
   const { bucketName, hour, keepDays } = settings();
-  const runs = await BackupRun.find().sort({ startedAt: -1 }).limit(20).lean();
+  await closeCutOffRuns({ lockFree: false });
+  const runs =await BackupRun.find().sort({ startedAt: -1 }).limit(20).lean();
   if (!bucketName) return { configured: false, hour, keepDays, files: [], runs };
   let files = [];
   let error = null;

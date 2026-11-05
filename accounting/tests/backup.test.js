@@ -129,3 +129,17 @@ test('the database is read in full before the upload starts; the server copy is 
   expect(leftovers()).toEqual([]);
   expect(await backup.BackupRun.findById(stale._id).lean()).toMatchObject({ status: 'failed' });
 });
+
+test('opening the page closes a run cut off by a restart, but never a run in progress', async () => {
+  const locks = mongoose.connection.db.collection('systembackuplocks');
+  const stale = await backup.BackupRun.create({ day: '2026-11-04', trigger: 'manual', status: 'running', startedAt: new Date() });
+  // A run in progress holds the lock: left alone
+  await locks.updateOne({ _id: 'backup' }, { $set: { until: new Date(Date.now() + 60000) } }, { upsert: true });
+  await backup.overview();
+  expect((await backup.BackupRun.findById(stale._id).lean()).status).toBe('running');
+  // Nobody holds the lock: it was cut off
+  await locks.updateOne({ _id: 'backup' }, { $set: { until: new Date(0) } });
+  const { runs } = await backup.overview();
+  expect((await backup.BackupRun.findById(stale._id).lean()).status).toBe('failed');
+  expect(runs.some((r) => r.status === 'running')).toBe(false);
+});
