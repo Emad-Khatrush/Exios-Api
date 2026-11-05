@@ -122,6 +122,10 @@ if (isLocalAccountingTrial) app.get('/api/accounting/trial-status', async (req, 
 mongoose.connect(connectionUrl, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  // Compress the traffic with Atlas (built into the driver; Atlas supports it). Measured on a copy
+  // of the real data: a full backup read moved 89.6 MB without it, 10.8 MB with it (2026-11-05),
+  // when Atlas was slowing large reads down so much that backups could not finish.
+  compressors: ['zlib'],
 }).catch(error => {
   console.error('MongoDB startup connection failed:', error.code || error.name);
   process.exit(1);
