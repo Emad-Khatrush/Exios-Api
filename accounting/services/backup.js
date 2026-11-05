@@ -40,6 +40,8 @@ const runSchema = new mongoose.Schema({
   consistency: String,
   // How long each step took (ms), to see where the time goes
   timing: { snapshotFailed: Boolean, snapshotMs: Number, dumpMs: Number, uploadMs: Number },
+  // Where a run is (live) or was (when it ended): dump, upload or prune
+  progress: { phase: String, uploadedBytes: Number, totalBytes: Number, at: Date },
   error: String,
   startedAt: Date,
   finishedAt: Date,
@@ -211,16 +213,21 @@ const releaseLock = (owner) => locks().updateOne({ _id: 'backup', owner }, { $se
 // and once the run passed Atlas's snapshot window (5 minutes) every read failed with "Read
 // timestamp ... is older than the oldest available timestamp" (2026-11-04). Read alone, the
 // database takes seconds.
-async function dumpAndUpload(bucket, { checkPublic, track }) {
+// progress: { phase, uploadedBytes, totalBytes, timing } is filled as the run goes, so a failure or
+// a stop says where it was, and the page shows it live (2026-11-05: a run hung 20 minutes and
+// nothing said whether it was reading or uploading).
+async function dumpAndUpload(bucket, { checkPublic, track, progress = {} }) {
   const db = mongoose.connection.db;
   const name = fileName(db.databaseName);
   const file = bucket.file(name);
   const temp = path.join(os.tmpdir(), `exios-backup-${process.pid}-${Date.now()}.zip`);
   let result;
   const timing = { snapshotFailed: false };
+  progress.timing = timing;
   try {
     // A snapshot first; if Atlas has already dropped it, the same run reads again without one
     // (2026-11-05: the snapshot expired even with the upload separated)
+    progress.phase = 'dump';
     let started = Date.now();
     try {
       result = await writeDump(db, track(fs.createWriteStream(temp, { flags: 'w' })));
@@ -232,8 +239,13 @@ async function dumpAndUpload(bucket, { checkPublic, track }) {
       result = await writeDump(db, track(fs.createWriteStream(temp, { flags: 'w' })), { snapshot: false });
     }
     timing.dumpMs = Date.now() - started;
+    progress.phase = 'upload';
+    progress.totalBytes = result.bytes;
+    progress.uploadedBytes = 0;
     started = Date.now();
-    await pipeline(track(fs.createReadStream(temp)), track(file.createWriteStream({
+    const source = track(fs.createReadStream(temp));
+    source.on('data', (chunk) => { progress.uploadedBytes += chunk.length; });
+    await pipeline(source, track(file.createWriteStream({
       resumable: true,
       contentType: 'application/zip',
       metadata: { cacheControl: 'private, no-store' },
@@ -242,6 +254,7 @@ async function dumpAndUpload(bucket, { checkPublic, track }) {
   } finally {
     await fs.promises.rm(temp, { force: true });
   }
+  progress.phase = 'prune';
   // Refuse a bucket anyone can read: the file would be open to the internet
   if (checkPublic) {
     const response = await fetch(`https://storage.googleapis.com/${bucket.name}/${name}`, { method: 'HEAD' }).catch(() => null);
@@ -264,7 +277,13 @@ async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), che
   if (!(await takeLock(owner, lockTtlMs))) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
   await closeCutOffRuns();
   const run = await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
-  const heartbeat = setInterval(() => renewLock(owner, lockTtlMs).catch(() => {}), heartbeatMs);
+  const progress = {};
+  const snapshotOf = () => ({ phase: progress.phase, uploadedBytes: progress.uploadedBytes, totalBytes: progress.totalBytes, at: new Date() });
+  // The heartbeat keeps the lock and shows the page where the run is
+  const heartbeat = setInterval(() => {
+    renewLock(owner, lockTtlMs).catch(() => {});
+    BackupRun.updateOne({ _id: run._id, status: 'running' }, { $set: { progress: snapshotOf(), timing: progress.timing } }).catch(() => {});
+  }, heartbeatMs);
   if (heartbeat.unref) heartbeat.unref();
   // Every stream of the run, destroyed when it is stopped (time limit or the owner's cancel) so
   // nothing keeps hanging
@@ -278,15 +297,20 @@ async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), che
   const timer = setTimeout(() => abort(new Error(`تجاوزت النسخة ${Math.round(maxMs / 60000) || 1} دقيقة فأُلغيت. أعد المحاولة؛ إن تكرر فراجع اتصال الخادم بمخزن Google.`)), maxMs);
   active = { runId: run._id, abort };
   // The work keeps a handler of its own: if it is stopped, its later failure is not unhandled
-  const work = dumpAndUpload(bucket, { checkPublic, track });
+  const work = dumpAndUpload(bucket, { checkPublic, track, progress });
   work.catch(() => {});
   try {
     const done = await Promise.race([stopped, work]);
-    Object.assign(run, { status: 'done', ...done, finishedAt: new Date() });
+    Object.assign(run, { status: 'done', ...done, progress: snapshotOf(), finishedAt: new Date() });
     await run.save();
     return run.toObject();
   } catch (error) {
-    Object.assign(run, { status: 'failed', error: error.message, finishedAt: new Date() });
+    // Where it was when it failed, in the message the page shows
+    const mb = (b) => (Number(b || 0) / 1048576).toFixed(1);
+    const where = progress.phase === 'dump' ? 'أثناء قراءة قاعدة البيانات'
+      : progress.phase === 'upload' ? `أثناء الرفع إلى مخزن Google (رُفع ${mb(progress.uploadedBytes)} من ${mb(progress.totalBytes)} MB؛ انتهت القراءة في ${Math.round((progress.timing?.dumpMs || 0) / 1000)} ث)`
+        : progress.phase === 'prune' ? 'بعد الرفع، أثناء فحص المخزن وحذف النسخ القديمة' : '';
+    Object.assign(run, { status: 'failed', error: where ? `${error.message} — ${where}` : error.message, progress: snapshotOf(), timing: progress.timing, finishedAt: new Date() });
     await run.save();
     throw error;
   } finally {
