@@ -1884,6 +1884,20 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
   }
 };
 
+// Delivering many packages in batches (utils/batchDelivery.js): start, then one batch per call
+const deliveryRoute = (fn) => async (req, res, next) => {
+  try {
+    return res.status(200).json(await fn(req));
+  } catch (error) {
+    console.error(error);
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+};
+module.exports.startDelivery = deliveryRoute((req) => require('../utils/batchDelivery').start(req, req.params.id, req.body || {}));
+module.exports.nextDeliveryBatch = deliveryRoute((req) => require('../utils/batchDelivery').next(req, req.params.jobId));
+module.exports.stopDelivery = deliveryRoute((req) => require('../utils/batchDelivery').stop(req, req.params.jobId));
+module.exports.openDelivery = deliveryRoute(async (req) => ({ delivery: await require('../utils/batchDelivery').open(req.params.id) }));
+
 module.exports.getInvoicesByCustomer = async (req, res, next) => {
   try {
     const { id } = req.params;

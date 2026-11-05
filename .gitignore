@@ -31,3 +31,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 backups/
+
+# Tests stay on the developer's machine; they are not pushed (owner's request 2026-11-05)
+/accounting/tests/
+/tests/
+*.test.js
+*.spec.js

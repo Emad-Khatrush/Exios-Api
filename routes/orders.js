@@ -106,6 +106,15 @@ router.route('/user/:id/packages')
 router.route('/user/:id/markAsDelivered')
         .post(protect, allowDeliveryStaff, orders.markPackagesAsDelivered)
 
+// Delivering many packages in batches (utils/batchDelivery.js)
+router.route('/user/:id/deliveries')
+        .get(protect, allowDeliveryStaff, orders.openDelivery)
+        .post(protect, allowDeliveryStaff, orders.startDelivery)
+router.route('/deliveries/:jobId/next')
+        .post(protect, allowDeliveryStaff, orders.nextDeliveryBatch)
+router.route('/deliveries/:jobId/stop')
+        .post(protect, allowDeliveryStaff, orders.stopDelivery)
+
 router.route('/invoices/customer/:id')
       .get(protect, allowAdminsAndEmployee, orders.getInvoicesByCustomer);
 
