@@ -180,6 +180,31 @@ async function post(ctx, type, key, description, lines, fallbacks = [], date = c
   }, { session: ctx.session, user: ctx.user });
 }
 
+// The first day the revenue of `recognitionKey` reached what is recognised now. Not the day of the
+// last recognition entry: an order edited on 11-02 takes its revenue back and recognises it again
+// the same day, which leaves the revenue in October; its cost must stay there too (owner's report
+// 2026-11-06, order 4914-1641). Null when nothing is recognised.
+async function revenueReachedDay(ctx, recognitionKey, eventDay) {
+  const escaped = recognitionKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const entries = await JournalEntry.find({ status: 'posted', eventType: 'RECOGNITION', eventKey: { $regex: `^RECOGNITION:${escaped}:` }, day: { $lte: eventDay } })
+    .select('day lines.accountId lines.debit lines.credit').sort({ day: 1 }).session(ctx.session || null).lean();
+  // Revenue recognised moves out of deferred revenue: a debit there recognises, a credit takes back
+  const deferred = new Set([ctx.accounts.deferred_purchase_revenue, ctx.accounts.deferred_shipping_revenue].filter(Boolean).map((acc) => String(acc._id)));
+  const byDay = new Map();
+  for (const entry of entries) {
+    const amount = entry.lines.reduce((sum, line) => (deferred.has(String(line.accountId)) ? sum + (line.debit || 0) - (line.credit || 0) : sum), 0);
+    byDay.set(entry.day, (byDay.get(entry.day) || 0) + amount);
+  }
+  const total = [...byDay.values()].reduce((sum, amount) => sum + amount, 0);
+  if (total <= 0) return null;
+  let running = 0;
+  for (const [day, amount] of byDay) {
+    running += amount;
+    if (running >= total) return day;
+  }
+  return null;
+}
+
 // The day a cost newly moved to cost of sales belongs to (matching principle). A cost entered late
 // for a service already recognised (a purchase line matched on 11-04 for a purchase of 10-10, the
 // order recognised in October) belongs to the later of its own day and the day its revenue was
@@ -196,13 +221,9 @@ async function costRecognitionDate(ctx, wip, recognitionKey) {
   if (!cost) return ctx.date;
   let day = cost.day;
   if (recognitionKey) {
-    const escaped = recognitionKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const [revenue] = await JournalEntry.aggregate([
-      { $match: { status: 'posted', eventType: 'RECOGNITION', eventKey: { $regex: `^RECOGNITION:${escaped}:` }, day: { $lte: eventDay } } },
-      { $group: { _id: null, day: { $max: '$day' } } },
-    ]).session(ctx.session);
-    if (!revenue) return ctx.date;
-    if (revenue.day > day) day = revenue.day;
+    const revenueDay = await revenueReachedDay(ctx, recognitionKey, eventDay);
+    if (!revenueDay) return ctx.date;
+    if (revenueDay > day) day = revenueDay;
   }
   return day < eventDay ? day : ctx.date;
 }
@@ -652,4 +673,4 @@ async function syncTrip(tripId, options = {}) {
   return { posted, orders: orderIds.length };
 }
 
-module.exports = { syncOrder, syncTrip, allocate, packageCharge, tripAllocation };
+module.exports = { syncOrder, syncTrip, allocate, packageCharge, tripAllocation, roleIds };

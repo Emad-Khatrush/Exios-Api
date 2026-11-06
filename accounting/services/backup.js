@@ -7,8 +7,12 @@
 // `mongorestore` can load it into a new Atlas cluster or a local MongoDB (see README.txt inside).
 //
 //   BACKUP_BUCKET     the private bucket (required; never the public uploads bucket)
-//   BACKUP_HOUR       Libya hour from which the daily backup runs (default 3)
+//   BACKUP_TIMES      Libya hours of the two daily backups, midday and night (default "14,23")
 //   BACKUP_KEEP_DAYS  daily backups kept (default 30); the first backup of each month is kept 12 months
+//
+// Two backups a day (owner, 2026-11-06): the night one replaces the midday one of the same day once
+// it succeeds, so a day keeps one file and the bucket does not grow; if the night one fails, the
+// midday one stays. Manual backups are never replaced.
 const mongoose = require('mongoose');
 const moment = require('moment-timezone');
 const archiver = require('archiver');
@@ -29,6 +33,11 @@ const SKIPPED = (name) => name.startsWith('system.') || /^whatsapp/i.test(name);
 const runSchema = new mongoose.Schema({
   day: String,
   trigger: { type: String, enum: ['daily', 'manual'] },
+  // Which daily backup: 'midday' or 'night' (none on manual runs and on runs before 2026-11-06)
+  slot: { type: String, enum: ['midday', 'night'] },
+  // A midday file deleted once that day's night backup succeeded
+  replacedAt: Date,
+  replacedBy: String,
   by: mongoose.Schema.Types.ObjectId,
   status: { type: String, enum: ['running', 'done', 'failed'] },
   file: String,
@@ -48,9 +57,14 @@ const runSchema = new mongoose.Schema({
 }, { collection: 'systembackupruns' });
 const BackupRun = mongoose.models.SystemBackupRun || mongoose.model('SystemBackupRun', runSchema);
 
+function backupTimes() {
+  const hours = String(process.env.BACKUP_TIMES || '14,23').split(',').map(Number).filter((h) => Number.isInteger(h) && h >= 0 && h <= 23);
+  const [midday = 14, night = 23] = [...new Set(hours)].sort((a, b) => a - b);
+  return { midday, night: night > midday ? night : 23 };
+}
 const settings = () => ({
   bucketName: process.env.BACKUP_BUCKET || '',
-  hour: Number(process.env.BACKUP_HOUR || 3),
+  times: backupTimes(),
   keepDays: Number(process.env.BACKUP_KEEP_DAYS || 30),
 });
 
@@ -271,12 +285,30 @@ async function dumpAndUpload(bucket, { checkPublic, track, progress = {} }) {
 }
 
 // limits: { maxMs, heartbeatMs, lockTtlMs } for tests; the defaults are the ones above
-async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), checkPublic = true, limits = {} } = {}) {
+// Once the night backup is saved, the midday file of that day is no longer needed
+async function replaceMidday(bucket, day, nightFile) {
+  const deleted = [];
+  const earlier = await BackupRun.find({ day, trigger: 'daily', slot: 'midday', status: 'done', file: { $exists: true }, replacedAt: { $exists: false } });
+  for (const run of earlier) {
+    if (run.file === nightFile) continue;
+    try {
+      await bucket.file(run.file).delete({ ignoreNotFound: true });
+      await BackupRun.updateOne({ _id: run._id }, { $set: { replacedAt: new Date(), replacedBy: nightFile } });
+      deleted.push(run.file);
+    } catch (error) {
+      // The night backup is saved either way; the midday file then goes with the 30-day pruning
+      console.error('[backup] midday file not replaced:', error.message);
+    }
+  }
+  return deleted;
+}
+
+async function runBackup({ trigger = 'manual', by, slot, day = today(), bucket = defaultBucket(), checkPublic = true, limits = {} } = {}) {
   const { maxMs = MAX_RUN_MS(), heartbeatMs = HEARTBEAT_MS, lockTtlMs = LOCK_TTL_MS } = limits;
   const owner = new mongoose.Types.ObjectId();
   if (!(await takeLock(owner, lockTtlMs))) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
   await closeCutOffRuns();
-  const run = await BackupRun.create({ day: today(), trigger, by, status: 'running', startedAt: new Date() });
+  const run = await BackupRun.create({ day, trigger, slot, by, status: 'running', startedAt: new Date() });
   const progress = {};
   const snapshotOf = () => ({ phase: progress.phase, uploadedBytes: progress.uploadedBytes, totalBytes: progress.totalBytes, at: new Date() });
   // The heartbeat keeps the lock and shows the page where the run is
@@ -301,6 +333,7 @@ async function runBackup({ trigger = 'manual', by, bucket = defaultBucket(), che
   work.catch(() => {});
   try {
     const done = await Promise.race([stopped, work]);
+    if (slot === 'night') done.deleted = [...(done.deleted || []), ...(await replaceMidday(bucket, day, done.file))];
     Object.assign(run, { status: 'done', ...done, progress: snapshotOf(), finishedAt: new Date() });
     await run.save();
     return run.toObject();
@@ -341,33 +374,48 @@ async function cancelRunning(user) {
   return { cancelled: true, closed: closed.modifiedCount };
 }
 
-// Checked every hour: from BACKUP_HOUR (Libya time) one daily backup, retried up to 3 times
+// Which daily backup is due now: midday from its hour, night from its hour; before the midday hour
+// a night backup missed yesterday (the server was down at 23:00) is still done, for yesterday
+function dueSlot(now = new Date(), times = settings().times) {
+  const at = moment(now).tz(TZ);
+  if (at.hour() >= times.night) return { day: at.format('YYYY-MM-DD'), slot: 'night' };
+  if (at.hour() >= times.midday) return { day: at.format('YYYY-MM-DD'), slot: 'midday' };
+  return { day: at.clone().subtract(1, 'day').format('YYYY-MM-DD'), slot: 'night' };
+}
+
+// One check: runs the backup that is due unless it is done or failed 3 times. The night one is
+// skipped when yesterday never had a backup at all (nothing to replace, and today's will come).
+async function dailyTick(now = new Date(), options = {}) {
+  const { day, slot } = dueSlot(now);
+  if (await BackupRun.exists({ day, trigger: 'daily', slot, status: 'done' })) return null;
+  if ((await BackupRun.countDocuments({ day, trigger: 'daily', slot, status: 'failed' })) >= MAX_DAILY_ATTEMPTS) return null;
+  if (day !== moment(now).tz(TZ).format('YYYY-MM-DD') && !(await BackupRun.exists({ day, trigger: 'daily', slot: 'midday', status: 'done' }))) return null;
+  return runBackup({ trigger: 'daily', slot, day, ...options });
+}
+
+// Checked every 15 minutes
 let timer = null;
 function startDailyBackup() {
   if (timer || !settings().bucketName) return;
   const tick = async () => {
     try {
-      if (moment().tz(TZ).hour() < settings().hour) return;
-      const day = today();
-      if (await BackupRun.exists({ day, status: 'done' })) return;
-      if ((await BackupRun.countDocuments({ day, trigger: 'daily', status: 'failed' })) >= MAX_DAILY_ATTEMPTS) return;
-      const run = await runBackup({ trigger: 'daily' });
-      console.log(`[backup] ${run.file} (${(run.bytes / 1024 / 1024).toFixed(1)} MB)`);
+      const run = await dailyTick();
+      if (run) console.log(`[backup] ${run.slot} ${run.file} (${(run.bytes / 1024 / 1024).toFixed(1)} MB)`);
     } catch (error) {
       if (error.statusCode !== 409) console.error('[backup] daily backup failed:', error.message);
     }
   };
-  timer = setInterval(tick, 60 * 60 * 1000);
+  timer = setInterval(tick, 15 * 60 * 1000);
   if (timer.unref) timer.unref();
   setTimeout(tick, 60 * 1000).unref?.();
 }
 
 // The backups in the bucket and the latest runs, for the owner's page
 async function overview() {
-  const { bucketName, hour, keepDays } = settings();
+  const { bucketName, times, keepDays } = settings();
   await closeCutOffRuns({ lockFree: false });
   const runs =await BackupRun.find().sort({ startedAt: -1 }).limit(20).lean();
-  if (!bucketName) return { configured: false, hour, keepDays, files: [], runs };
+  if (!bucketName) return { configured: false, times, keepDays, files: [], runs };
   let files = [];
   let error = null;
   try {
@@ -378,7 +426,7 @@ async function overview() {
   } catch (e) {
     error = e.message;
   }
-  return { configured: true, bucket: bucketName, hour, keepDays, files, runs, error };
+  return { configured: true, bucket: bucketName, times, keepDays, files, runs, error };
 }
 
 // A link valid 15 minutes, made for the owner who asked
@@ -402,4 +450,4 @@ async function startManual(user) {
   return { started: true };
 }
 
-module.exports = { writeDump, runBackup, cancelRunning, startDailyBackup, overview, downloadUrl, startManual, expired, fileName, BackupRun };
+module.exports = { writeDump, runBackup, cancelRunning, startDailyBackup, dailyTick, dueSlot, overview, downloadUrl, startManual, expired, fileName, BackupRun };
