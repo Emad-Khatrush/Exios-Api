@@ -17,21 +17,13 @@ Admins and accountants choose the default visibility before uploading, adjust in
 
 Any file type is accepted, up to 25 MB per file and 20 files per upload. Original names, MIME types and byte sizes are preserved. Safe image formats can be previewed; other types can be downloaded.
 
-## Private storage
+## Storage
 
-New Inventory files are stored in MongoDB GridFS in `inventoryAttachments.files` and `inventoryAttachments.chunks`. They are durable database objects, not dyno-local files, and have no public cloud URL. Upload streams finish before attachment metadata is committed. Failed requests clean up newly created objects when possible. An interrupted process may leave an unreferenced GridFS object; maintenance must only remove confirmed unreferenced objects.
+Since 6 November 2026 new Inventory files are uploaded to the company's Google bucket (`GOOGLE_BUCKET_ID`), like the other uploads, under `inventory-files/<random uuid>` (`storageKind: 'google'`). Before that they were kept in MongoDB GridFS (`inventoryAttachments.files`/`.chunks`), so every daily database backup carried them again; `node scripts/moveInventoryFilesToGoogle.js` lists those files and, with `--apply`, moves them to the bucket and removes them from GridFS. QA never writes to the live bucket: there files still go to QA's own GridFS.
 
-Metadata stores `storageKind`, `storageId`, `originalName`, `visibility`, `uploadedBy` and the existing filename/size/type fields. API responses expose only display metadata for files visible to the requesting role. They do not expose raw storage IDs, public paths or pending cloud cleanup paths. Embedded trip data on order/customer endpoints excludes trip attachments entirely.
+The bucket is readable by link, so access rests on the link never reaching the browser: API responses expose only display metadata (name, type, size, visibility) for files visible to the requesting role, never the storage path, and object names are random. Content is downloaded through an authenticated endpoint that checks the current user role, with `private, no-store`, `nosniff` and attachment disposition. The frontend retrieves a Blob with its authenticated request rather than placing bearer tokens in URLs. Embedded trip data on order/customer endpoints excludes trip attachments entirely.
 
-Content is downloaded through an authenticated endpoint that checks the current user role. Responses use `private, no-store`, `nosniff` and attachment disposition. The frontend retrieves a Blob with its authenticated request rather than placing bearer tokens in URLs. Database backups made with the existing full `mongodump` include both GridFS collections; restores must retain them together with Inventory metadata.
-
-## Existing public cloud files
-
-Old files remain visible to all staff and can be downloaded through the authenticated Inventory endpoint. Their original public storage objects are retained until a manager requests restricted access.
-
-Before restricting such a file, the server copies it to GridFS and records its original cloud path as an internal pending-cleanup field. Visibility remains unchanged until deletion of the old public object succeeds. If cloud access/deletion fails, the request reports the problem and does not claim to have restricted the file. Retrying completes the cleanup using the saved private copy. This requires the existing cloud credentials to have read/delete access to that object. Unsupported old URLs or oversized legacy files require a supported private replacement.
-
-After successful removal of the old object, the visibility update and audit event are committed together. Making the file visible to all staff again changes access only; it does not make the private object public. Previously downloaded copies cannot be recalled by changing access.
+Changing a file's visibility only changes that field; the file is not moved. Deleting a file removes its Google object (only objects this feature created; older shared uploads are left in place). Previously downloaded copies cannot be recalled by changing access.
 
 ## Routes
 

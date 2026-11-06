@@ -20,7 +20,7 @@ const inventorySchema = new Schema({
     description: String,
     originalName: String,
     visibility: { type: String, enum: ['staff', 'management'], default: 'staff' },
-    storageKind: { type: String, enum: ['gridfs', 'legacy'] },
+    storageKind: { type: String, enum: ['google', 'gridfs', 'legacy'] },
     storageId: Schema.Types.ObjectId,
     legacyStoragePath: String,
     uploadedBy: { type: Schema.Types.ObjectId, ref: 'User' },

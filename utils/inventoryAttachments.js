@@ -36,17 +36,42 @@ function requestedAccess(req) {
   if (!canManage(req.user) && values.includes('management')) throw new ErrorHandler(403, 'Only admins and accountants can set restricted file access.');
   return values;
 }
+// Files go to the company's Google bucket like every other upload (owner, 2026-11-06), under a
+// random name that is never sent to the browser: every download passes through `content`, which
+// checks the viewer's role, so an «admin & accountant only» file stays hidden from other staff.
+// Before that they were kept in MongoDB (GridFS), so every daily backup carried them again.
+// QA never writes to the live bucket, so there they stay in QA's own database.
+const OBJECT_PREFIX = 'inventory-files/';
+let cloudBucketOverride = null;
+const cloudBucket = () => cloudBucketOverride || require('./googleClould').storage.bucket(process.env.GOOGLE_BUCKET_ID);
+const useGoogle = () => !!cloudBucketOverride || !require('./qaEnvironment').isQa;
+
+async function putCloud(buffer, contentType) {
+  const b = cloudBucket();
+  const name = OBJECT_PREFIX + randomUUID();
+  const object = b.file(name);
+  try {
+    await pipeline(Readable.from([buffer]), object.createWriteStream({ resumable: false, contentType: contentType || 'application/octet-stream', metadata: { cacheControl: 'private, no-store' } }));
+  } catch (error) { await object.delete({ ignoreNotFound: true }).catch(() => {}); throw error; }
+  return `https://storage.googleapis.com/${b.name}/${name}`;
+}
 async function putFile(file, user, visibility) {
   if (!file.buffer || file.buffer.length > MAX_SIZE) throw new ErrorHandler(400, 'Each file must be 25 MB or smaller.');
+  const base = { _id: new mongoose.Types.ObjectId(), filename: randomUUID(), originalName: file.originalname || 'Attachment',
+    bytes: String(file.buffer.length), fileType: file.mimetype || 'application/octet-stream', visibility, uploadedBy: user._id };
+  if (useGoogle()) return { ...base, storageKind: 'google', path: await putCloud(file.buffer, file.mimetype) };
   const upload = bucket().openUploadStream(randomUUID(), { metadata: { purpose: 'inventory-attachment', uploadedBy: String(user._id) } });
   try { await pipeline(Readable.from([file.buffer]), upload); }
   catch (error) { await bucket().delete(upload.id).catch(() => {}); throw error; }
-  return { _id: new mongoose.Types.ObjectId(), filename: randomUUID(), originalName: file.originalname || 'Attachment',
-    bytes: String(file.buffer.length), fileType: file.mimetype || 'application/octet-stream', visibility,
-    storageKind: 'gridfs', storageId: upload.id, uploadedBy: user._id };
+  return { ...base, storageKind: 'gridfs', storageId: upload.id };
 }
 async function discard(files) {
-  await Promise.all(files.filter(file => file.storageKind === 'gridfs' && file.storageId).map(file => bucket().delete(file.storageId).catch(() => {})));
+  await Promise.all(files.map(file => {
+    if (file.storageKind === 'gridfs' && file.storageId) return bucket().delete(file.storageId).catch(() => {});
+    // Only objects this feature created; older shared uploads are left where they are
+    if (file.storageKind === 'google' && file.path) return Promise.resolve().then(() => legacyObject(file.path).delete({ ignoreNotFound: true })).catch(() => {});
+    return null;
+  }));
 }
 async function storeUploads(req) {
   const visibilities = requestedAccess(req);
@@ -61,10 +86,12 @@ function findFile(inventory, id) {
   if (!file) throw new ErrorHandler(404, 'File not found.');
   return file;
 }
+// The Google object behind a stored link (new uploads and older shared ones)
 function legacyObject(path) {
-  const prefix = `https://storage.googleapis.com/${process.env.GOOGLE_BUCKET_ID}/`;
-  if (typeof path !== 'string' || !path.startsWith(prefix) || path.length <= prefix.length) throw new ErrorHandler(409, 'This older file has an unsupported storage URL. Please upload it again before restricting access.');
-  return require('./googleClould').storage.bucket(process.env.GOOGLE_BUCKET_ID).file(decodeURIComponent(path.substring(prefix.length)));
+  const b = cloudBucket();
+  const prefix = `https://storage.googleapis.com/${b.name}/`;
+  if (typeof path !== 'string' || !path.startsWith(prefix) || path.length <= prefix.length) throw new ErrorHandler(404, 'File content is unavailable.');
+  return b.file(decodeURIComponent(path.substring(prefix.length)));
 }
 async function loadInventory(id) {
   if (!mongoose.isValidObjectId(id)) throw new ErrorHandler(400, 'Invalid inventory ID.');
@@ -78,32 +105,6 @@ async function audit(inventoryId, file, user, from, to, session) {
     details: { path: `/inventory/${inventoryId}/edit`, status: to === 'deleted' ? 'deleted' : 'updated', type: 'inventory', actionId: String(inventoryId) },
     changedFields: [{ label: `Attachment: ${file.originalName || file.filename}`, changedFrom: from, changedTo: to }],
   }], { session });
-}
-
-// Move an old public object before restricting it. Keep staff access until removal of
-// the original public object succeeds. A failed cleanup can safely be retried.
-async function privatizeLegacy(inventoryId, attachmentId, user) {
-  let inventory = await loadInventory(inventoryId);
-  let file = findFile(inventory, attachmentId);
-  if (file.storageKind !== 'gridfs') {
-    const object = legacyObject(file.path);
-    const [metadata] = await object.getMetadata();
-    if (Number(metadata.size) > MAX_SIZE) throw new ErrorHandler(409, 'This older file exceeds 25 MB. Upload a smaller private copy before restricting it.');
-    const [buffer] = await object.download();
-    const uploaded = await putFile({ buffer, originalname: describe(file).originalName, mimetype: file.fileType }, user, file.visibility || 'staff');
-    const result = await Inventory.updateOne({ _id: inventoryId, attachments: { $elemMatch: { _id: file._id, storageId: { $exists: false } } } }, {
-      $set: { 'attachments.$.storageId': uploaded.storageId, 'attachments.$.storageKind': 'gridfs', 'attachments.$.legacyStoragePath': file.path, 'attachments.$.originalName': uploaded.originalName },
-      $unset: { 'attachments.$.path': 1 },
-    });
-    if (result.modifiedCount !== 1) await discard([uploaded]);
-    inventory = await loadInventory(inventoryId);
-    file = findFile(inventory, attachmentId);
-  }
-  if (file.legacyStoragePath) {
-    try { await legacyObject(file.legacyStoragePath).delete({ ignoreNotFound: true }); }
-    catch (_) { throw new ErrorHandler(409, 'The private copy is saved, but the old public link could not be removed. File access is unchanged. Retry to finish restricting access.'); }
-    await Inventory.updateOne({ _id: inventoryId, 'attachments._id': file._id }, { $unset: { 'attachments.$.legacyStoragePath': 1 } });
-  }
 }
 
 exports.upload = async (req, res, next) => {
@@ -127,14 +128,14 @@ exports.changeVisibility = async (req, res, next) => {
   try {
     if (!canManage(req.user)) throw new ErrorHandler(403, 'Only admins and accountants can change file visibility.');
     if (!['staff', 'management'].includes(req.body.visibility)) throw new ErrorHandler(400, 'Choose a valid file visibility.');
-    let inventory = await loadInventory(req.params.id);
-    let file = findFile(inventory, req.params.attachmentId);
-    if (req.body.visibility === 'management' && (file.storageKind !== 'gridfs' || file.legacyStoragePath)) await privatizeLegacy(inventory._id, file._id, req.user);
+    // The server checks the role on every download, wherever the file is stored, so changing
+    // access is only this field
+    let inventory;
+    let file;
     const updated = await runInTransaction(async session => {
       inventory = await Inventory.findById(req.params.id).session(session);
       if (!inventory) throw new ErrorHandler(404, 'Inventory not found.');
       file = findFile(inventory, req.params.attachmentId);
-      if (req.body.visibility === 'management' && (file.storageKind !== 'gridfs' || file.legacyStoragePath)) throw new ErrorHandler(409, 'Private storage migration is not complete. Please retry.');
       const previous = file.visibility || 'staff';
       file.visibility = req.body.visibility;
       await inventory.save({ session });
@@ -177,4 +178,6 @@ exports.content = async (req, res, next) => {
     stream.pipe(res);
   } catch (error) { next(error); }
 };
-Object.assign(exports, { serialize, describe, canManage, canAccess, requestedAccess, storeUploads, discard, MAX_SIZE });
+// Tests replace the Google bucket with an in-memory one
+const setCloudBucket = (b) => { cloudBucketOverride = b; };
+Object.assign(exports, { serialize, describe, canManage, canAccess, requestedAccess, storeUploads, discard, putCloud, setCloudBucket, gridBucket: bucket, MAX_SIZE });
