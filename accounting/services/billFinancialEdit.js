@@ -50,6 +50,38 @@ async function assumedPayment(bill, payments, receipts, notes, nettings, session
   return { payment, entry, amount, counterpart: { _id: counterpart._id, name: counterpart.name }, closure };
 }
 
+// The assumed historical payment that an earlier correction marked as unpaid, while its
+// correction can still be undone exactly (owner's request 2026-11-06: undo a wrong "unpaid").
+async function reopenedPayment(bill, session) {
+  if (!bill || bill.status !== 'posted' || !bill.isHistorical || bill.paidBeforeCount || bill.isCreditNote || bill.yuanPurchaseId || bill.paymentId) return null;
+  const payment = await SupplierPayment.findOne({ autoFromBillId: bill._id, status: 'canceled', isHistorical: true, reversalEntryId: { $ne: null } })
+    .sort({ canceledAt: -1 }).session(session || null).lean();
+  if (!payment || payment.allocations.length !== 1) return null;
+  const [correction, entry] = await Promise.all([
+    JournalEntry.findById(payment.reversalEntryId).session(session || null).lean(),
+    JournalEntry.findById(payment.entryId).session(session || null).lean(),
+  ]);
+  const amount = payment.allocations[0].amountUsd;
+  const key = payables.billKey(bill._id);
+  if (!correction || correction.eventType !== 'HISTORICAL_PAYMENT_REOPEN' || correction.status !== 'posted' || correction.reversalOf
+    || !entry || entry.status !== 'posted' || !(amount > 0)
+    || correction.lines.filter(line => line.apKey === key).reduce((sum, line) => sum + line.credit - line.debit, 0) !== amount) return null;
+  return { payment, correction, amount };
+}
+
+async function restorableHistoricalPayment(bill) {
+  const found = await reopenedPayment(bill);
+  return found ? { paymentId: found.payment._id, number: found.payment.number, amountUsd: found.amount } : null;
+}
+
+async function restoringPayment(bill, payments, receipts, notes, nettings, session) {
+  const found = await reopenedPayment(bill, session);
+  if (!found || payments.length || receipts.length || notes.length || nettings.length) {
+    throw fail('استرجاع السداد التاريخي متاح فقط لفاتورة أُلغي سدادها التاريخي المفترض ولم تُسجَّل عليها دفعات أو تسويات بعده');
+  }
+  return found;
+}
+
 // Read-only preparation is shared by the preview and commit. Nothing is posted
 // until the exact preview fingerprint is confirmed in a transaction.
 async function prepare(id, input, { session, settings: lockedSettings } = {}) {
@@ -59,7 +91,7 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   const { settings: cached } = await getConfig();
   const settings = lockedSettings || cached;
   const historicalPayment = input.historicalPayment || 'preserve';
-  if (!['preserve', 'unpaid'].includes(historicalPayment)) throw fail('اختر معالجة السداد التاريخي');
+  if (!['preserve', 'unpaid', 'restore'].includes(historicalPayment)) throw fail('اختر معالجة السداد التاريخي');
   if (settings?.lockDate && bill.day <= settings.lockDate) throw fail(`الفترة مقفلة حتى ${settings.lockDate}؛ لا يمكن تعديل الفاتورة`);
   if (settings?.migrationGuardDay && bill.day <= settings.migrationGuardDay) throw fail('الفاتورة ضمن فترة الترحيل قيد المراجعة');
   if (new Date(input.updatedAt).getTime() !== new Date(bill.updatedAt).getTime()) throw new ErrorHandler(409, 'تغيّرت الفاتورة؛ أعد فتح التعديل');
@@ -138,6 +170,7 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
     if (merged.currency !== bill.currency && (bill.paidBeforeCount || receipts.length || nettings.length)) throw fail('الفاتورة عليها سداد افتتاحي أو استرداد أو مقاصة؛ عالج التسوية المرتبطة قبل تغيير العملة');
   }
   const reopening = historicalPayment === 'unpaid' ? await assumedPayment(bill, payments, receipts, notes, nettings, session) : null;
+  const restoring = historicalPayment === 'restore' ? await restoringPayment(bill, payments, receipts, notes, nettings, session) : null;
   const settlementCorrectionDay = reopening ? today() : undefined;
   if (settlementCorrectionDay && settings?.lockDate && settlementCorrectionDay <= settings.lockDate) throw fail('تاريخ تصحيح السداد في فترة مقفلة');
   const rates = new RateBook(session);
@@ -154,13 +187,13 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   const oldOpen = await payables.apBalance(payables.billKey(bill._id), session);
   const total = lines.reduce((sum, line) => sum + line.amount, 0);
   const fingerprint = hash({ bill, input: merged, entries, payments, receipts, notes, nettings, originItems, newUsd,
-    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, settlementCorrectionDay });
-  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening,
+    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, restoring, settlementCorrectionDay });
+  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening, restoring,
     summary: { oldTotal: bill.total, newTotal: total, oldCurrency: bill.currency, newCurrency: merged.currency,
       oldUsd: bill.totalUsd, newUsd, settledUsd: bill.totalUsd - oldOpen, oldOpen,
-      newOpen: oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0), costDelta: newUsd - bill.totalUsd, day,
-      historicalPayment, removedSettlementUsd: reopening?.amount || 0,
-      remainingSettlementUsd: bill.totalUsd - oldOpen - (reopening?.amount || 0),
+      newOpen: oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0) - (restoring?.amount || 0), costDelta: newUsd - bill.totalUsd, day,
+      historicalPayment, removedSettlementUsd: reopening?.amount || 0, restoredSettlementUsd: restoring?.amount || 0,
+      remainingSettlementUsd: bill.totalUsd - oldOpen - (reopening?.amount || 0) + (restoring?.amount || 0),
       settlementCounterpart: reopening?.counterpart.name, settlementCorrectionDay,
       settlementFromOpening: !!reopening?.closure, cashChangeUsd: 0 } };
 }
@@ -186,14 +219,33 @@ async function apply(id, input, { session, req }) {
     ...(merged.lines.length === before.lines.length && merged.lines.every(line => line._id) ? {
       descriptions: merged.lines.map(line => ({ id: line._id, description: line.description })) } : {}),
   }, { session, req });
-  if (!financial) return { ...details, preview: prepared.summary };
+  if (prepared.restoring) {
+    const { payment, correction, amount } = prepared.restoring;
+    // Undo the earlier correction line for line: the assumed payment counts again, no cash moves
+    const reversal = await require('./ledger').reverseEntry(correction._id, { session, user: req.user,
+      eventType: 'HISTORICAL_PAYMENT_RESTORE', reason: `استرجاع السداد التاريخي: ${input.reason}` });
+    const restored = await SupplierPayment.findOneAndUpdate({ _id: payment._id, status: 'canceled', reversalEntryId: correction._id },
+      { $set: { status: 'posted' }, $unset: { canceledAt: 1, canceledBy: 1, cancelReason: 1, reversalEntryId: 1 } }, { session, new: true });
+    if (!restored) throw new ErrorHandler(409, 'تغيّر السداد التاريخي؛ أعد المعاينة');
+    await SupplierBill.updateOne({ _id: before._id }, { $set: { paymentId: payment._id, paidImmediatelyFrom: payment.fromAccountId } }, { session });
+    await logAudit({ req, action: 'bill.historicalPayment.restore', model: 'AccountingSupplierPayment', docId: payment._id,
+      before: payment, after: { document: restored.toObject(), restoreEntryId: reversal._id, amountUsd: amount, reason: input.reason } }, session);
+  }
+  if (!financial) {
+    if (prepared.restoring && await payables.apBalance(payables.billKey(before._id), session) !== prepared.summary.newOpen) {
+      throw fail('تغيّر الأثر المحاسبي عن المعاينة؛ لم يُحفظ التعديل');
+    }
+    return { ...details, preview: prepared.summary };
+  }
   const current = await SupplierBill.findById(id).session(session);
   if (prepared.reopening) {
     const { payment, amount, counterpart } = prepared.reopening;
+    // A payment restored earlier keeps its old (reversed) correction; a new one needs its own key
+    const earlier = await JournalEntry.countDocuments({ eventType: 'HISTORICAL_PAYMENT_REOPEN', 'source.id': payment._id }).session(session);
     // SUSPENSE_CLOSE already transferred old suspense to opening equity. Correct
     // that equity directly; neither reopen suspense nor refund a real cash box.
     const correction = await require('./ledger').postEntry({
-      eventType: 'HISTORICAL_PAYMENT_REOPEN', eventKey: `HISTORICAL_PAYMENT_REOPEN:${payment._id}`,
+      eventType: 'HISTORICAL_PAYMENT_REOPEN', eventKey: `HISTORICAL_PAYMENT_REOPEN:${payment._id}${earlier ? `:${earlier + 1}` : ''}`,
       date: prepared.summary.settlementCorrectionDay, description: `تصحيح سداد تاريخي مفترض للفاتورة ${current.number}: ${input.reason}`,
       source: { model: 'AccountingSupplierPayment', id: payment._id },
       lines: [
@@ -241,4 +293,4 @@ async function apply(id, input, { session, req }) {
   return { bill: current, preview: prepared.summary };
 }
 
-module.exports = { preview, apply };
+module.exports = { preview, apply, restorableHistoricalPayment };

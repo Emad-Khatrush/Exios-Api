@@ -258,7 +258,9 @@ module.exports.getBill = handle(async (req, res) => {
   const { settings } = await getConfig();
   const editLock = bill.status !== 'posted' ? '' : settings?.lockDate && bill.day <= settings.lockDate ? `الفترة مقفلة حتى ${settings.lockDate}`
     : settings?.migrationGuardDay && bill.day <= settings.migrationGuardDay ? 'الفاتورة ضمن فترة الترحيل قيد المراجعة' : '';
-  res.json({ bill, payments, creditNotes, entries, open, paymentStatus: open === null ? null : paymentStatusOf(bill, open), trips, orders, editLock });
+  // A historical payment marked unpaid by mistake can be put back from the edit screen
+  const restorableHistoricalPayment = await require('../services/billFinancialEdit').restorableHistoricalPayment(bill);
+  res.json({ bill, payments, creditNotes, entries, open, paymentStatus: open === null ? null : paymentStatusOf(bill, open), trips, orders, editLock, restorableHistoricalPayment });
 });
 
 module.exports.createBill = handle(async (req, res) => {
