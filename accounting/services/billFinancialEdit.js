@@ -25,7 +25,7 @@ const financialView = line => { const { description, ...rest } = lineView(line);
 async function assumedPayment(bill, payments, receipts, notes, nettings, session) {
   if (!bill.isHistorical || bill.paidBeforeCount || bill.isCreditNote || bill.yuanPurchaseId
     || payments.length !== 1 || receipts.length || notes.length || nettings.length) {
-    throw fail('تحويل الفاتورة إلى غير مدفوعة متاح لسداد تاريخي افتراضي منفرد فقط؛ راجع الدفعات والتسويات المرتبطة');
+    throw fail('معالجة السداد التاريخي (غير مدفوعة أو إغلاق بالقيمة الجديدة) متاحة لسداد تاريخي افتراضي منفرد فقط؛ راجع الدفعات والتسويات المرتبطة');
   }
   const payment = payments[0];
   const suspense = await resolveAccount('migration_suspense');
@@ -47,7 +47,19 @@ async function assumedPayment(bill, payments, receipts, notes, nettings, session
   }
   const { account: counterpart, closure } = await require('./posting/historicalPaymentCounterpart').counterpartFor(payment, entry, suspense, { session });
   if (suspense.isCash || counterpart.isCash) throw fail('حساب تصحيح السداد التاريخي يجب ألا يكون خزينة أو بنكًا');
-  return { payment, entry, amount, counterpart: { _id: counterpart._id, name: counterpart.name }, closure };
+  // Earlier "close at the new value" adjustments are part of what this payment settles
+  const adjustments = await settlementAdjustments(payment, key, session);
+  const adjustUsd = adjustments.reduce((sum, row) => sum + row.apUsd, 0);
+  return { payment, entry, baseAmount: amount, amount: amount + adjustUsd, adjustments,
+    counterpart: { _id: counterpart._id, name: counterpart.name }, closure };
+}
+
+// Entries that grew or shrank an assumed historical payment to a corrected bill value
+// (owner's decision 2026-11-06: the difference goes to opening balance, never a cash box)
+async function settlementAdjustments(payment, key, session) {
+  const entries = await JournalEntry.find({ eventType: 'HISTORICAL_PAYMENT_ADJUST', 'source.id': payment._id, status: 'posted', reversalOf: null })
+    .session(session || null).lean();
+  return entries.map(entry => ({ _id: entry._id, apUsd: entry.lines.filter(line => line.apKey === key).reduce((sum, line) => sum + line.debit - line.credit, 0) }));
 }
 
 // The assumed historical payment that an earlier correction marked as unpaid, while its
@@ -91,7 +103,7 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   const { settings: cached } = await getConfig();
   const settings = lockedSettings || cached;
   const historicalPayment = input.historicalPayment || 'preserve';
-  if (!['preserve', 'unpaid', 'restore'].includes(historicalPayment)) throw fail('اختر معالجة السداد التاريخي');
+  if (!['preserve', 'unpaid', 'restore', 'settle'].includes(historicalPayment)) throw fail('اختر معالجة السداد التاريخي');
   if (settings?.lockDate && bill.day <= settings.lockDate) throw fail(`الفترة مقفلة حتى ${settings.lockDate}؛ لا يمكن تعديل الفاتورة`);
   if (settings?.migrationGuardDay && bill.day <= settings.migrationGuardDay) throw fail('الفاتورة ضمن فترة الترحيل قيد المراجعة');
   if (new Date(input.updatedAt).getTime() !== new Date(bill.updatedAt).getTime()) throw new ErrorHandler(409, 'تغيّرت الفاتورة؛ أعد فتح التعديل');
@@ -123,7 +135,7 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   const merged = { ...bill, vendorId: input.vendorId, vendorRef: String(input.vendorRef || '').trim(), note: String(input.note || '').trim(),
     day, currency: input.currency, rate, lines };
   if (merged.vendorRef.length > 200 || merged.note.length > 5000) throw fail('رقم المورد أو الملاحظات أطول من الحد المسموح');
-  const financial = historicalPayment === 'unpaid' || day !== bill.day || merged.currency !== bill.currency || Number(rate || 0) !== Number(bill.rate || 0)
+  const financial = ['unpaid', 'settle'].includes(historicalPayment) || day !== bill.day || merged.currency !== bill.currency || Number(rate || 0) !== Number(bill.rate || 0)
     || JSON.stringify(lines.map(financialView)) !== JSON.stringify(bill.lines.map(financialView));
   if (financial && (bill.yuanPurchaseId || bill.isCreditNote || bill.lines.some(line => !TARGETS.includes(line.target)))) {
     throw fail('هذه الفاتورة مرتبطة بمستند متخصص أو إشعار دائن؛ عدّل القيمة من مستندها الأصلي');
@@ -171,7 +183,8 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   }
   const reopening = historicalPayment === 'unpaid' ? await assumedPayment(bill, payments, receipts, notes, nettings, session) : null;
   const restoring = historicalPayment === 'restore' ? await restoringPayment(bill, payments, receipts, notes, nettings, session) : null;
-  const settlementCorrectionDay = reopening ? today() : undefined;
+  const settling = historicalPayment === 'settle' ? await assumedPayment(bill, payments, receipts, notes, nettings, session) : null;
+  const settlementCorrectionDay = reopening || settling ? today() : undefined;
   if (settlementCorrectionDay && settings?.lockDate && settlementCorrectionDay <= settings.lockDate) throw fail('تاريخ تصحيح السداد في فترة مقفلة');
   const rates = new RateBook(session);
   let newUsd = 0;
@@ -186,15 +199,27 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
   if (financial && newUsd < notes.reduce((sum, note) => sum + note.totalUsd, 0)) throw fail('قيمة الفاتورة الجديدة أقل من إشعاراتها الدائنة؛ عدّل الإشعارات أولًا');
   const oldOpen = await payables.apBalance(payables.billKey(bill._id), session);
   const total = lines.reduce((sum, line) => sum + line.amount, 0);
+  // "Close at the new value": the assumed payment follows the corrected bill, the difference
+  // goes to opening balance (owner's decision 2026-11-06), never to a cash box or bank
+  let settlementAdjustmentUsd = 0;
+  if (settling) {
+    settlementAdjustmentUsd = oldOpen + newUsd - bill.totalUsd;
+    if (!settlementAdjustmentUsd) throw fail('الفاتورة مغلقة بالكامل بالسداد التاريخي؛ لا فرق لتسويته');
+    if (settling.amount + settlementAdjustmentUsd <= 0) throw fail('السداد التاريخي بعد التسوية يجب أن يبقى موجبًا');
+    const opening = await resolveAccount('opening_balance');
+    if (opening.isCash) throw fail('حساب الرصيد الافتتاحي يجب ألا يكون خزينة أو بنكًا');
+    settling.opening = { _id: opening._id, name: opening.name };
+    settling.adjustUsd = settlementAdjustmentUsd;
+  }
   const fingerprint = hash({ bill, input: merged, entries, payments, receipts, notes, nettings, originItems, newUsd,
-    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, restoring, settlementCorrectionDay });
-  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening, restoring,
+    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, restoring, settling, settlementCorrectionDay });
+  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening, restoring, settling,
     summary: { oldTotal: bill.total, newTotal: total, oldCurrency: bill.currency, newCurrency: merged.currency,
       oldUsd: bill.totalUsd, newUsd, settledUsd: bill.totalUsd - oldOpen, oldOpen,
-      newOpen: oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0) - (restoring?.amount || 0), costDelta: newUsd - bill.totalUsd, day,
-      historicalPayment, removedSettlementUsd: reopening?.amount || 0, restoredSettlementUsd: restoring?.amount || 0,
-      remainingSettlementUsd: bill.totalUsd - oldOpen - (reopening?.amount || 0) + (restoring?.amount || 0),
-      settlementCounterpart: reopening?.counterpart.name, settlementCorrectionDay,
+      newOpen: oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0) - (restoring?.amount || 0) - settlementAdjustmentUsd, costDelta: newUsd - bill.totalUsd, day,
+      historicalPayment, removedSettlementUsd: reopening?.amount || 0, restoredSettlementUsd: restoring?.amount || 0, settlementAdjustmentUsd,
+      remainingSettlementUsd: bill.totalUsd - oldOpen - (reopening?.amount || 0) + (restoring?.amount || 0) + settlementAdjustmentUsd,
+      settlementCounterpart: settling ? settling.opening.name : reopening?.counterpart.name, settlementCorrectionDay,
       settlementFromOpening: !!reopening?.closure, cashChangeUsd: 0 } };
 }
 
@@ -239,7 +264,11 @@ async function apply(id, input, { session, req }) {
   }
   const current = await SupplierBill.findById(id).session(session);
   if (prepared.reopening) {
-    const { payment, amount, counterpart } = prepared.reopening;
+    const { payment, baseAmount: amount, counterpart, adjustments } = prepared.reopening;
+    // Earlier "close at the new value" adjustments are undone on their own account first
+    for (const adjustment of adjustments) {
+      await require('./ledger').reverseEntry(adjustment._id, { session, user: req.user, reason: `تحويل الفاتورة إلى غير مدفوعة: ${input.reason}` });
+    }
     // A payment restored earlier keeps its old (reversed) correction; a new one needs its own key
     const earlier = await JournalEntry.countDocuments({ eventType: 'HISTORICAL_PAYMENT_REOPEN', 'source.id': payment._id }).session(session);
     // SUSPENSE_CLOSE already transferred old suspense to opening equity. Correct
@@ -286,6 +315,20 @@ async function apply(id, input, { session, req }) {
     correctionKey: `BILL_EDIT:${current._id}:${batch}` });
   // Recalculate both previous and new destinations when a line moves between trips/orders.
   await payables.syncBillTargets({ lines: [...before.lines, ...current.lines] }, { session, user: req.user });
+  if (prepared.settling) {
+    const { payment, adjustUsd, opening } = prepared.settling;
+    const ap = { accountId: current.payableAccountId, vendorId: current.vendorId, apKey: payables.billKey(current._id) };
+    const adjustment = await require('./ledger').postEntry({
+      eventType: 'HISTORICAL_PAYMENT_ADJUST', eventKey: `HISTORICAL_PAYMENT_ADJUST:${payment._id}:${batch}`,
+      date: prepared.summary.settlementCorrectionDay, description: `تسوية السداد التاريخي للفاتورة ${current.number} على قيمتها المصححة: ${input.reason}`,
+      source: { model: 'AccountingSupplierPayment', id: payment._id },
+      lines: adjustUsd > 0
+        ? [{ ...ap, debit: adjustUsd }, { accountId: opening._id, credit: adjustUsd }]
+        : [{ ...ap, credit: -adjustUsd }, { accountId: opening._id, debit: -adjustUsd }],
+    }, { session, user: req.user });
+    await logAudit({ req, action: 'bill.historicalPayment.settle', model: 'AccountingSupplierPayment', docId: payment._id,
+      before: payment, after: { adjustmentEntryId: adjustment._id, adjustUsd, openingAccountId: opening._id, reason: input.reason } }, session);
+  }
   const open = await payables.apBalance(payables.billKey(current._id), session);
   if (current.totalUsd !== prepared.newUsd || open !== prepared.summary.newOpen) throw fail('تغيّر الأثر المحاسبي عن المعاينة؛ لم يُحفظ التعديل');
   await logAudit({ req, action: 'bill.financial.edit', model: 'AccountingSupplierBill', docId: current._id,
