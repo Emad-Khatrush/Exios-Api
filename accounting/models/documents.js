@@ -187,6 +187,9 @@ const ClaimWriteOff = mongoose.model('AccountingClaimWriteOff', withLifecycle({
   partnerId: { type: Schema.Types.ObjectId, ref: 'User' },
   amountUsd: { type: Number, required: true },
   reason: { type: String, required: true },
+  // The order's open debts that only reminded of this claim, closed with it; cancelling the
+  // write-off reopens them as they were
+  closedDebts: [{ balanceId: { type: Schema.Types.ObjectId, ref: 'Balance' }, status: String }],
 }));
 
 // Yuan bought from a broker for the Alipay accounts (spec 19.5): paid in dollars (or another

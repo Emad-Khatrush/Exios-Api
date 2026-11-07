@@ -2137,8 +2137,15 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
       return result;
     }));
 
+    // What was written off of the order's claims (accounting): the order page takes it off what is
+    // left, as the X-Tracking list (the ledger) already does
+    const writeOffs = ObjectId.isValid(id) ? (await require('../accounting/models/documents').ClaimWriteOff.find({ orderId: id, status: 'posted' }).sort({ day: 1 }).lean())
+      .map((w) => ({ _id: w._id, number: w.number, day: w.day, reason: w.reason, usd: Number(w.amountUsd || 0) / 100,
+        kind: String(w.arKey).startsWith('PUR:') ? 'invoice' : 'receivedGoods', packageId: String(w.arKey).split(':')[2] || null })) : [];
+
     res.status(200).json({
-      results: updatedPaymentList
+      results: updatedPaymentList,
+      writeOffs,
     });
   } catch (error) {
     console.log(error);

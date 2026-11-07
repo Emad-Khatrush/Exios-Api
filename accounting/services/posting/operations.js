@@ -103,6 +103,11 @@ async function rateMargin(keys, usd, currency, options, session) {
   // A claim written off is owed again by what is paid on it (the order sync takes the write-off back)
   const { ClaimWriteOff } = require('../../models/documents');
   if (await ClaimWriteOff.exists({ arKey: { $in: keys }, status: 'posted' }).session(session)) return { claimUsd: usd, margin: 0 };
+  // Nothing billed yet (an order not active, or its total typed after the payment): the payment is
+  // the customer's credit on the order until its claim is posted (owner's decision 2026-10-02), not
+  // an overpayment taken as profit (prod 0692-2181, 2026-11-07)
+  const { CLAIM_EVENTS } = require('../claims/keys');
+  if (!(await JournalEntry.exists({ eventType: { $in: CLAIM_EVENTS }, status: 'posted', 'lines.arKey': { $in: keys } }).session(session))) return { claimUsd: usd, margin: 0 };
   const open = await openBalances(keys, session);
   const owed = keys.reduce((sum, key) => sum + Math.max(open.get(key) || 0, 0), 0);
   const margin = usd - owed;

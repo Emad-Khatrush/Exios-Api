@@ -199,6 +199,7 @@ const RULES = {
       }
     },
     async after(writeOff, context) {
+      await require('./posting/writeOff').reopenDebts(writeOff, context.session);
       await require('./claims/sync').syncOrder(writeOff.orderId, { session: context.session, user: context.req?.user });
     },
   },

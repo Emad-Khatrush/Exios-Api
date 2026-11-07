@@ -12,6 +12,35 @@ const { fail, nextDocNumber, findExisting, resolveAccount } = require('./common'
 const { parseKey } = require('../claims/keys');
 const { lockClaimAllocation } = require('../claims/locks');
 
+// The open debts of the order that stand for this very claim: the purchase invoice's, or the
+// shipping of this package (a debt naming another package is left alone)
+async function closeReminderDebts(orderId, key, arKey, doc, session) {
+  const Balance = require('../../../models/balance');
+  const debts = await Balance.find({ order: orderId, balanceType: 'debt', status: { $in: ['open', 'overdue'] },
+    debtType: key.kind === 'purchase' ? 'invoice' : 'receivedGoods', 'source.kind': { $nin: ['cash', 'partner'] } }).session(session);
+  const closed = [];
+  for (const debt of debts) {
+    if (key.kind === 'shipment') {
+      const keys = (debt.deliveryClaimKeys || []).map(String);
+      const named = debt.deliveryPackageId || keys.length;
+      if (named && String(debt.deliveryPackageId) !== String(key.packageId) && !keys.includes(arKey)) continue;
+    }
+    closed.push({ balanceId: debt._id, status: debt.status });
+    debt.status = 'closed';
+    debt.notes = `${debt.notes || ''} — أُقفل بشطب ${doc.number}: ${doc.reason}`.trim();
+    await debt.save({ session });
+  }
+  return closed;
+}
+
+// Cancelling the write-off: its debts are owed again, as they were (unless changed since)
+async function reopenDebts(writeOff, session) {
+  const Balance = require('../../../models/balance');
+  for (const { balanceId, status } of writeOff.closedDebts || []) {
+    await Balance.updateOne({ _id: balanceId, status: 'closed' }, { $set: { status: status || 'open' } }, { session });
+  }
+}
+
 async function createWriteOff(input, { session, req }) {
   const existing = await findExisting(ClaimWriteOff, input.idempotencyKey, session);
   if (existing) return existing;
@@ -52,6 +81,9 @@ async function createWriteOff(input, { session, req }) {
     ],
   }, { session, user: req?.user, onLocked: 'reject' });
   doc.entryId = entry._id;
+  // Nothing is owed on the claim any more: the debts on the order that only reminded of it are
+  // closed with it (a debt from a cash box or a partner is real money lent, and stays)
+  if (amount === open) doc.closedDebts = await closeReminderDebts(order._id, key, input.arKey, doc, session);
   await doc.save({ session });
   // The paid part becomes revenue and the whole cost is recognised
   await require('../claims/sync').syncOrder(order._id, { session, user: req?.user, date: input.day });
@@ -59,4 +91,4 @@ async function createWriteOff(input, { session, req }) {
   return doc;
 }
 
-module.exports = { createWriteOff };
+module.exports = { createWriteOff, reopenDebts };
