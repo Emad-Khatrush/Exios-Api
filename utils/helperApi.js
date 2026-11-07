@@ -197,7 +197,9 @@ function truncateToTwo(num) {
 function checkSufficientFunds(walletMap, payment, totalCost, totalFeeLYD = 0) {
   const { amountUSD, amountLYD, rate } = payment;
   if (amountLYD + totalFeeLYD > (walletMap['LYD'] || 0) + BALANCE_EPSILON) {
-    throw new ErrorHandler(400, totalFeeLYD ? `Not enough LYD for the payment and the transport fees (${totalFeeLYD} LYD)` : 'Balance not enough for LYD payment');
+    throw new ErrorHandler(400, totalFeeLYD
+      ? `محفظة الدينار لا تكفي: المطلوب ${roundToTwo(amountLYD + totalFeeLYD)} LYD (رسوم النقل/التخليص ${totalFeeLYD} LYD${amountLYD ? ` + دفعة الشحن ${amountLYD} LYD` : ''}) والمتاح ${roundToTwo(walletMap['LYD'] || 0)} LYD. أودع الدينار في محفظة العميل أولًا.`
+      : 'Balance not enough for LYD payment');
   }
 
   if (amountUSD > (walletMap['USD'] || 0) + BALANCE_EPSILON) {

@@ -53,7 +53,7 @@ async function listPurchases(input = {}) {
     if (payment.tripId && !searchedTripIds.some(id => String(id) === String(payment.tripId))) searchedTripIds.push(payment.tripId);
   }
   const searchedVendorIds = search && !orderNumber ? await Vendor.distinct('_id', { name: search }) : [];
-  const billSearch = search ? { $or: [{ number: search }, { 'lines.description': search }, { 'lines.orderId': { $in: searchedOrderIds } }, { 'lines.tripId': { $in: searchedTripIds } }, { vendorId: { $in: searchedVendorIds } }] } : {};
+  const billSearch = search ? { $or: [{ number: search }, { 'lines.description': search }, { note: search }, { vendorRef: search }, { 'lines.orderId': { $in: searchedOrderIds } }, { 'lines.tripId': { $in: searchedTripIds } }, { vendorId: { $in: searchedVendorIds } }] } : {};
   const bills = await SupplierBill.find({ status: { $in: ['draft', 'posted'] }, isCreditNote: { $ne: true },
     ...(input.proposalOnly === true ? { _id: mongoose.isValidObjectId(input.suggestedBillId) ? input.suggestedBillId : { $in: [] } } : {}),
     ...billSearch,
@@ -73,7 +73,7 @@ async function listPurchases(input = {}) {
     const tripComparison = require('../tripCostMatches').compareTrips(context.description, trips);
     const open = b.status === 'draft' ? null : openByKey.get(`BILL:${b._id}`) || 0;
     return { _id: `bill:${b._id}`, kind: 'bill', billId: b._id, source: trips.length ? 'trip' : orders.length ? 'order' : 'direct', trips, ...tripComparison, number: b.number || 'مسودة',
-      day: b.day, amount: amountOf(b), currency: b.currency, vendorName: b.vendorId?.name, description: b.lines.map(l => l.description).join('، '), orders,
+      day: b.day, amount: amountOf(b), currency: b.currency, vendorName: b.vendorId?.name, description: b.lines.map(l => l.description).join('، '), note: b.note || '', vendorRef: b.vendorRef || '', orders,
       merchantMismatch, merchantMatch: !!merchant && !merchantMismatch && !genericVendor, genericVendor, statementVendorName: merchant?.vendorName, paymentChannel,
       referenceMatch: !!(context.reference && b.vendorRef && context.reference === b.vendorRef),
       matchProblems: merchantMismatch ? ['المورد مختلف عن تاجر الكشف'] : [],
@@ -145,7 +145,7 @@ async function listPurchases(input = {}) {
     || (context.day ? distance(a.day, context.day) - distance(b.day, context.day) : 0)
     || b.day.localeCompare(a.day) || a._id.localeCompare(b._id);
   const filtered = rows.filter(r => (input.settlementOnly !== 'true' || !!r.historicalSettlement) && (source === 'all' || r.source === source) && (status !== 'open' || r.canMatch)
-    && (!search || search.test([r.number, r.vendorName, r.description, ...r.orders.map(o => o.number), ...(r.trips || []).map(trip => trip.number)].join(' '))
+    && (!search || search.test([r.number, r.vendorName, r.description, r.note || '', r.vendorRef || '', ...r.orders.map(o => o.number), ...(r.trips || []).map(trip => trip.number)].join(' '))
       || (r.trips || []).some(trip => searchedTripIds.some(id => String(id) === String(trip._id)))))
     .sort(rank);
   const page = Math.max(1, Number.parseInt(input.page, 10) || 1);

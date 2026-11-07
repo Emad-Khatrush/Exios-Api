@@ -1004,7 +1004,7 @@ async function setIgnored(lineId, ignored, { session, req }) {
   await line.save({ session });
   // The payments it made for a partner's Alipay transfers go with it: the bills are unpaid again
   for (const paymentId of groupPayments) {
-    await require('../cancel').cancelDocument('AccountingSupplierPayment', paymentId, { session, req, reason: 'فك مطابقة حوالات الشريك', fromBankLineId: line._id });
+    await require('../cancel').cancelDocument('AccountingSupplierPayment', paymentId, { session, req, reason: 'فك مطابقة سطر الكشف الذي سدد الفواتير', fromBankLineId: line._id });
   }
   if (groupPayments.length) { line.postingAttempt = (line.postingAttempt || 0) + 1; await line.save({ session }); }
   await logAudit({ req, action: ignored ? 'bank.ignore' : 'bank.unmatch', model: 'AccountingBankStatementLine', docId: line._id, after: { reason: req?.body?.reason } }, session);
