@@ -945,7 +945,8 @@ module.exports.updateOrder = async (req, res, next) => {
       const oldOrder = await Orders.findOne({ _id: String(id) }).session(session);
       if (!oldOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
       await assertOpenPeriod(req.user, oldOrder.createdAt, { session });
-      guardOrderUpdate(body, oldOrder);
+      guardOrderUpdate(body, oldOrder, { user: req.user });
+      if (body.madeBy && !(await Users.exists({ _id: body.madeBy, $or: [{ 'roles.isAdmin': true }, { 'roles.isEmployee': true }] }).session(session))) throw new ErrorHandler(400, 'Made by must be an employee');
       // All staff can edit before delivery; delivered packages are immutable.
       if (body.paymentList !== undefined && !Array.isArray(body.paymentList)) throw new ErrorHandler(400, 'Packages must be a list');
       if (Array.isArray(body.paymentList)) {
@@ -1143,7 +1144,8 @@ module.exports.updateSinglePackage = async (req, res, next) => {
       let oldOrder = await Orders.findOne({ _id: String(id) }).session(session);
       if (!oldOrder) throw new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND);
       await assertOpenPeriod(req.user, oldOrder.createdAt, { session });
-      guardOrderUpdate(body, oldOrder);
+      guardOrderUpdate(body, oldOrder, { user: req.user });
+      if (body.madeBy && !(await Users.exists({ _id: body.madeBy, $or: [{ 'roles.isAdmin': true }, { 'roles.isEmployee': true }] }).session(session))) throw new ErrorHandler(400, 'Made by must be an employee');
       if (body.paymentList) {
         try {
           await guardMeasures(oldOrder, [body.paymentList], req.user, { partial: true });

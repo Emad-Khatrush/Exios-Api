@@ -23,9 +23,19 @@ const kuveytAccount = {
   detect: (text) => /HESAP\s*ÖZET/i.test(text) && /KUVEYT/i.test(text) && /Bakiye/i.test(text),
   parse(text) {
     const pattern = new RegExp(`^(\\d{2}\\.\\d{2}\\.\\d{4})([A-Z0-9]{5})(.+?)(${TR_AMOUNT})(${TR_AMOUNT})$`);
+    const starts = /^\d{2}\.\d{2}\.\d{4}[A-Z0-9]{5}/;
+    const lines = text.split(/\r?\n/).map(line => line.trim());
     const rows = [];
-    for (const raw of text.split(/\r?\n/)) {
-      const match = raw.trim().match(pattern);
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!starts.test(lines[i])) continue;
+      // A long description wraps: the amount and balance (even the "-" alone) come on the next
+      // lines ("23.10.2026AYQ6H" / "Gönderen:...,Ödeme" / "Türü:BireyselÖdeme" / "-5.000,0034.609,76")
+      let joined = lines[i];
+      let match = joined.match(pattern);
+      for (let next = i + 1; !match && next < lines.length && next <= i + 4 && !starts.test(lines[next]); next += 1) {
+        joined += lines[next];
+        match = joined.match(pattern);
+      }
       if (!match) continue;
       const [, day, reference, body, amount, balance] = match;
       // The text comes without spaces: the two kinds of line are written out again readably

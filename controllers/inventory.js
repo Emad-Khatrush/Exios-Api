@@ -549,8 +549,13 @@ module.exports.getInventoryOrders = async (req, res, next) => {
     const inventory = await Inventory.findOne({ _id: inventoryId });
     if (!inventory) return next(new ErrorHandler(404, errorMessages.INVENTORY_NOT_FOUND));
     const ids = inventory.orders.map(order => order.paymentList?._id);
+    // Only what can really be added: never a cancelled or deleted order, and a trip takes no
+    // unsure (not yet confirmed) order. A warehouse may still hold one while it waits.
+    const available = { isDeleted: { $ne: true }, isCanceled: { $ne: true } };
+    if (inventory.inventoryType !== 'warehouseInventory') available.unsureOrder = { $ne: true };
 
     const orders = await Orders.aggregate([
+      { $match: available },
       {
         $unwind: {
           path: '$paymentList',
@@ -632,6 +637,8 @@ module.exports.addOrdersToTheInventory = async (req, res, next) => {
       if (savedInventory.inventoryType !== 'warehouseInventory') {
         const blocked = orders.filter(order => order.shippingBlocked);
         if (blocked.length) throw new ErrorHandler(409, `Shipping is blocked for order(s): ${[...new Set(blocked.map(order => order.orderId))].join(', ')}. Remove the restriction before adding them to a trip.`);
+        const unsure = orders.filter(order => order.unsureOrder);
+        if (unsure.length) throw new ErrorHandler(409, `Order(s) ${[...new Set(unsure.map(order => order.orderId))].join(', ')} are not confirmed yet (unsure). Confirm them before adding them to a trip.`);
       }
       const present = new Set((savedInventory.orders || []).map(order => String(order.paymentList?._id)));
       const additions = orders.filter(order => !present.has(String(order.paymentList._id)));
