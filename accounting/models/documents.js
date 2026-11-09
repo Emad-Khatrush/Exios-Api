@@ -152,8 +152,9 @@ const SupplierPayment = mongoose.model('AccountingSupplierPayment', withLifecycl
   currency: String,
   amount: Number,
   rate: Number,
-  // USD cents taken off each bill; the rest of the payment is an advance to the vendor
-  allocations: [{ _id: false, billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' }, amountUsd: Number }],
+  // USD cents taken off each bill; the rest of the payment is an advance to the vendor.
+  // amount: what was paid in the bill's own currency, when the payment is in that currency
+  allocations: [{ _id: false, billId: { type: Schema.Types.ObjectId, ref: 'AccountingSupplierBill' }, amountUsd: Number, amount: Number }],
   advanceUsd: { type: Number, default: 0 },
   // The difference between what was paid and what the bills said, put on the bills' cost (USD
   // cents, + paid more, - paid less): the cost is what the money really cost (owner 2026-10-04)

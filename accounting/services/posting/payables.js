@@ -55,7 +55,10 @@ function normalizeAllocations(input) {
     const id = String(allocation.billId);
     if (seen.has(id)) throw fail('Do not repeat a bill in allocations; combine it into one line');
     seen.add(id);
-    return { billId: toId(id), amountUsd: raw };
+    // What the page typed in the bill's own currency, when it is paid in that currency
+    const native = allocation.amount == null || allocation.amount === '' ? undefined : Number(allocation.amount);
+    if (native !== undefined && !(native > 0 && Number.isFinite(native))) throw fail('Invalid allocation amount');
+    return { billId: toId(id), amountUsd: raw, ...(native !== undefined && { amount: native }) };
   });
 }
 
@@ -441,6 +444,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   const allocations = normalizeAllocations(input.allocations);
   const lines = [];
   const bills = [];
+  const opens = [];
   let allocated = 0;
   for (const allocation of allocations) {
     const bill = await SupplierBill.findById(allocation.billId).session(session);
@@ -450,20 +454,40 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     await lockBillAllocation(bill, session);
     const open = await apBalance(billKey(bill._id), session);
     if (allocation.amountUsd > open) throw fail(`المبلغ المخصص للفاتورة ${bill.number} أكبر من المتبقي عليها (${open / 100}$)`);
+    opens.push(open);
     allocated += allocation.amountUsd;
     lines.push({ accountId: bill.payableAccountId, debit: allocation.amountUsd, vendorId: vendor._id, apKey: billKey(bill._id), label: `سداد ${bill.number}` });
   }
 
   const payable = await payableAccountFor(vendor);
-  const nativeAllocated = async currency => Math.round(bills.reduce((sum, bill, i) =>
-    sum + bill.total * allocations[i].amountUsd / bill.totalUsd, 0) * 10 ** await decimalsOf(currency));
-  // Allocations arrive in dollar cents, so a native amount typed on the page comes back a few
-  // kurus off (11,850 TRY → $237.24 → 11,850.10 TRY). Up to half a cent per bill, in the bill's
-  // currency, is that rounding: the allocation is the paid amount itself, not an overpayment.
-  const nativeAllocatedTo = async (currency, target) => {
-    const raw = await nativeAllocated(currency);
-    const slack = Math.ceil(bills.reduce((sum, bill) => sum + 0.5 * bill.total / bill.totalUsd, 0) * 10 ** await decimalsOf(currency));
-    return Math.abs(raw - target) <= slack ? target : raw;
+  // What each allocation pays in its bill's own currency, in minor units, for bills paid in their
+  // currency. Allocations are dollar cents, and a cent is half a lira: 11,850 TRY → $237.24 →
+  // 11,850.10 TRY. So the amount is the one typed on the page, checked against its cents; the
+  // bill's own remainder when the allocation closes it; otherwise the cents' value, where a
+  // difference from the money paid (target) within that rounding is the paid amount itself.
+  const native = require('../billNativeOpen');
+  const remainders = await native.nativeOpenMap(bills, new Map(bills.map((bill, i) => [String(bill._id), opens[i]])), session);
+  const nativeShares = async (currency, target) => {
+    const decimals = await decimalsOf(currency); const unit = 10 ** decimals;
+    const rounded = [];
+    const shares = bills.map((bill, i) => {
+      const { amount, amountUsd } = allocations[i];
+      const derived = native.proportional(bill, amountUsd);
+      const remaining = amountUsd === opens[i] ? remainders.get(String(bill._id)) : null;
+      if (amount !== undefined) {
+        if (Math.abs(amount - derived) > native.slackOf(bill, decimals) && !(remaining != null && Math.abs(amount - remaining) < 1 / unit))
+          throw fail(`المبلغ المكتوب للفاتورة ${bill.number} بعملتها لا يطابق قيمته بالدولار؛ حدّث الصفحة`);
+        return Math.round(amount * unit);
+      }
+      if (remaining != null) return Math.round(remaining * unit);
+      rounded.push(i);
+      return Math.round(derived * unit);
+    });
+    const difference = target - shares.reduce((sum, share) => sum + share, 0);
+    const slack = Math.ceil(rounded.reduce((sum, i) => sum + 0.5 * bills[i].total / bills[i].totalUsd, 0) * unit);
+    if (difference && rounded.length && Math.abs(difference) <= slack) shares[rounded.reduce((a, b) => shares[b] > shares[a] ? b : a)] += difference;
+    shares.forEach((share, i) => { doc.allocations[i].amount = share / unit; });
+    return shares.reduce((sum, share) => sum + share, 0);
   };
   const [doc] = await SupplierPayment.create([{
     vendorId: vendor._id, day: input.day, fromAdvance: !!input.fromAdvance, allocations,
@@ -487,7 +511,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
       if (!source || input.day < source.day) throw fail('الدفعة المقدمة غير متاحة أو تاريخ التسوية يسبقها');
       if (!bills.every(b => b.currency === source.currency)) throw fail('اختر فواتير بنفس عملة الدفعة المقدمة');
       const remaining = await toCurrencyMinor(source.remainingAmount, source.currency);
-      const required = await nativeAllocatedTo(source.currency, remaining);
+      const required = await nativeShares(source.currency, remaining);
       if (required <= 0 || required > remaining) throw fail('المبلغ المخصص بعملة الفاتورة أكبر من الدفعة المقدمة المتاحة');
       consumed = required === remaining ? source.remainingUsd : Math.round(source.advanceUsd * required / await toCurrencyMinor(source.amount, source.currency));
       if (consumed <= 0 || consumed > source.remainingUsd) throw fail('قيمة التسوية غير صالحة');
@@ -521,7 +545,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     const atRate = await rates.toUsd(minor, currency, input.day, input.rate);
     const outUsd = await valueOut(from, minor, { day: input.day, docRate: input.rate, rates, ...(isEmployeeAdvance && { employeeId: input.employeeId }) });
     const sameCurrency = bills.length > 0 && bills.every(b => b.currency === currency);
-    const settledMinor = sameCurrency ? await nativeAllocatedTo(currency, minor) : 0;
+    const settledMinor = sameCurrency ? await nativeShares(currency, minor) : 0;
     if (sameCurrency && settledMinor > minor) throw fail('المبلغ المخصص بعملة الفاتورة أكبر من المدفوع');
     // Allowing a little over the day's value: a bill paid in its own currency closes in full
     // even when the rate moved since the bill

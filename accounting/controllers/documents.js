@@ -161,9 +161,13 @@ module.exports.vendorStatement = handle(async (req, res) => {
 async function openBillsFor(vendorId) {
   const bills = await docs.SupplierBill.find({ vendorId, status: 'posted', isCreditNote: { $ne: true } }).sort({ day: 1 }).lean();
   const result = [];
+  const opens = new Map();
+  for (const bill of bills) opens.set(String(bill._id), await payables.apBalance(payables.billKey(bill._id)));
+  // What is left in the bill's own currency, by what was really paid in it (not the dollar cents read back)
+  const native = await require('../services/billNativeOpen').nativeOpenMap(bills, opens);
   for (const bill of bills) {
-    const open = await payables.apBalance(payables.billKey(bill._id));
-    if (open !== 0) result.push({ _id: bill._id, number: bill.number, day: bill.day, currency: bill.currency, total: bill.total, totalUsd: bill.totalUsd, open, vendorRef: bill.vendorRef,
+    const open = opens.get(String(bill._id));
+    if (open !== 0) result.push({ _id: bill._id, number: bill.number, day: bill.day, currency: bill.currency, total: bill.total, totalUsd: bill.totalUsd, open, openNative: native.get(String(bill._id)), vendorRef: bill.vendorRef,
       orderOnly: !!bill.lines.length && bill.lines.every(line => line.target === 'order' && line.orderId),
       orderIds: [...new Set(bill.lines.filter(line => line.orderId).map(line => String(line.orderId)))] });
   }
@@ -313,7 +317,9 @@ module.exports.listDocuments = (kind) => handle(async (req, res) => {
 });
 
 const CREATORS = {
-  payments: payables.createPayment,
+  // A payment typed by hand from a bank: tied to its statement line when the statement already holds it
+  payments: require('../services/posting/statementTwins').guarded(payables.createPayment,
+    input => input.fromAdvance || !input.fromAccountId ? null : { accountId: input.fromAccountId, amount: -Number(input.amount) }),
   receipts: payables.createReceipt,
   'customer-refunds': (input, context) => require('../services/posting/customerRefund').createCustomerRefund(input, context),
   'yuan-purchases': (input, context) => require('../services/posting/alipay').createYuanPurchase(input, context),

@@ -36,7 +36,7 @@ async function openByBill(billIds, session) {
 }
 
 // The open part of a bill in its own currency (minor units), by what is still owed in dollars
-const nativeOpen = (bill, open, decimals) => Math.round(Number(bill.total) * (open / (bill.totalUsd || open)) * 10 ** decimals);
+const nativeOpen = (bill, open, decimals, known) => Math.round((known ?? Number(bill.total) * (open / (bill.totalUsd || open))) * 10 ** decimals);
 
 // Unpaid posted bills for picking: search by bill, vendor, vendor reference, note, line text or order number
 async function options(lineId, input = {}) {
@@ -59,11 +59,12 @@ async function options(lineId, input = {}) {
     .populate('vendorId', 'name').populate('lines.orderId', 'orderId').lean();
   const open = await openByBill(bills.map((b) => b._id));
   const { currencies } = await getConfig();
+  const exact = await require('../billNativeOpen').nativeOpenMap(bills, open);
   const results = bills.filter((b) => (open.get(String(b._id)) || 0) > 2).slice(0, LIMIT).map((b) => {
     const usd = open.get(String(b._id));
     const decimals = currencies.get(b.currency)?.decimals ?? 2;
     return { _id: b._id, number: b.number, day: b.day, currency: b.currency, total: Number(b.total), totalUsd: b.totalUsd,
-      openUsd: usd, openNative: nativeOpen(b, usd, decimals) / 10 ** decimals, partial: usd < (b.totalUsd || 0) - 2,
+      openUsd: usd, openNative: nativeOpen(b, usd, decimals, exact.get(String(b._id))) / 10 ** decimals, partial: usd < (b.totalUsd || 0) - 2,
       vendorId: b.vendorId?._id, vendorName: b.vendorId?.name, vendorRef: b.vendorRef || '', note: b.note || '',
       description: b.lines.map((l) => l.description).filter(Boolean).join('، '),
       orders: [...new Set(b.lines.map((l) => l.orderId?.orderId).filter(Boolean))] };
@@ -100,7 +101,8 @@ async function apply(lineId, input, { session, req }) {
   let shares;
   let excess = 0;
   if (sameCurrency) {
-    shares = bills.map(({ bill, usd }) => nativeOpen(bill, usd, decimals));
+    const exact = await require('../billNativeOpen').nativeOpenMap(docs, open, session);
+    shares = bills.map(({ bill, usd }) => nativeOpen(bill, usd, decimals, exact.get(String(bill._id))));
     const total = shares.reduce((s, n) => s + n, 0);
     if (total > paid) throw fail(`مجموع الفواتير ${(total / 10 ** decimals).toLocaleString('en-US')} ${currency} أكبر من مبلغ السطر ${(paid / 10 ** decimals).toLocaleString('en-US')} ${currency}؛ أزل فاتورة أو اختر سطرًا آخر`);
     excess = paid - total;

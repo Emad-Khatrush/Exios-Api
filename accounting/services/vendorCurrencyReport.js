@@ -14,6 +14,7 @@ async function build(vendorId, openBills, { showCanceled = false } = {}) {
     getConfig(),
   ]);
   const openById = new Map(openBills.map(bill => [String(bill._id), bill.open]));
+  const nativeById = new Map(openBills.map(bill => [String(bill._id), bill.openNative]));
   const groups = new Map();
   const digits = currency => config.currencies.get(currency)?.decimals ?? 2;
   const group = currency => {
@@ -23,7 +24,7 @@ async function build(vendorId, openBills, { showCanceled = false } = {}) {
   const rounded = (amount, currency) => roundHalfAway(amount * 10 ** digits(currency)) / 10 ** digits(currency);
   const invoiceRows = bills.map(bill => {
     const openUsd = bill.status === 'posted' && !bill.isCreditNote ? (openById.get(String(bill._id)) || 0) : null;
-    const openEquivalent = openUsd === null ? null : !openUsd ? 0 : bill.totalUsd > 0 ? rounded(openUsd / bill.totalUsd * bill.total, bill.currency) : null;
+    const openEquivalent = openUsd === null ? null : !openUsd ? 0 : nativeById.get(String(bill._id)) ?? (bill.totalUsd > 0 ? rounded(openUsd / bill.totalUsd * bill.total, bill.currency) : null);
     if (bill.status === 'posted') {
       group(bill.currency)[bill.isCreditNote ? 'creditNotes' : 'billed'] += Number(bill.total || 0);
       if (openEquivalent !== null) group(bill.currency).openEquivalent += openEquivalent;

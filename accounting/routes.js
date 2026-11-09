@@ -343,6 +343,8 @@ router.get('/bank/lines/:id', P.treasury, documents.bankLineDetails);
 router.post('/bank/lines/:id/translate', P.treasury, handle(async (req, res) => res.json(await require('./services/statementTranslation').translateLine(req.params.id, req))));
 router.patch('/bank/lines/:id', P.treasury, documents.editBankLine);
 router.get('/bank/suggestions', P.treasury, documents.bankSuggestions);
+router.get('/bank/statement-twins', can('treasury', 'payments', 'purchases'), handle(async (req, res) => res.json({
+  results: await require('./services/posting/statementTwins').find(req.query.accountId, Number(req.query.amount), String(req.query.day || '')) })));
 router.get('/bank/purchases', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankPurchaseReview').listPurchases(req.query))));
 router.get('/bank/purchase-reconciliation', can('treasury', 'reports'), handle(async (req, res) => res.json(await require('./services/posting/purchaseReconciliation').list(req.query))));
 router.get('/bank/purchase-reconciliation/candidates', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/purchaseReconciliation').statementCandidates(req.query))));
@@ -393,6 +395,7 @@ router.get('/bank/partner-transfers', P.treasury, handle(async (req, res) => res
 router.get('/bank/lines/:id/partner-transfer-options', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/partnerTransfers').options(req.params.id, req.query))));
 router.get('/bank/lines/:id/bill-options', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankBillsPay').options(req.params.id, req.query))));
 router.post('/bank/lines/:id/pay-bills', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/bankBillsPay').apply(req.params.id, req.body || {}, { session, req })))));
+router.post('/bank/lines/:id/split', P.treasury, P.purchases, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/bankSplit').apply(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/partner-transfers',P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/partnerTransfers').apply(req.params.id, req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/partner-deposit', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction((session) => require('./services/posting/partnerDeposits').apply(req.params.id, req.body || {}, { session, req })))));
 // Lines nobody can explain yet: parked on a clearing account, decided by the owner after their wait

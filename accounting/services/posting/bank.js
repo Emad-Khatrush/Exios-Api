@@ -1085,6 +1085,7 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   const repeats = await evidence.repeatedReferences(accountId, lines.filter(l => l.duplicateReviewPending));
   const bank = await bankAccount(accountId);
   const bills = billCache(lines.map(line => line.day));
+  const vendorBills = settings.engines.includes('purchases') ? await require('./vendorOpenBills').finder() : null;
   for (const [index, line] of lines.entries()) {
     if (line.duplicateReviewPending) {
       result[line._id] = { account: null, requiresConfirmation: true, duplicates: [], source: 'statement_repeat',
@@ -1129,6 +1130,14 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
         hint.exactMatch = { kind: 'bill', billId: exactBills[0]._id };
       else if (!hint.billCandidates?.length && link?.day === line.day && link.exactDayCandidates === 1)
         hint.exactMatch = { kind: 'order_item', orderId: link.orderId, itemId: link.itemId };
+    }
+    // The line's vendor has unpaid bills, none of them of this very amount and week: the line most
+    // likely pays them (several at once, or late), so it is not proposed as a new cost unseen
+    if (vendorBills && line.amount < 0 && !hint.exactMatch && !hint.billCandidates?.length && !hint.tripCandidates.length && !hint.isRefund
+      && !guess(line).semanticTransfer && !twins.length) {
+      const open = await vendorBills(hint);
+      if (open) Object.assign(hint, { vendorBills: open, requiresConfirmation: true,
+        reason: `للمورد ${open.vendorName} ${open.count === 1 ? 'فاتورة غير مسددة' : `${open.count} فواتير غير مسددة`}؛ سدّدها من هذا السطر بدل تسجيل تكلفة جديدة.` });
     }
   }
   // Two statement rows competing for one proposal need an individual review.
