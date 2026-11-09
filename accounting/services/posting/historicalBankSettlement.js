@@ -11,9 +11,11 @@ const { getBalance } = require('../carrying');
 // reopen the bill, or rewrite an entry dated before the opening count.
 async function inspect(bill, bank, line, { session } = {}) {
   const { count, currencies } = await getConfig();
-  if (!count || !count.accountIds.has(String(bank._id)) || !line?.day || line.amount >= 0
-    || bill.status !== 'posted' || bill.isCreditNote
-    || line.day < count.day || (line.day === count.day && count.endOfDay)) return null;
+  if (!count || !line?.day || line.amount >= 0 || bill.status !== 'posted' || bill.isCreditNote) return null;
+  // A counted account's money before the count is already in the counted amount (matched as covered,
+  // with no entry). An account outside the count, like a partner's current account, gets its whole
+  // balance from its statement: its line settles the suspense payment whatever its date.
+  if (count.accountIds.has(String(bank._id)) && (line.day < count.day || (line.day === count.day && count.endOfDay))) return null;
   const suspense = await resolveAccount('migration_suspense');
   const payments = await SupplierPayment.find({ status: 'posted', 'allocations.billId': bill._id }).session(session || null).lean();
   if (payments.length !== 1) return null;
