@@ -1027,12 +1027,15 @@ async function coverage({ from, to } = {}) {
   ]);
   const last = await BankStatementLine.aggregate([{ $match: { accountId: { $in: accounts.map((a) => a._id) } } }, { $group: { _id: '$accountId', day: { $max: '$day' } } }]);
   const lastBy = new Map(last.map((l) => [String(l._id), l.day]));
+  // A month that holds lines may still lack some: the breaks of each account's balance trail
+  const trails = await require('./statementGaps').forAccounts(accounts.map((a) => a._id));
   return {
     months,
     accounts: accounts.map((a) => {
       const byMonth = Object.fromEntries(months.map((m) => [m, rows.find((r) => String(r._id.accountId) === String(a._id) && r._id.month === m)?.lines || 0]));
       return { _id: a._id, code: a.code, name: a.name, currency: a.currency, kind: a.cashKind, lastDay: lastBy.get(String(a._id)) || null,
-        months: byMonth, missing: months.filter((m) => !byMonth[m]) };
+        months: byMonth, missing: months.filter((m) => !byMonth[m]),
+        balanceTrail: trails.get(String(a._id)).status, gaps: trails.get(String(a._id)).gaps.filter((gap) => gap.beforeDay >= start && gap.afterDay <= end) };
     }),
   };
 }

@@ -480,11 +480,14 @@ module.exports.listBankLines = handle(async (req, res) => {
   const balance = await getBalance(req.query.accountId);
   const statement = await require('../services/posting/statementClosingBalance').statementClosingBalance(req.query.accountId);
   const bookAtStatement = statement.day ? await getBalance(req.query.accountId, { upToDay: statement.day }) : null;
+  // Movements missing from inside the statement, by the breaks of its running balance
+  const trail = await require('../services/posting/statementGaps').forAccount(req.query.accountId);
   const trial = process.env.EXIOS_QA === '1' ? await MigrationRun.findOne({ status: 'review', bankTrialEnabled: true }).select('runId').lean() : null;
   res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements.filter(m => !m.balanceAdjustment),
     balanceAdjustments: movements.filter(m => m.balanceAdjustment), bookBalance: balance,
     statementBalance: statement.balance, statementBalanceDay: statement.day, statementBalanceStatus: statement.status,
-    bookBalanceAtStatement: bookAtStatement, bankTrialRunId: trial?.runId || null });
+    bookBalanceAtStatement: bookAtStatement, bankTrialRunId: trial?.runId || null,
+    statementTrail: { status: trail.status, checked: trail.checked, withoutBalance: trail.withoutBalance, gaps: trail.gaps.slice(-20), gapCount: trail.gaps.length } });
 });
 
 module.exports.importBankLines = handle(async (req, res) => {
