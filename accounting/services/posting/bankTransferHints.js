@@ -6,6 +6,15 @@ const number = value => {
   return Number(text.includes(',') ? text.replace(/\./g, '').replace(',', '.') : text);
 };
 const round2 = value => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+// The company's own name on a line ("EXİOS İÇ VE DIŞ TİCARET LİMİTED ŞİRKETİ", also written without
+// spaces): money moving between the company's accounts, never a purchase or a supplier refund.
+// Banks print it with or without spaces, so it is read with the spaces taken out.
+function isOwnCompany(description) {
+  const text = normalize(description).replace(/ /g, '');
+  return text.includes('exios') && (text.includes('sirket') || text.includes('ticaret'));
+}
+// Turkish interbank (EFT/FAST) codes of the banks holding the company's lira accounts
+const OWN_BANK_CODES = { 203: '110203', 205: '110204', 62: '110208' };
 function exchangeOf(description, currency, amount) {
   const text = normalize(description);
   if (text.includes('doviz alis') || text.includes('doviz satis')) {
@@ -100,13 +109,12 @@ function describe(line, bank, accounts) {
     return result('card_transfer', find('250200'), 'سداد بطاقة البركة من حساب البنك بالليرة؛ تحويل بين الحسابين وليس مصروف مشتريات');
   if (code === '110204' && outgoing && text.includes('kredi kart') && text.includes('borc odeme'))
     return result('card_transfer', find('250100'), 'سداد بطاقة كويت ترك من حساب البنك؛ لا تُسجّل تكلفة الشراء مرة ثانية');
-  if (text.includes('exios') && (text.includes('sirket') || text.includes('ticaret'))) {
-    const receiver205 = /alici banka\s*205\b/.test(text), sender205 = /gonbanka\s*205\b/.test(text);
-    const receiver203 = /alici banka\s*203\b/.test(text), sender203 = /gonbanka\s*203\b/.test(text);
-    if (code === '110203' && ((outgoing && receiver205) || (!outgoing && sender205)))
-      return result('own_transfer', find('110204'), 'تحويل بين حساب البركة وحساب كويت ترك التابعين للشركة بالليرة؛ قيد واحد يُطابق مع كشفي الحسابين');
-    if (code === '110204' && ((outgoing && receiver203) || (!outgoing && sender203)))
-      return result('own_transfer', find('110203'), 'تحويل بين حسابي الشركة بالليرة؛ لا إيراد ولا تكلفة شراء جديدة');
+  if (isOwnCompany(line.description)) {
+    // The other bank's code: the sender on money in, the receiver on money out
+    const bankCode = (outgoing ? text.match(/alici banka\s*(\d+)\b/) : text.match(/gonbanka\s*(\d+)\b/))?.[1];
+    const counter = bankCode && OWN_BANK_CODES[bankCode] && find(OWN_BANK_CODES[bankCode]);
+    if (counter && counter.code !== bank.code && (counter.currency || 'USD') === (bank.currency || 'USD'))
+      return result('own_transfer', counter, `تحويل بين حسابي الشركة (${bank.name} و${counter.name})؛ قيد واحد يُطابق مع كشفي الحسابين، لا إيراد ولا تكلفة شراء جديدة`);
   }
   if (!outgoing && text.includes('emad suleiman') && text.includes('para yatirma')) {
     const cash = bank.currency === 'TRY' ? find('cash:turkey:TRY') : bank.currency === 'USD' ? find('110107') : null;
@@ -123,4 +131,4 @@ function matchesMovement(line, hint, movement) {
   const expected = hint.source === 'exchange' ? -Math.sign(line.amount) * Math.round(hint.counterAmount * 100) : -line.amount;
   return actual === expected;
 }
-module.exports = { describe, exchangeOf, matchesMovement };
+module.exports = { describe, exchangeOf, matchesMovement, isOwnCompany };

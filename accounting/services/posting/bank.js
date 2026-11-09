@@ -1200,6 +1200,23 @@ async function guesser(accountId, settings = preferences()) {
   return (line) => {
     const transferHint = bankTransferHints.describe(line, sourceBank, [...merchantAccounts.values()]);
     if (transferHint) return { ...transferHint, vendorName: transferHint.vendorName || null, vendorId: transferHint.vendorId || null, office: transferHint.office || sourceBank.office || null };
+    // The company's own name with no bank code naming the other account: money between the
+    // company's accounts. Only a rule pointing to another of its money accounts applies (Kuveyt
+    // Türk "fast para transferi"); a word of the name ("limited"), a past posting or a merchant
+    // never makes it a purchase cost or a supplier refund (owner's report 2026-11-09).
+    if (bankTransferHints.isOwnCompany(line.description)) {
+      const text = normalize(`${line.description} ${line.reference || ''}`), direction = line.amount < 0 ? 'out' : 'in';
+      const rule = (settings.engines.includes('classification') ? rules : [])
+        .filter((r) => r.counterAccountId?.isActive && merchantAccounts.get(String(r.counterAccountId._id))?.isCash
+          && String(r.counterAccountId._id) !== String(sourceBank._id)
+          && (r.direction === 'any' || r.direction === direction) && hasKeyword(text, r.keyword))
+        .sort((a, b) => Number(!!b.accountId) - Number(!!a.accountId) || (b.priority || 0) - (a.priority || 0) || b.keyword.length - a.keyword.length)[0];
+      if (rule) return { account: { _id: rule.counterAccountId._id, code: rule.counterAccountId.code, name: rule.counterAccountId.name },
+        office: rule.office || null, source: 'rule', keyword: rule.keyword, vendorName: null, vendorId: null };
+      return { source: 'own_transfer', account: null, office: sourceBank.office || null, vendorName: null, vendorId: null,
+        semanticTransfer: true, requiresConfirmation: true,
+        reason: 'تحويل بين حسابات الشركة؛ طابقه مع قيد التحويل أو حدد الحساب الآخر، ولا تسجله تكلفة شراء أو إيرادًا' };
+    }
     const identified = merchant(line);
     if (identified?.bankPurpose === 'yuan_purchase') return { ...identified, account: null, office: null,
       source: 'yuan', requiresConfirmation: true, reason: 'لهذا الطرف عمليات متعددة؛ اختر الحساب الذي يخص هذه الحركة. شراء اليوان المسجل يُطابق مع قيده، والمصروف يُسجل على الحساب المختار.' };

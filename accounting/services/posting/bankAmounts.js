@@ -45,7 +45,10 @@ async function paymentValue(line, bank, input, session) {
   // No USD quote is fabricated for a direct SAR/TRY (or other) purchase. USD remains only
   // the ledger's reporting unit: carry the bank's actual debit at its book value.
   if (!usd) {
-    usd = (await valueOut(bank, Math.abs(line.amount), { day: line.day, rates })) / 100;
+    const cents = await valueOut(bank, Math.abs(line.amount), { day: line.day, rates });
+    // The books are in dollar cents: a foreign amount worth less than half a cent (a 0.21 lira
+    // fee) is carried at one cent, so the line posts and the bank's own currency follows the statement
+    usd = (cents === 0 && line.amount !== 0 && currency !== 'USD' ? 1 : cents) / 100;
   }
   if (!(usd > 0) || !Number.isFinite(usd)) throw new Error('تعذّر تحديد قيمة العملية بالدولار');
   return { paid, usd, original, rate: currency === 'USD' ? undefined : paid / usd, rates, valuationSource, directCross,

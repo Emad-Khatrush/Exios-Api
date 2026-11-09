@@ -90,8 +90,11 @@ async function valueOut(account, foreignMinor, { day, docRate, rates, partnerId,
   if (!isForeign(account)) return foreignMinor;
   const balance = await getBalance(account._id, { partnerId, employeeId, session: rates.session });
   const carried = valueOutflow(balance, foreignMinor);
-  if (carried !== null) return carried;
-  return rates.toUsd(foreignMinor, currencyOf(account), day, docRate);
+  const usd = carried !== null ? carried : await rates.toUsd(foreignMinor, currencyOf(account), day, docRate);
+  // The books are in dollar cents: an amount worth less than half a cent (a 0.21 lira fee) still
+  // leaves at one cent while the account holds dollars to give, instead of moving nothing
+  if (usd === 0 && foreignMinor > 0 && balance.usd > 0) return 1;
+  return usd;
 }
 
 // A line on `account` for `foreignMinor` (its own currency) worth `usd` cents
