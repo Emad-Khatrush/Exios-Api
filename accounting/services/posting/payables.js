@@ -457,6 +457,14 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   const payable = await payableAccountFor(vendor);
   const nativeAllocated = async currency => Math.round(bills.reduce((sum, bill, i) =>
     sum + bill.total * allocations[i].amountUsd / bill.totalUsd, 0) * 10 ** await decimalsOf(currency));
+  // Allocations arrive in dollar cents, so a native amount typed on the page comes back a few
+  // kurus off (11,850 TRY → $237.24 → 11,850.10 TRY). Up to half a cent per bill, in the bill's
+  // currency, is that rounding: the allocation is the paid amount itself, not an overpayment.
+  const nativeAllocatedTo = async (currency, target) => {
+    const raw = await nativeAllocated(currency);
+    const slack = Math.ceil(bills.reduce((sum, bill) => sum + 0.5 * bill.total / bill.totalUsd, 0) * 10 ** await decimalsOf(currency));
+    return Math.abs(raw - target) <= slack ? target : raw;
+  };
   const [doc] = await SupplierPayment.create([{
     vendorId: vendor._id, day: input.day, fromAdvance: !!input.fromAdvance, allocations,
     note: input.note, attachments: input.attachments, idempotencyKey: input.idempotencyKey,
@@ -478,8 +486,8 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
         .find(p => String(p._id) === String(input.advancePaymentId));
       if (!source || input.day < source.day) throw fail('الدفعة المقدمة غير متاحة أو تاريخ التسوية يسبقها');
       if (!bills.every(b => b.currency === source.currency)) throw fail('اختر فواتير بنفس عملة الدفعة المقدمة');
-      const required = await nativeAllocated(source.currency);
       const remaining = await toCurrencyMinor(source.remainingAmount, source.currency);
+      const required = await nativeAllocatedTo(source.currency, remaining);
       if (required <= 0 || required > remaining) throw fail('المبلغ المخصص بعملة الفاتورة أكبر من الدفعة المقدمة المتاحة');
       consumed = required === remaining ? source.remainingUsd : Math.round(source.advanceUsd * required / await toCurrencyMinor(source.amount, source.currency));
       if (consumed <= 0 || consumed > source.remainingUsd) throw fail('قيمة التسوية غير صالحة');
@@ -513,7 +521,7 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
     const atRate = await rates.toUsd(minor, currency, input.day, input.rate);
     const outUsd = await valueOut(from, minor, { day: input.day, docRate: input.rate, rates, ...(isEmployeeAdvance && { employeeId: input.employeeId }) });
     const sameCurrency = bills.length > 0 && bills.every(b => b.currency === currency);
-    const settledMinor = sameCurrency ? await nativeAllocated(currency) : 0;
+    const settledMinor = sameCurrency ? await nativeAllocatedTo(currency, minor) : 0;
     if (sameCurrency && settledMinor > minor) throw fail('المبلغ المخصص بعملة الفاتورة أكبر من المدفوع');
     // Allowing a little over the day's value: a bill paid in its own currency closes in full
     // even when the rate moved since the bill
