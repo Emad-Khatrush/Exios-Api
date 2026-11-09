@@ -191,11 +191,15 @@ const garantiAccount = {
     if (!['TRY', 'USD'].includes(currency)) return [];
     const lines = normalized.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const rows = [];
+    // A movement starts on a line beginning with its date. The PDF usually puts the date alone on
+    // that line, but can join the date, text and amounts into one line (seen on the newest row).
+    const startsMovement = /^(\d{2})\.(\d{2})\.(\d{4})(.*)$/;
     for (let index = 0; index < lines.length; index++) {
-      const date = lines[index].match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+      const date = lines[index].match(startsMovement);
       if (!date) continue;
-      const block = [];
-      for (let next = index + 1; next < lines.length && !/^\d{2}\.\d{2}\.\d{4}$/.test(lines[next]); next++) block.push(lines[next]);
+      const block = date[4].trim() ? [date[4].trim()] : [];
+      const sameLine = block.length;
+      for (let next = index + 1; next < lines.length && !startsMovement.test(lines[next]); next++) block.push(lines[next]);
       const amountPattern = /([+-]?\s*\d+(?:\.\d{3})*,\d{2})\s*(TL|TRY|USD)\s*([+-]?\s*\d+(?:\.\d{3})*,\d{2})\s*(TL|TRY|USD)$/i;
       const amountIndex = block.findIndex(line => amountPattern.test(line));
       if (amountIndex < 0) continue;
@@ -222,7 +226,7 @@ const garantiAccount = {
         }
       }
       rows.push(row);
-      index += amountIndex + 1;
+      index += amountIndex + 1 - sameLine;
     }
     return rows;
   },
