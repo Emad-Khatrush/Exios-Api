@@ -1086,13 +1086,22 @@ async function coverBeforeCount(lineId, input, { session, req }) {
   if (!line || line.lineStatus !== 'unmatched') throw fail('سطر الكشف غير متاح');
   evidence.assertReviewed(line);
   const { count } = await getConfig();
-  const before = count && (line.day < count.day || (line.day === count.day && count.endOfDay));
-  if (!before || !count.accountIds.has(String(line.accountId))) throw fail('هذا السطر ليس قبل جرد هذا الحساب؛ رحّله أو طابقه');
-  const note = String(input.note || '').trim();
-  if (!note) throw fail('اكتب ما كانت هذه الحركة');
+  // The day the money really moved: the statement's own day, or an earlier one the person gives when
+  // the bank or partner recorded it late (a deposit made on 10-29, on Wasl's statement on 11-01)
+  const happened = input.happenedOn ? String(input.happenedOn).trim() : null;
+  if (happened && !/^\d{4}-\d{2}-\d{2}$/.test(happened)) throw fail('تاريخ العملية الفعلي غير صالح');
+  if (happened && happened > line.day) throw fail('تاريخ العملية الفعلي لا يكون بعد تاريخها في الكشف');
+  if (happened && (Date.parse(line.day) - Date.parse(happened)) / 86400000 > 31) throw fail('تاريخ العملية الفعلي أبعد من 31 يومًا عن تاريخ الكشف؛ راجع السطر');
+  const day = happened || line.day;
+  const before = count && (day < count.day || (day === count.day && count.endOfDay));
+  if (!count || !count.accountIds.has(String(line.accountId))) throw fail('هذا الحساب لم يُجرد؛ رحّل السطر أو طابقه');
+  if (!before) throw fail(happened ? `العملية حصلت ${happened} بعد جرد ${count.day}؛ رحّلها أو طابقها` : 'هذا السطر ليس قبل جرد هذا الحساب؛ رحّله أو طابقه، أو اكتب تاريخ العملية الفعلي إن حصلت قبل الجرد');
+  const typed = String(input.note || '').trim();
+  if (!typed) throw fail('اكتب ما كانت هذه الحركة');
+  const note = happened && happened !== line.day ? `${typed} (حصلت ${happened} قبل جرد ${count.day}، وسُجلت في الكشف ${line.day})` : typed;
   Object.assign(line, { lineStatus: 'ignored', coveredNote: note });
   await line.save({ session });
-  await logAudit({ req, action: 'bank.coverBeforeCount', model: 'AccountingBankStatementLine', docId: line._id, after: { note } }, session);
+  await logAudit({ req, action: 'bank.coverBeforeCount', model: 'AccountingBankStatementLine', docId: line._id, after: { note, ...(happened && { happenedOn: happened, statementDay: line.day }) } }, session);
   return line;
 }
 
