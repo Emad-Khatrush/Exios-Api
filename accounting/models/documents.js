@@ -394,6 +394,8 @@ const bankLineSchema = new Schema({
   coveredNote: String,
   // Supplier payments this line made for a partner's grouped Alipay transfers (cancelled with the match)
   groupPaymentIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' }],
+  // Yuan purchases this line recorded for the yuan a partner sold us in it (cancelled with the match)
+  groupPurchaseIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingYuanPurchase' }],
   unidentified: {
     status: { type: String, enum: ['open', 'decided', 'resolved'] },
     hint: { type: String, enum: ['purchase', 'shipping', 'refund', 'customer', 'expense', 'unknown'] },

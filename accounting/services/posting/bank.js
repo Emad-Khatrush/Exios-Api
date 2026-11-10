@@ -1000,13 +1000,18 @@ async function setIgnored(lineId, ignored, { session, req }) {
   }
   line.lineStatus = ignored ? 'ignored' : 'unmatched';
   const groupPayments = !ignored ? [...(line.groupPaymentIds || [])] : [];
-  if (!ignored) { line.matchedEntryIds = []; line.partnerStatementIds = []; line.coveredNote = undefined; line.groupPaymentIds = []; }
+  const groupPurchases = !ignored ? [...(line.groupPurchaseIds || [])] : [];
+  if (!ignored) { line.matchedEntryIds = []; line.partnerStatementIds = []; line.coveredNote = undefined; line.groupPaymentIds = []; line.groupPurchaseIds = []; }
   await line.save({ session });
   // The payments it made for a partner's Alipay transfers go with it: the bills are unpaid again
   for (const paymentId of groupPayments) {
     await require('../cancel').cancelDocument('AccountingSupplierPayment', paymentId, { session, req, reason: 'فك مطابقة سطر الكشف الذي سدد الفواتير', fromBankLineId: line._id });
   }
-  if (groupPayments.length) { line.postingAttempt = (line.postingAttempt || 0) + 1; await line.save({ session }); }
+  // And the yuan purchases it recorded: their arrival lines in Alipay are unmatched again
+  for (const purchaseId of groupPurchases) {
+    await require('../cancel').cancelDocument('AccountingYuanPurchase', purchaseId, { session, req, reason: 'فك مطابقة سطر الكشف الذي سجّل شراء اليوان', fromBankLineId: line._id });
+  }
+  if (groupPayments.length || groupPurchases.length) { line.postingAttempt = (line.postingAttempt || 0) + 1; await line.save({ session }); }
   await logAudit({ req, action: ignored ? 'bank.ignore' : 'bank.unmatch', model: 'AccountingBankStatementLine', docId: line._id, after: { reason: req?.body?.reason } }, session);
   return line;
 }
