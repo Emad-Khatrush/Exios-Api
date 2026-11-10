@@ -1201,6 +1201,8 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   for (const line of lines) {
     const hint = result[line._id];
     const parsed = hint?.combinations?.length ? require('./partnerTransfers').partsOf(line.description) : null;
+    // The yuan total printed on the line («=73,632.88¥»), over the amount read at import (older imports read it wrong)
+    if (parsed) hint.statementOriginal = { amount: Math.round(parsed.total * 100) / 100, currency: 'CNY' };
     if (!parsed?.rate) continue;
     const unit = 10 ** ((await getConfig()).currencies.get(currencyOf(bank))?.decimals ?? 2);
     for (const option of hint.combinations) {

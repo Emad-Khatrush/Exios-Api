@@ -358,9 +358,10 @@ const wasl = {
         if (amount) {
           const row = { day: `${year}-${month}-${day}`, description: label, reference: '', amount, balanceAfter: -usNumber(balance.text) };
           if (/Alipay/i.test(label)) {
-            const sum = label.match(/[\d,]+\s*\+\s*[\d,]+(?:\s*\+\s*[\d,]+)*/);
-            const single = label.match(/بقيمة\s*([\d,]+)/);
-            const yuan = sum ? sum[0].split('+').reduce((s, n) => s + usNumber(n.trim()), 0) : single ? usNumber(single[1]) : 0;
+            // «32,723.88+40,909=73,632.88¥»: the total printed after «=» first, else the parts with their decimals
+            const parsed = require('./partnerTransfers').partsOf(label);
+            const single = label.match(/بقيمة\s*([\d,]+(?:\.\d+)?)/);
+            const yuan = parsed ? Math.round(parsed.total * 100) / 100 : single ? usNumber(single[1]) : 0;
             if (yuan > 0) Object.assign(row, { originalAmount: yuan, originalCurrency: 'CNY', counterAmount: yuan, counterCurrency: 'CNY' });
             const quote = label.match(/صرف\s+([\d.]+)/);
             if (quote) row.exchangeRate = Number(quote[1]);

@@ -251,10 +251,13 @@ async function apply(lineId, input, { session, req }) {
   const items = await resolveParts(line, account, input, session);
   const parsed = partsOf(line.description);
   const yuan = Math.round(items.reduce((s, item) => s + item.yuan, 0) * 100) / 100;
-  if (parsed && Math.abs(yuan - parsed.total) > YUAN * items.length) {
+  // The person may correct a description written wrong (or drop a part): their parts are used, the
+  // statement's figures kept in the audit
+  const corrected = input.statementCorrected === true;
+  if (parsed && !corrected && Math.abs(yuan - parsed.total) > YUAN * items.length) {
     throw fail(`مجموع الأجزاء ${yuan.toLocaleString('en-US')}¥ والكشف ${parsed.total.toLocaleString('en-US')}¥: ${parsed.total > yuan ? `ينقص ${(Math.round((parsed.total - yuan) * 100) / 100).toLocaleString('en-US')}¥؛ أضف مشتريات الطلبية الناقصة أو شراء اليوان ثم أعد المطابقة` : 'اختر الأجزاء الصحيحة'}`);
   }
-  if (!parsed && !input.confirmDifference) throw fail('الكشف لا يذكر قيم اليوان؛ راجع الفواتير وأكد أنها نفس الحوالات');
+  if (!parsed && !input.confirmDifference && !corrected) throw fail('الكشف لا يذكر قيم اليوان؛ راجع الفواتير وأكد أنها نفس الحوالات');
   const split = splitUsd(-line.amount, items);
   if (split.error) throw fail(split.error);
   items.forEach((item, i) => { item.usd = split.shares[i]; });
@@ -312,7 +315,8 @@ async function apply(lineId, input, { session, req }) {
     await BankStatementLine.updateOne({ _id: line._id }, { $set: { groupPaymentIds: paymentIds, groupPurchaseIds: purchaseIds } }, { session });
   }
   await logAudit({ req, action: 'bank.partnerTransfersPaid', model: 'AccountingBankStatementLine', docId: line._id,
-    after: { parts: items.map((item) => ({ kind: item.kind, yuan: item.yuan, usd: item.usd, id: item.bill?.billId || item.purchase?.purchaseId })), paymentIds, purchaseIds, yuan, usd: -line.amount, beforeCount } }, session);
+    after: { parts: items.map((item) => ({ kind: item.kind, yuan: item.yuan, usd: item.usd, id: item.bill?.billId || item.purchase?.purchaseId })), paymentIds, purchaseIds, yuan, usd: -line.amount, beforeCount,
+      ...(corrected && { statementCorrected: true, statementParts: parsed?.parts || null, statementTotal: parsed?.total ?? null }) } }, session);
   return BankStatementLine.findById(line._id).session(session).lean();
 }
 
