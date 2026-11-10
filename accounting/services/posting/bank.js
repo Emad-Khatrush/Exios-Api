@@ -1196,6 +1196,29 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
     const found = await require('./bankOriginals').originals([...new Set(proposed.map((e) => String(e._id)))]);
     for (const entry of proposed) if (found.has(String(entry._id))) entry.original = found.get(String(entry._id));
   }
+  // Operations recorded in dollars (a dollar bill for a yuan transfer): their yuan read from the line,
+  // «10,407+14,600=25,007¥ … سعر صرف 6.47», each part given to the operation its dollars fit (within 2%)
+  for (const line of lines) {
+    const hint = result[line._id];
+    const parsed = hint?.combinations?.length ? require('./partnerTransfers').partsOf(line.description) : null;
+    if (!parsed?.rate) continue;
+    const unit = 10 ** ((await getConfig()).currencies.get(currencyOf(bank))?.decimals ?? 2);
+    for (const option of hint.combinations) {
+      const free = [...parsed.parts];
+      for (const entry of option.entries) {
+        if (entry.original?.currency && entry.original.currency !== 'USD') {
+          const i = free.indexOf(Number(entry.original.amount));
+          if (i >= 0) free.splice(i, 1);
+          continue;
+        }
+        const usd = Math.abs(entry.amount) / unit;
+        const best = free.map((part, i) => ({ i, gap: Math.abs(part / parsed.rate - usd) / usd })).sort((x, y) => x.gap - y.gap)[0];
+        if (!best || best.gap > 0.02) continue;
+        entry.original = { ...(entry.original || {}), currency: 'CNY', amount: free[best.i], fromStatement: true };
+        free.splice(best.i, 1);
+      }
+    }
+  }
   // Two statement rows competing for one proposal need an individual review.
   const targets = new Map();
   const competingRows = new Map();
