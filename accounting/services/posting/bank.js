@@ -213,12 +213,19 @@ async function importLines(accountId, rows, { session, req, deferPosting = false
   // hold, or that cannot be posted (a missing rate, say), stays unmatched with its reason
   let posted = 0;
   const notPosted = [];
+  const heldNotPosted = notPosted;
+  let held;
+  const heldMovements = async () => (held = held || await unmatchedMovements(account._id, { session }));
   const freshPrints = new Set(fresh.map((doc) => doc.fingerprint));
   for (const [index, doc] of docs.entries()) {
     const row = rows[index];
     if (deferPosting || row.ignore || !(row.counterAccountId || row.link || row.billId || row.purchaseMatch) || !freshPrints.has(doc.fingerprint)) continue;
     const line = await BankStatementLine.findOne({ accountId: account._id, fingerprint: doc.fingerprint, lineStatus: 'unmatched' }).session(session);
     if (!line) continue;
+    if (!row.purchaseMatch && !row.billId) {
+      const hold = require('./importHold').holdReason(account, line, await heldMovements());
+      if (hold) { heldNotPosted.push({ day: line.day, description: line.description, reason: hold.reason }); continue; }
+    }
     try {
       if (row.purchaseMatch) await (row.purchaseMatch.refund ? require('./bankRefund').match : require('./bankPurchaseReview').matchPurchase)(line._id, row.purchaseMatch, { session, req });
       else await createEntryForLine(line._id, { counterAccountId: row.counterAccountId, office: row.office || undefined, confirmNotDuplicate: !!row.confirmNotDuplicate, link: row.link || undefined, vendorName: row.vendorName || undefined, billId: row.billId }, { session, req });
@@ -243,6 +250,10 @@ async function importStatement(accountId, rows, { req, matchingSettings, onProgr
   const docs = await toDocs(account, rows);
   const toPost = rows.filter(row => !row.ignore && (row.counterAccountId || row.link || row.billId || row.purchaseMatch)).length;
   let handled = 0;
+  // A line the matching page must take (importHold) is never posted, whatever the table sent
+  const heldNotPosted = result.notPosted;
+  let held;
+  const heldMovements = async () => (held = held || await unmatchedMovements(accountId));
   onProgress({ phase: 'posting', done: 0, total: toPost });
   for (const [index, doc] of docs.entries()) {
     const row = rows[index];
@@ -250,6 +261,10 @@ async function importStatement(accountId, rows, { req, matchingSettings, onProgr
     onProgress({ phase: 'posting', done: handled++, total: toPost });
     const line = await BankStatementLine.findOne({ accountId, fingerprint: doc.fingerprint, importBatchId: result.batchId, lineStatus: 'unmatched' }).lean();
     if (!line) continue;
+    if (!row.purchaseMatch && !row.billId) {
+      const hold = require('./importHold').holdReason(account, line, await heldMovements());
+      if (hold) { heldNotPosted.push({ day: line.day, description: line.description, reason: hold.reason }); continue; }
+    }
     try {
       // A unique merchant upsert may lose to another bank import; retry after rollback.
       for (let attempt = 0; ; attempt++) {
@@ -1172,6 +1187,8 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
       const found = require('./bankCombos').combinations(line, movements);
       if (found.options.length) Object.assign(hint, { combinations: found.options, moreCombinations: found.more, requiresConfirmation: true });
     }
+    // Alipay transfers paid from a partner's current account: taken apart on this page, never posted as one cost by «ترحيل الجاهز»
+    if (line.amount < 0 && bank.cashKind === 'current' && require('./partnerTransfers').partsOf(line.description)) Object.assign(hint, { requiresConfirmation: true, holdForMatching: true });
   }
   // Two statement rows competing for one proposal need an individual review.
   const targets = new Map();
@@ -1338,6 +1355,10 @@ async function classifyRows(accountId, rows, matchingSettings) {
       taken.add(String(match._id));
       return { status: 'match', matchQuality: evidence.quality(doc, match), entry: { _id: match._id, number: match.number, day: match.day, description: match.description } };
     }
+    // Paid from a partner's current account for Alipay transfers, or the total of operations in the books: kept for matching
+    const hold = require('./importHold').holdReason(account, { ...doc, accountId: account._id }, movements.filter((m) => !taken.has(String(m._id))));
+    if (hold) return { status: 'new', account: null, requiresConfirmation: true, holdForMatching: true, source: 'matching', reason: hold.reason,
+      combinations: hold.combinations.slice(0, 3).map((option) => option.entries.map((e) => ({ number: e.number, day: e.day, amount: e.amount }))) };
     const twin = near.find((m) => dayDistance(m.day, doc.day) <= DUPLICATE_DAYS);
     if (doc.sourceProvider === 'alipay' && doc.amount > 0 && !identifiedRefund) return {
       status: twin ? 'maybeDuplicate' : 'new', account: null, requiresConfirmation: true, source: 'alipay', reason: 'شراء يوان أو تحويل أو إيداع؛ يُطابق مع قيد العملية ولا يُسجل إيرادًا من الكشف',
