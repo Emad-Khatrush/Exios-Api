@@ -587,6 +587,11 @@ async function createPayment(input, { session, req, user, requireCurrency }) {
   await doc.save({ session });
   // The orders and trips whose cost changed take it into their recognised cost
   if (doc.costDifferenceUsd) for (const bill of bills) await syncBillTargets(bill, { session, user: actor });
+  // The reference of the transfer on the account's statement: matched on import (alone or with the
+  // other operations of the same transfer)
+  if (input.transactionReference && doc.fromAccountId) {
+    await require('./bankReference').attach(entry._id, await getAccount(doc.fromAccountId), input.transactionReference, { session, req });
+  }
   await logAudit({ req, user: actor, action: 'payment.post', model: 'AccountingSupplierPayment', docId: doc._id, after: doc }, session);
   return doc;
 }

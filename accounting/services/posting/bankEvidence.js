@@ -27,19 +27,24 @@ async function repeatedReferences(accountId, docs, session) {
   return result;
 }
 function quality(line, movement, hint = {}) {
-  const referenceMatch = !!ref(line.sourceTransactionId || line.reference) && !!ref(movement?.bankSourceReference)
-    && ref(line.sourceTransactionId || line.reference) === ref(movement.bankSourceReference)
-    && String(movement.bankSourceAccountId) === String(line.accountId);
+  const referenceMatch = !!movement && !!ref(line.sourceTransactionId || line.reference)
+    && movementRef(movement, line.accountId) === ref(line.sourceTransactionId || line.reference);
   if (referenceMatch) return { level: 'strong', label: 'مرجع العملية مطابق', reasons: ['نفس الحساب والمبلغ والعملة', 'مرجع القيد يطابق الكشف'] };
   if (movement) return { level: 'review', label: 'تشابه مبلغ وتاريخ', reasons: ['نفس الحساب والمبلغ والعملة', 'راجع البيان والطرف؛ المبلغ وحده لا يثبت العملية'] };
   if (hint.billCandidates?.some(b => b.matchReasons?.includes('اسم المورد أو مرجع العملية مطابق')))
     return { level: 'supported', label: 'المورد أو المرجع يدعم الاقتراح', reasons: ['المبلغ والعملة متوافقان', 'تحتاج مراجعة الفاتورة الأصلية'] };
   return { level: 'review', label: 'اقتراح يحتاج مراجعة', reasons: [hint.reason || 'راجع أصل العملية قبل الاعتماد'] };
 }
+// The statement reference a movement was recorded with for this account (an Alipay transaction
+// number, or the reference typed on a payment or salary), normalised, or ''
+function movementRef(movement, accountId) {
+  if (movement.bankSourceReference && String(movement.bankSourceAccountId) === String(accountId)) return ref(movement.bankSourceReference);
+  if (movement.statementReference && String(movement.statementReferenceAccountId) === String(accountId)) return ref(movement.statementReference);
+  return '';
+}
 function referenceCompatible(line, movement) {
-  return !movement.bankSourceReference || String(movement.bankSourceAccountId) !== String(line.accountId)
-    || !ref(line.sourceTransactionId || line.reference)
-    || ref(movement.bankSourceReference) === ref(line.sourceTransactionId || line.reference);
+  const typed = movementRef(movement, line.accountId);
+  return !typed || !ref(line.sourceTransactionId || line.reference) || typed === ref(line.sourceTransactionId || line.reference);
 }
 async function resolve(lineId, input, { session, req }) {
   await require('../periodLock').lockPeriod(session);
@@ -63,4 +68,4 @@ async function resolve(lineId, input, { session, req }) {
 function assertReviewed(line) {
   if (line.duplicateReviewPending || line.duplicateResolvedToId) throw fail('راجع السطر المستورد المحتمل أو افتح السطر الأصلي قبل تنفيذ العملية');
 }
-module.exports = { repeatedReferences, quality, referenceCompatible, resolve, ref, assertReviewed };
+module.exports = { repeatedReferences, quality, referenceCompatible, movementRef, resolve, ref, assertReviewed };

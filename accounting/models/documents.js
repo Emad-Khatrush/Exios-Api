@@ -86,6 +86,14 @@ const billLineSchema = new Schema({
 });
 
 const SupplierBill = mongoose.model('AccountingSupplierBill', withLifecycle({
+  // A reminder written on the bill at any time, even after it is posted (no entry, no effect on the
+  // books); active while it is needed, then switched off and kept (owner's request 2026-11-10)
+  reminder: {
+    note: String,
+    active: Boolean,
+    updatedAt: Date,
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  },
   yuanPurchaseId: { type: Schema.Types.ObjectId, ref: 'AccountingYuanPurchase' },
   duplicateDecision: String,
   duplicateReason: String,
@@ -317,6 +325,9 @@ const SalaryPayment = mongoose.model('AccountingSalaryPayment', withLifecycle({
   // Same currency as the salary
   advanceDeduction: { type: Number, default: 0 },
   paidFromAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', required: true },
+  // Paid from an account in another currency (a yuan salary from a dollar account): what left it
+  paidCurrency: String,
+  paidAmount: Number,
 }));
 
 const EquityTransaction = mongoose.model('AccountingEquityTransaction', withLifecycle({
@@ -396,6 +407,8 @@ const bankLineSchema = new Schema({
   groupPaymentIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingSupplierPayment' }],
   // Yuan purchases this line recorded for the yuan a partner sold us in it (cancelled with the match)
   groupPurchaseIds: [{ type: Schema.Types.ObjectId, ref: 'AccountingYuanPurchase' }],
+  // The person said none of the proposed sets of operations is this line (bankCombos)
+  combinationsDismissed: Boolean,
   unidentified: {
     status: { type: String, enum: ['open', 'decided', 'resolved'] },
     hint: { type: String, enum: ['purchase', 'shipping', 'refund', 'customer', 'expense', 'unknown'] },

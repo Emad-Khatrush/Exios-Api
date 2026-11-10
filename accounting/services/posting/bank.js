@@ -280,7 +280,8 @@ async function unmatchedMovements(accountId, { from, to, session, includeBalance
     { $unwind: '$lines' },
     { $match: { 'lines.accountId': new mongoose.Types.ObjectId(String(accountId)) } },
     { $group: { _id: '$_id', number: { $first: '$number' }, eventType: { $first: '$eventType' }, day: { $first: '$day' }, description: { $first: '$description' },
-      allAccountIds: { $first: '$allAccountIds' }, ledgerLines: { $first: '$allLines' }, bankSourceReference: { $first: '$bankSourceReference' }, bankSourceAccountId: { $first: '$bankSourceAccountId' }, amount: { $sum: '$lines.amountCurrency' } } },
+      allAccountIds: { $first: '$allAccountIds' }, ledgerLines: { $first: '$allLines' }, bankSourceReference: { $first: '$bankSourceReference' }, bankSourceAccountId: { $first: '$bankSourceAccountId' },
+      statementReference: { $first: '$statementReference' }, statementReferenceAccountId: { $first: '$statementReferenceAccountId' }, amount: { $sum: '$lines.amountCurrency' } } },
     { $sort: { day: 1 } },
   ]).session(session || null);
   const opening = await resolveAccount('opening_balance');
@@ -361,6 +362,24 @@ async function autoMatch(accountId, { session, req, matchingSettings }) {
     if (!best) continue;
     taken.add(String(best._id));
     line.matchedEntryIds = [best._id];
+    line.matchGroupId = undefined;
+    line.lineStatus = 'matched';
+    await line.save({ session });
+    matched++;
+  }
+  // One line recorded as several operations typed with its reference (a 7,880¥ transfer recorded as
+  // a 1,880¥ supplier payment and a 6,000¥ salary): matched together when they add up to it exactly.
+  // The shared reference is the proof; equal totals alone are only proposed (bankCombos).
+  for (const line of matchableLines) {
+    if (line.lineStatus !== 'unmatched') continue;
+    const lineRef = evidence.ref(line.sourceTransactionId || line.reference);
+    if (!lineRef) continue;
+    const group = candidates.filter((c) => !taken.has(String(c._id)) && evidence.movementRef(c, accountId) === lineRef
+      && bankTransferHints.matchesMovement(line, guess(line), c));
+    if (!group.length || group.reduce((sum, c) => sum + c.amount, 0) !== line.amount) continue;
+    await reserveMatchedEntries(accountId, group.map((c) => c._id), session);
+    group.forEach((c) => taken.add(String(c._id)));
+    line.matchedEntryIds = group.map((c) => c._id);
     line.matchGroupId = undefined;
     line.lineStatus = 'matched';
     await line.save({ session });
@@ -1146,6 +1165,12 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
       const open = await vendorBills(hint);
       if (open) Object.assign(hint, { vendorBills: open, requiresConfirmation: true,
         reason: `للمورد ${open.vendorName} ${open.count === 1 ? 'فاتورة غير مسددة' : `${open.count} فواتير غير مسددة`}؛ سدّدها من هذا السطر بدل تسجيل تكلفة جديدة.` });
+    }
+    // Two or three operations in the books adding up to the line: every such set is offered, the
+    // person picks one or none (dismissed lines are not offered again)
+    if (settings.engines.includes('ledger') && !hint.isRefund && !line.combinationsDismissed) {
+      const found = require('./bankCombos').combinations(line, movements);
+      if (found.options.length) Object.assign(hint, { combinations: found.options, moreCombinations: found.more, requiresConfirmation: true });
     }
   }
   // Two statement rows competing for one proposal need an individual review.

@@ -168,6 +168,7 @@ async function openBillsFor(vendorId) {
   for (const bill of bills) {
     const open = opens.get(String(bill._id));
     if (open !== 0) result.push({ _id: bill._id, number: bill.number, day: bill.day, currency: bill.currency, total: bill.total, totalUsd: bill.totalUsd, open, openNative: native.get(String(bill._id)), vendorRef: bill.vendorRef,
+      reminder: bill.reminder?.active && bill.reminder.note ? bill.reminder.note : undefined,
       orderOnly: !!bill.lines.length && bill.lines.every(line => line.target === 'order' && line.orderId),
       orderIds: [...new Set(bill.lines.filter(line => line.orderId).map(line => String(line.orderId)))] });
   }
@@ -202,6 +203,21 @@ async function billsOpen(billIds) {
   return new Map(rows.map((row) => [row._id.slice('BILL:'.length), row.open]));
 }
 
+// A reminder on a bill, any time (also after posting): no entry, nothing in the books changes. An
+// empty note removes it; switched off it is kept (owner's request 2026-11-10)
+module.exports.setBillReminder = handle(async (req, res) => {
+  if (!isObjectId(req.params.id)) throw badRequest('الفاتورة غير صالحة');
+  const note = String(req.body?.note || '').trim().slice(0, 2000);
+  const before = await docs.SupplierBill.findById(req.params.id).select('reminder').lean();
+  if (!before) throw notFound('الفاتورة غير موجودة');
+  const update = note
+    ? { $set: { reminder: { note, active: req.body?.active !== false, updatedAt: new Date(), updatedBy: req.user?._id } } }
+    : { $unset: { reminder: 1 } };
+  const bill = await docs.SupplierBill.findByIdAndUpdate(req.params.id, update, { new: true }).select('reminder').lean();
+  await require('../services/audit').logAudit({ req, action: 'bill.reminder', model: 'AccountingSupplierBill', docId: bill._id, before: before.reminder, after: bill.reminder });
+  res.json(bill);
+});
+
 // A cent or two left by rounding counts as paid
 const paymentStatusOf = (bill, open) => (open <= 2 ? 'paid' : open >= (bill.totalUsd || 0) - 2 ? 'unpaid' : 'partial');
 
@@ -213,11 +229,14 @@ module.exports.listBills = handle(async (req, res) => {
   if (req.query.quick === 'true') query.isQuickExpense = true;
   if (req.query.search) {
     const pattern = new RegExp(escapeRegex(req.query.search), 'i');
-    query.$or = [{ number: pattern }, { vendorRef: pattern }, { 'lines.description': pattern }];
+    query.$or = [{ number: pattern }, { vendorRef: pattern }, { 'lines.description': pattern }, { 'reminder.note': pattern }];
   }
   if (isObjectId(req.query.expenseTypeId)) query.expenseTypeId = oid(req.query.expenseTypeId);
   if (req.query.office) query.office = req.query.office;
   if (req.query.target) query['lines.target'] = req.query.target;
+  // Bills with a reminder still needed (active) or one switched off (inactive)
+  if (req.query.reminder === 'active') Object.assign(query, { 'reminder.active': true, 'reminder.note': { $nin: ['', null] } });
+  if (req.query.reminder === 'inactive') Object.assign(query, { 'reminder.active': { $ne: true }, 'reminder.note': { $nin: ['', null] } });
   // Paid, partly paid or unpaid (owner's request 2026-10-04): what is still owed on each posted bill
   if (['paid', 'partial', 'unpaid'].includes(req.query.payment)) {
     const posted = await docs.SupplierBill.find({ ...query, status: 'posted', isCreditNote: { $ne: true } }).select('_id totalUsd').lean();

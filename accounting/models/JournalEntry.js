@@ -53,6 +53,11 @@ const journalEntrySchema = new Schema({
   bankMatchedAccounts: [{ type: Schema.Types.ObjectId, ref: 'AccountingAccount' }],
   bankSourceReference: String,
   bankSourceAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
+  // The statement reference typed on an operation paid from a money account. Unlike
+  // bankSourceReference it may be shared: one transfer recorded as several operations
+  // (a supplier payment and a salary) carries the same reference on each (bankReference.js)
+  statementReference: String,
+  statementReferenceAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount' },
   // Contention point for concurrent nettings against the same customer receivable claim.
   claimAllocationVersion: { type: Number, default: 0 },
   // Serialize concurrent settlements of the same suspense entry inside transactions.
@@ -93,5 +98,6 @@ journalEntrySchema.index({ 'source.model': 1, 'source.id': 1 });
 journalEntrySchema.index({ bankSourceAccountId: 1, bankSourceReference: 1 }, {
   unique: true, partialFilterExpression: { bankSourceReference: { $type: 'string' }, status: 'posted' },
 });
+journalEntrySchema.index({ statementReferenceAccountId: 1, statementReference: 1 }, { partialFilterExpression: { statementReference: { $type: 'string' } } });
 
 module.exports = mongoose.model('AccountingJournalEntry', journalEntrySchema);

@@ -38,8 +38,14 @@ async function createSalary(input, { session, req }) {
     throw fail('يوجد استحقاق راتب لهذا الشهر؛ اصرفه من التسويات والمستحقات حتى لا يتكرر المصروف');
   const cash = await getAccount(input.paidFromAccountId, 'حساب الصرف');
   if (!cash.isCash) throw fail('اختر الخزينة التي صُرف منها الراتب');
-  const currency = currencyOf(cash);
-  if (input.currency && input.currency !== currency) throw fail(`الخزينة بعملة ${currency}`);
+  const payCurrency = currencyOf(cash);
+  if (input.currency && input.currency !== payCurrency) throw fail(`الخزينة بعملة ${payCurrency}`);
+  // A salary in yuan paid from a dollar account (a partner's transfer, owner's request 2026-11-10):
+  // the salary is worked out in its own currency, and what left the account is typed in the
+  // account's currency; the expense is what was really paid
+  const crossCurrency = !!input.structuredSalary && !!employee.salaryCurrency && employee.salaryCurrency !== payCurrency;
+  const currency = crossCurrency ? employee.salaryCurrency : payCurrency;
+  if (crossCurrency && !(Number(input.paidAmount) > 0)) throw fail(`اكتب المبلغ الذي خرج من ${cash.name} بعملة ${payCurrency}`);
 
   const rates = new RateBook(session);
   let breakdown = null;
@@ -59,7 +65,8 @@ async function createSalary(input, { session, req }) {
   if (!gross) throw fail('إجمالي الراتب مطلوب');
   if (deduction > gross) throw fail('الخصم أكبر من الراتب');
 
-  const grossUsd = await rates.toUsd(gross, currency, input.day, input.rate);
+  // Paid in another currency the typed rate does not apply: what left the account sets it
+  const docRate = crossCurrency ? undefined : input.rate;
   // A loan is taken back from the salary, from the loan in the salary's currency, at the rate it was
   // lent at; custody is settled by expenses (owner's requests 2026-10-04)
   const custody = require('../custody');
@@ -69,10 +76,22 @@ async function createSalary(input, { session, req }) {
     const held = await custody.heldMinor(loans, employee._id, session);
     if (deduction > held) throw fail(`الخصم أكبر من رصيد سلفة الموظف بعملة ${currency} (${held / 10 ** await decimalsOf(currency)})`);
   }
-  const deductionUsd = deduction ? await valueOut(loans, deduction, { day: input.day, docRate: input.rate, rates, employeeId: employee._id }) : 0;
+  const deductionUsd = deduction ? await valueOut(loans, deduction, { day: input.day, docRate, rates, employeeId: employee._id }) : 0;
   const net = gross - deduction;
   if (input.structuredSalary && input.expectedNetAmount !== undefined && await toCurrencyMinor(input.expectedNetAmount, currency) !== net) throw fail('تغير صافي الراتب أو سعر تحويل العمولة؛ أعد مراجعة المعاينة قبل الصرف');
-  if (net && !(await isBeforeCashCount(input.day))) {
+  // What leaves the account, in its currency, and its dollars
+  const paidMinor = crossCurrency ? await toCurrencyMinor(input.paidAmount, payCurrency) : net;
+  const paidUsd = crossCurrency ? await rates.toUsd(paidMinor, payCurrency, input.day) : 0;
+  if (crossCurrency) {
+    if (!net) throw fail('لا يوجد صافٍ يُصرف من الحساب بعد خصم السلفة');
+    const expected = await rates.toUsd(net, currency, input.day);
+    if (Math.abs(paidUsd - expected) > Math.round(expected * 0.1) + 100) {
+      throw fail(`المدفوع ${input.paidAmount} ${payCurrency} بعيد عن قيمة الصافي ${net / 10 ** await decimalsOf(currency)} ${currency} بسعر اليوم (${expected / 100}$) بأكثر من 10%: راجع المبلغ`);
+    }
+  }
+  // The salary's dollars: what was paid (another currency: what left the account, plus the loan taken back)
+  const grossUsd = crossCurrency ? paidUsd + deductionUsd : await rates.toUsd(gross, currency, input.day, docRate);
+  if (paidMinor && !(await isBeforeCashCount(input.day))) {
     await lockPostingAccounts([cash], session);
   }
 
@@ -81,8 +100,9 @@ async function createSalary(input, { session, req }) {
     structuredSalary: !!breakdown,
     paymentKind: 'salary',
     ...(breakdown && { baseSalary: Number(input.baseSalary), commissionAmount: breakdown.commissionAmount, salaryDeduction: breakdown.salaryDeduction, commissionConversions: breakdown.conversions, adjustments: breakdown.adjustments.map(r => r._id) }),
-    employeeId: employee._id, month: input.month, day: input.day, office: input.office, currency, rate: input.rate,
+    employeeId: employee._id, month: input.month, day: input.day, office: input.office, currency, rate: docRate,
     grossAmount: Number(input.grossAmount), advanceDeduction: Number(input.advanceDeduction || 0), paidFromAccountId: cash._id,
+    ...(crossCurrency && { paidCurrency: payCurrency, paidAmount: paidMinor / 10 ** await decimalsOf(payCurrency) }),
     note: input.note, idempotencyKey: input.idempotencyKey, createdBy: req?.user?._id, status: 'posted',
     number: await nextDocNumber('SAL', input.day, session),
   }], { session });
@@ -94,7 +114,9 @@ async function createSalary(input, { session, req }) {
 
   const salaries = await resolveAccount('salaries_expense');
   const name = doc.employeeName;
-  const commissionUsd = breakdown ? await rates.toUsd(await toCurrencyMinor(breakdown.commissionAmount, currency), currency, input.day, input.rate) : 0;
+  const commissionMinor = breakdown ? await toCurrencyMinor(breakdown.commissionAmount, currency) : 0;
+  // Paid in another currency the commission takes its share of what was really paid
+  const commissionUsd = !commissionMinor ? 0 : crossCurrency ? Math.round(grossUsd * commissionMinor / gross) : await rates.toUsd(commissionMinor, currency, input.day, docRate);
   const baseNetUsd = grossUsd - commissionUsd;
   const lines = [];
   if (baseNetUsd) lines.push({ accountId: salaries._id, [baseNetUsd > 0 ? 'debit' : 'credit']: Math.abs(baseNetUsd), office: input.office, employeeId: employee._id, label: `راتب ${name} ${input.month}` });
@@ -104,7 +126,7 @@ async function createSalary(input, { session, req }) {
     lines.push({ accountId: commissions._id, debit: commissionUsd, office: input.office, employeeId: employee._id, label: `عمولات ${name} ${input.month}` });
   }
   if (deduction) lines.push(moneyLine(loans, 'credit', deduction, deductionUsd, { employeeId: employee._id, label: 'خصم سلفة' }));
-  if (net) lines.push(moneyLine(cash, 'credit', net, await valueOut(cash, net, { day: input.day, docRate: input.rate, rates }), { label: `صافي راتب ${name}` }));
+  if (paidMinor) lines.push(moneyLine(cash, 'credit', paidMinor, await valueOut(cash, paidMinor, { day: input.day, docRate, rates }), { label: `صافي راتب ${name}` }));
   await addFxLine(lines, input.office);
 
   const entry = await postEntry({
@@ -115,6 +137,9 @@ async function createSalary(input, { session, req }) {
   await rates.lock();
   doc.entryId = entry._id;
   await doc.save({ session });
+  // The reference of the transfer on the account's statement: matched on import (alone or with the
+  // other operations of the same transfer)
+  if (paidMinor && input.transactionReference) await require('./bankReference').attach(entry._id, cash, input.transactionReference, { session, req });
   await logAudit({ req, action: 'salary.post', model: 'AccountingSalaryPayment', docId: doc._id, after: doc }, session);
   return doc;
 }

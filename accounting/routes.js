@@ -274,6 +274,8 @@ router.post('/bills/:id/edit-preview', P.purchases, handle(async (req, res) => r
 router.post('/bills/:id/edit-posted', P.purchases, handle(async (req, res) => res.json(await reviewTx(session =>
   require('./services/billFinancialEdit').apply(req.params.id, req.body || {}, { session, req })))));
 router.post('/bills/:id/post', P.purchases, documents.postDraftBill);
+// A reminder on the bill, any time (also after posting): no entry, nothing in the books changes
+router.put('/bills/:id/reminder', can('purchases', 'payments'), documents.setBillReminder);
 
 // Each kind of document belongs to one kind of work
 router.post('/payments/batch-trial', P.payments, (req, res, next) => req.body?.excessPurpose === 'alipay' ? P.treasury(req, res, next) : next(),
@@ -374,6 +376,15 @@ router.get('/bank/late-expense', P.treasury, handle(async (req, res) => res.json
 router.get('/bank/integrity', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/bankReviewTools').integrity(req.query.accountId))));
 router.post('/bank/integrity/release', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankReviewTools').releaseInvalid(req.body || {}, { session, req })))));
 router.post('/bank/lines/:id/match', P.treasury, documents.matchBankLine);
+// None of the proposed sets of operations is this line: stop proposing them (or propose them again)
+router.post('/bank/lines/:id/combinations-dismiss', P.treasury, handle(async (req, res) => {
+  const { BankStatementLine } = require('./models/documents');
+  const line = await BankStatementLine.findOneAndUpdate({ _id: req.params.id, lineStatus: 'unmatched' },
+    { $set: { combinationsDismissed: req.body?.dismissed !== false } }, { new: true }).lean();
+  if (!line) throw require('./services/posting/common').fail('سطر الكشف غير متاح؛ حدّث الصفحة');
+  await require('./services/audit').logAudit({ req, action: 'bank.combinationsDismissed', model: 'AccountingBankStatementLine', docId: line._id, after: { dismissed: line.combinationsDismissed } });
+  res.json(line);
+}));
 router.post('/bank/lines/:id/entry', P.treasury, documents.bankLineEntry);
 // Several lines for one purchase typed on an order (spec v8)
 router.get('/bank/order-items/:orderId', P.treasury, require('./controllers/util').handle(async (req, res) => res.json(await require('./services/posting/bank').orderPurchaseItems(req.params.orderId))));
