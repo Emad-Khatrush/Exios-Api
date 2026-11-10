@@ -1190,6 +1190,12 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
     // Alipay transfers paid from a partner's current account: taken apart on this page, never posted as one cost by «ترحيل الجاهز»
     if (line.amount < 0 && bank.cashKind === 'current' && require('./partnerTransfers').partsOf(line.description)) Object.assign(hint, { requiresConfirmation: true, holdForMatching: true });
   }
+  // Each proposed entry in its own currency (the yuan of a salary or of the bills a payment settled)
+  const proposed = Object.values(result).flatMap((hint) => (hint.combinations || []).flatMap((option) => option.entries));
+  if (proposed.length) {
+    const found = await require('./bankOriginals').originals([...new Set(proposed.map((e) => String(e._id)))]);
+    for (const entry of proposed) if (found.has(String(entry._id))) entry.original = found.get(String(entry._id));
+  }
   // Two statement rows competing for one proposal need an individual review.
   const targets = new Map();
   const competingRows = new Map();
