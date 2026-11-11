@@ -37,10 +37,20 @@ function partsOf(description) {
   if (sides.length > 2) return null;
   const partsSide = sides.find((side) => side.includes('+')) || sides[0];
   const totalSide = sides.length === 2 ? sides.find((side) => side !== partsSide) : null;
-  const parts = partsSide.split('+').map(number).filter((n) => n > 0);
+  const cents = (n) => Math.round(n * 100);
+  const read = (side) => side.split('+').map(number).filter((n) => n > 0);
+  let parts = read(partsSide);
   if (!parts.length) return null;
-  const total = totalSide ? number(totalSide) : parts.reduce((s, n) => s + n, 0);
-  const rate = Number((text.match(/سعر\s*صرف\s*([\d.]+)/) || [])[1]) || null;
+  let total = totalSide ? number(totalSide) : parts.reduce((s, n) => s + n, 0);
+  // A total cut by the PDF's line wrap, its last digits landing after the parts
+  // («15,97=2,607+7,866+3,300+2,200 3» for 15,973): taken back only when the parts then add up to it
+  const wrapped = totalSide && partsSide.match(/^(.*\d)\s+(\d{1,3})$/);
+  if (wrapped) {
+    const whole = number(totalSide + wrapped[2]);
+    const inner = read(wrapped[1]);
+    if (cents(inner.reduce((s, n) => s + n, 0)) === cents(whole)) { parts = inner; total = whole; }
+  }
+  const rate = Number((text.match(/سعر\s*صرف\s*\$?\s*([\d.]+)/) || [])[1]) || null;
   return { parts, total, rate };
 }
 

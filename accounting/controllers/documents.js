@@ -322,6 +322,8 @@ const LISTS = {
 module.exports.listDocuments = (kind) => handle(async (req, res) => {
   const { Model, populate } = LISTS[kind];
   const extra = {};
+  // The page asking whether its request was saved, after an answer that never arrived (a timeout)
+  if (req.query.idempotencyKey) extra.idempotencyKey = String(req.query.idempotencyKey);
   if (isObjectId(req.query.vendorId)) extra.vendorId = req.query.vendorId;
   if (isObjectId(req.query.employeeId)) extra.employeeId = req.query.employeeId;
   if (isObjectId(req.query.accountId)) extra.$or = [{ accountId: oid(req.query.accountId) }, { fromAccountId: oid(req.query.accountId) }, { toAccountId: oid(req.query.accountId) }];

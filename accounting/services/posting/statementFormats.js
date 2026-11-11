@@ -339,7 +339,8 @@ const aswaq = {
 // Wasl's amounts are glued in plain text. Read their actual PDF columns instead of guessing.
 const wasl = {
   name: 'وصل - كشف الحساب بالدولار',
-  detect: text => /وصل للحوالات المالية/.test(text) && /كشف حساب#/.test(text),
+  // Both of Wasl's letterheads: «وصل للحوالات المالية» and the older «وصل المتحدة للشحن والخدمات اللوجستية»
+  detect: text => /وصل (?:للحوالات المالية|المتحدة للشحن)/.test(text) && /كشف حساب#/.test(text),
   parse(text, pages = []) {
     const rows = [];
     for (const items of pages) {
@@ -357,13 +358,14 @@ const wasl = {
         const [day, month, year] = date.text.split('-');
         if (amount) {
           const row = { day: `${year}-${month}-${day}`, description: label, reference: '', amount, balanceAfter: -usNumber(balance.text) };
-          if (/Alipay/i.test(label)) {
+          // A yuan transfer, by Alipay or by bank («حواله بنك بقيمة 100,000¥ … صرف $6.78»)
+          if (/Alipay/i.test(label) || /حوال.*بقيمة.*¥/.test(label)) {
             // «32,723.88+40,909=73,632.88¥»: the total printed after «=» first, else the parts with their decimals
             const parsed = require('./partnerTransfers').partsOf(label);
             const single = label.match(/بقيمة\s*([\d,]+(?:\.\d+)?)/);
             const yuan = parsed ? Math.round(parsed.total * 100) / 100 : single ? usNumber(single[1]) : 0;
             if (yuan > 0) Object.assign(row, { originalAmount: yuan, originalCurrency: 'CNY', counterAmount: yuan, counterCurrency: 'CNY' });
-            const quote = label.match(/صرف\s+([\d.]+)/);
+            const quote = label.match(/صرف\s+\$?([\d.]+)/);
             if (quote) row.exchangeRate = Number(quote[1]);
           }
           rows.push(row);
