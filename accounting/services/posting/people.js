@@ -21,6 +21,8 @@ const {
 
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 const MONTH = /^\d{4}-\d{2}$/;
+// The last day of a month ('2026-10' → '2026-10-31'): where a salary or commission paid later is accrued
+const monthEndOf = (month) => { const [year, m] = month.split('-').map(Number); return new Date(Date.UTC(year, m, 0)).toISOString().slice(0, 10); };
 
 // Gross salary is the expense; a deducted advance reduces what the employee still holds;
 // the rest is paid from the cash box (at its average rate if not in USD).
@@ -131,11 +133,9 @@ async function createSalary(input, { session, req }) {
   if (input.month < input.day.slice(0, 7)) {
     const payable = await resolveAccount(`salary_payable_${currency.toLowerCase()}`).catch(() => null);
     if (!payable) throw fail(`لا يوجد حساب رواتب مستحقة بعملة ${currency}: شغّل الإعداد`);
-    const [year, month] = input.month.split('-').map(Number);
-    const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
     const dims = { office: input.office, employeeId: employee._id };
     await postEntry({
-      eventType: 'SALARY_ACCRUAL', eventKey: `SALARY_ACCRUAL:${doc._id}`, date: monthEnd,
+      eventType: 'SALARY_ACCRUAL', eventKey: `SALARY_ACCRUAL:${doc._id}`, date: monthEndOf(input.month),
       description: `استحقاق راتب ${name} - ${input.month}`, source: { model: 'AccountingSalaryPayment', id: doc._id },
       lines: [...lines, moneyLine(payable, 'credit', gross, grossUsd, { ...dims, label: `راتب مستحق ${name} ${input.month}` })],
     }, { session, user: req?.user });
@@ -229,10 +229,22 @@ async function createCommission(input, { session, req }) {
   }
   const settings = (await require('../config').getConfig()).settings;
   const expense = await resolveAccount(settings?.accountRoles?.employee_commission_expense ? 'employee_commission_expense' : 'salaries_expense');
-  const lines = [
-    { accountId: expense._id, debit: usd, office: input.office, employeeId: employee._id, label: `عمولة ${name} ${input.month}` },
-    moneyLine(cash, 'credit', minor, await valueOut(cash, minor, { day: input.day, docRate: input.rate, rates }), { label: `صرف عمولة ${name}` }),
-  ];
+  const lines = [{ accountId: expense._id, debit: usd, office: input.office, employeeId: employee._id, label: `عمولة ${name} ${input.month}` }];
+  // A commission of a past month paid later: like a salary, its expense belongs to the month it was
+  // earned in, accrued on that month's last day; the payment day only settles it (owner, 2026-11-12)
+  if (input.month < input.day.slice(0, 7)) {
+    const payable = await resolveAccount(`commission_payable_${currency.toLowerCase()}`).catch(() => null);
+    if (!payable) throw fail(`لا يوجد حساب عمولات مستحقة بعملة ${currency}: شغّل الإعداد`);
+    const dims = { office: input.office, employeeId: employee._id };
+    await postEntry({
+      eventType: 'SALARY_ACCRUAL', eventKey: `COMMISSION_ACCRUAL:${doc._id}`, date: monthEndOf(input.month),
+      description: `استحقاق عمولة ${name} - ${input.month}`, source: { model: 'AccountingSalaryPayment', id: doc._id },
+      lines: [...lines, moneyLine(payable, 'credit', minor, usd, { ...dims, label: `عمولة مستحقة ${name} ${input.month}` })],
+    }, { session, user: req?.user });
+    lines.length = 0;
+    lines.push(moneyLine(payable, 'debit', minor, usd, { ...dims, label: `سداد عمولة مستحقة ${name} ${input.month}` }));
+  }
+  lines.push(moneyLine(cash, 'credit', minor, await valueOut(cash, minor, { day: input.day, docRate: input.rate, rates }), { label: `صرف عمولة ${name}` }));
   await addFxLine(lines, input.office);
   const entry = await postEntry({ eventType: 'SALARY', eventKey: `COMMISSION:${doc._id}`, date: input.day,
     description: `صرف عمولة ${name} - ${input.month}`, source: { model: 'AccountingSalaryPayment', id: doc._id }, fallbacks: rates.fallbacks, lines }, { session, user: req?.user });

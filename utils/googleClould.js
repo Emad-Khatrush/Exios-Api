@@ -70,4 +70,42 @@ const deleteFromGoogleCloud = async (publicUrl) => {
   }
 };
 
-module.exports = { storage, uploadToGoogleCloud, deleteFromGoogleCloud };
+// A short download link for a file of our bucket, given its public URL. The bucket does not let the
+// browser read files itself (no CORS), so the "Download" button of the file viewer opened a new
+// tab; this link carries "attachment", so the browser saves the file and stays on the page.
+// Only objects of our own bucket are signed, never another address.
+const downloadUrlFor = async (publicUrl, filename) => {
+  if (isQa) return publicUrl;
+  const prefix = `https://storage.googleapis.com/${bucket.name}/`;
+  if (typeof publicUrl !== 'string' || !publicUrl.startsWith(prefix)) return null;
+  const raw = publicUrl.substring(prefix.length).split('?')[0].split('#')[0];
+  if (!raw) return null;
+  // Saved names are raw ("abc123فاتورة 1.pdf"); a URL from the browser may arrive encoded
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch (e) { /* keep raw */ }
+  let file = bucket.file(raw);
+  if (!(await file.exists())[0]) {
+    if (decoded === raw || !(await bucket.file(decoded).exists())[0]) return null;
+    file = bucket.file(decoded);
+  }
+  let name = String(filename || file.name.split('/').pop() || 'file').replace(/[\r\n"]/g, '').slice(0, 200) || 'file';
+  // Uploads are often saved under a bare id ("af4b48bc-..."): without its extension the saved file
+  // would not open, so it gets one from its type
+  if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
+    const type = String((await file.getMetadata())[0].contentType || '').split(';')[0].toLowerCase();
+    const ext = { 'image/jpeg': 'jpg', 'image/svg+xml': 'svg', 'application/pdf': 'pdf', 'text/plain': 'txt', 'text/csv': 'csv', 'video/quicktime': 'mov', 'audio/mpeg': 'mp3',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx', 'application/vnd.ms-excel': 'xls',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx', 'application/msword': 'doc' }[type]
+      || (/^(image|video|audio)\/([a-z0-9]+)$/.exec(type) || [])[2];
+    if (ext) name = `${name}.${ext}`;
+  }
+  const [url] = await file.getSignedUrl({
+    version: 'v4',
+    action: 'read',
+    expires: Date.now() + 5 * 60 * 1000,
+    responseDisposition: `attachment; filename="file"; filename*=UTF-8''${encodeURIComponent(name)}`,
+  });
+  return url;
+};
+
+module.exports = { storage, uploadToGoogleCloud, deleteFromGoogleCloud, downloadUrlFor };

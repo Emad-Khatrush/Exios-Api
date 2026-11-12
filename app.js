@@ -55,6 +55,7 @@ const campaigns = require('./routes/campaigns');
 const companyNotes = require('./routes/companyNotes');
 const { routes: accountingRoutes, systemRoutes: accountingSystemRoutes, initAccounting } = require('./accounting');
 const goals = require('./routes/goals');
+const files = require('./routes/files');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -487,6 +488,7 @@ app.use('/api', analytics);
 app.use('/api', campaigns);
 app.use('/api', companyNotes);
 app.use('/api', goals);
+app.use('/api', files);
 
 app.get('/api/get-qr-code', (req, res) => {
   if (qrCodeData) {

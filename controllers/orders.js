@@ -2022,7 +2022,40 @@ module.exports.getClientOrder = async (req, res, next) => {
     order.images = order.images.filter(img => img.category === 'receipts');
     order.paymentList = order.paymentList.filter(package => package.settings.visableForClient);
 
-    res.status(200).json(order);
+    // The trip (رحلة) each package is loaded on, same lookup as the admin's package flights.
+    // Only the trip name goes to the customer: the inventory holds other customers' packages and
+    // internal costs, so nothing else from it may leave here.
+    // Callers choose the fields (projection from the query), so a package may come without _id:
+    // those simply get no trip instead of failing the whole order.
+    const result = order.toJSON();
+    const packageIds = (order.paymentList || []).map(pkg => pkg?._id).filter(Boolean);
+    if (packageIds.length > 0) {
+      const trips = await Inventory.find({
+        'orders.paymentList._id': { $in: packageIds },
+        inventoryType: 'inventoryGoods',
+        shippingType: { $ne: 'domestic' }
+      }).select('voyage orders.paymentList._id').lean();
+
+      const wanted = new Set(packageIds.map(pkgId => pkgId.toString()));
+      const tripNameByPackage = {};
+      for (const trip of trips) {
+        for (const invOrder of (trip.orders || [])) {
+          const list = Array.isArray(invOrder.paymentList) ? invOrder.paymentList : (invOrder.paymentList ? [invOrder.paymentList] : []);
+          for (const invPkg of list) {
+            const pkgId = invPkg?._id?.toString();
+            if (pkgId && wanted.has(pkgId)) tripNameByPackage[pkgId] = trip.voyage;
+          }
+        }
+      }
+
+      for (const pkg of (result.paymentList || [])) {
+        if (!pkg?._id) continue;
+        const tripName = tripNameByPackage[pkg._id.toString()];
+        if (tripName) pkg.trip = { voyage: tripName };
+      }
+    }
+
+    res.status(200).json(result);
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, error.message));

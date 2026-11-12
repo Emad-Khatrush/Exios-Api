@@ -28,28 +28,33 @@ const { toCurrencyMinor, moneyLine } = require('../services/posting/common');
 const usd = (cents) => (cents / 100).toFixed(2);
 const monthEndOf = (month) => { const [y, m] = month.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
 
-// What would be posted for one salary, or why it is skipped
+// A salary and a commission paid on its own differ only in their keys, payable and words
+const kindOf = (salary) => salary.paymentKind === 'commission'
+  ? { paid: 'COMMISSION', accrual: 'COMMISSION_ACCRUAL', payable: 'commission_payable', word: 'عمولة' }
+  : { paid: 'SALARY', accrual: 'SALARY_ACCRUAL', payable: 'salary_payable', word: 'راتب' };
+
+// What would be posted for one salary or commission, or why it is skipped
 async function plan(salary, session) {
-  if (salary.paymentKind === 'commission') return { skip: 'صرف عمولة، لا راتب' };
-  if (!(salary.month < salary.day.slice(0, 7))) return { skip: 'راتب صُرف في شهره' };
-  if (await JournalEntry.exists({ eventKey: `SALARY_ACCRUAL:${salary._id}` }).session(session)) return { skip: 'مستحق مسبقًا' };
-  const entry = await JournalEntry.findOne({ eventKey: `SALARY:${salary._id}`, status: 'posted' }).session(session);
+  const k = kindOf(salary);
+  if (!(salary.month < salary.day.slice(0, 7))) return { skip: `${k.word} صُرف في شهره` };
+  if (await JournalEntry.exists({ eventKey: `${k.accrual}:${salary._id}` }).session(session)) return { skip: 'مستحق مسبقًا' };
+  const entry = await JournalEntry.findOne({ eventKey: `${k.paid}:${salary._id}`, status: 'posted' }).session(session);
   if (!entry) return { skip: 'قيد الصرف غير موجود أو مُلغى' };
   const { settings } = await getConfig();
   const expenseIds = new Set([String((await resolveAccount('salaries_expense'))._id)]);
   if (settings?.accountRoles?.employee_commission_expense) expenseIds.add(String((await resolveAccount('employee_commission_expense'))._id));
   const expenses = entry.lines.filter(l => expenseIds.has(String(l.accountId)) && (l.debit || l.credit));
   const expenseUsd = expenses.reduce((s, l) => s + l.debit - l.credit, 0);
-  if (!expenses.length || expenseUsd <= 0) return { skip: 'لا مصروف راتب في قيد الصرف' };
-  const payable = await resolveAccount(`salary_payable_${salary.currency.toLowerCase()}`);
+  if (!expenses.length || expenseUsd <= 0) return { skip: `لا مصروف ${k.word} في قيد الصرف` };
+  const payable = await resolveAccount(`${k.payable}_${salary.currency.toLowerCase()}`);
   const grossMinor = await toCurrencyMinor(salary.grossAmount, salary.currency);
   const dims = { office: expenses[0].office || salary.office, employeeId: salary.employeeId };
   const copy = (l, flip) => ({ accountId: l.accountId, debit: flip ? l.credit : l.debit, credit: flip ? l.debit : l.credit,
     ...(l.office && { office: l.office }), ...(l.employeeId && { employeeId: l.employeeId }), label: l.label });
   return {
-    entry, expenseUsd, monthEnd: monthEndOf(salary.month),
-    accrual: [...expenses.map(l => copy(l, false)), moneyLine(payable, 'credit', grossMinor, expenseUsd, { ...dims, label: `راتب مستحق ${salary.employeeName} ${salary.month}` })],
-    settle: [moneyLine(payable, 'debit', grossMinor, expenseUsd, { ...dims, label: `سداد راتب مستحق ${salary.employeeName} ${salary.month}` }), ...expenses.map(l => copy(l, true))],
+    k, entry, expenseUsd, monthEnd: monthEndOf(salary.month),
+    accrual: [...expenses.map(l => copy(l, false)), moneyLine(payable, 'credit', grossMinor, expenseUsd, { ...dims, label: `${k.word} مستحق ${salary.employeeName} ${salary.month}` })],
+    settle: [moneyLine(payable, 'debit', grossMinor, expenseUsd, { ...dims, label: `سداد ${k.word} مستحق ${salary.employeeName} ${salary.month}` }), ...expenses.map(l => copy(l, true))],
   };
 }
 
@@ -60,10 +65,10 @@ async function accrue(salaryId, { session, user }) {
   if (p.skip) throw new Error(p.skip);
   const source = { model: 'AccountingSalaryPayment', id: salary._id };
   // 'reject': a closed month fails instead of sliding into the payment month
-  const accrual = await postEntry({ eventType: 'SALARY_ACCRUAL', eventKey: `SALARY_ACCRUAL:${salary._id}`, date: p.monthEnd,
-    description: `استحقاق راتب ${salary.employeeName} - ${salary.month} (تصحيح: صُرف ${salary.day})`, source, lines: p.accrual }, { session, user, onLocked: 'reject' });
-  const settle = await postEntry({ eventType: 'SALARY_ACCRUAL', eventKey: `SALARY_ACCRUAL_SETTLE:${salary._id}`, date: p.entry.day,
-    description: `سداد راتب مستحق ${salary.employeeName} - ${salary.month} بقيد الصرف ${p.entry.number}`, source, lines: p.settle }, { session, user, onLocked: 'reject' });
+  const accrual = await postEntry({ eventType: 'SALARY_ACCRUAL', eventKey: `${p.k.accrual}:${salary._id}`, date: p.monthEnd,
+    description: `استحقاق ${p.k.word} ${salary.employeeName} - ${salary.month} (تصحيح: صُرف ${salary.day})`, source, lines: p.accrual }, { session, user, onLocked: 'reject' });
+  const settle = await postEntry({ eventType: 'SALARY_ACCRUAL', eventKey: `${p.k.accrual}_SETTLE:${salary._id}`, date: p.entry.day,
+    description: `سداد ${p.k.word} مستحق ${salary.employeeName} - ${salary.month} بقيد الصرف ${p.entry.number}`, source, lines: p.settle }, { session, user, onLocked: 'reject' });
   await logAudit({ req: user && { user }, action: 'salary.lateAccrual', model: 'AccountingSalaryPayment', docId: salary._id,
     after: { accrualEntryId: accrual._id, settleEntryId: settle._id, paymentEntryId: p.entry._id, amountUsd: p.expenseUsd } }, session);
   return { accrual, settle, amountUsd: p.expenseUsd };
