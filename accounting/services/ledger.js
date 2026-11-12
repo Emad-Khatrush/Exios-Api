@@ -109,24 +109,34 @@ async function resolveJournal({ journalId, journalCode, eventType }, lines, conf
 // usual (config.count.at). The migration's own entries, cash counts and manual entries are left
 // alone; a reversal follows the rule only when it undoes a historical entry (otherwise it mirrors
 // its original exactly, which was already moved if it had to be).
+// An account followed from a later day than the count (a credit card opened in the books on 30-09
+// with its debt, `trackedFrom: '2026-10-01'`) follows the same rule before that day: its opening
+// balance already holds everything before it. So an expense paid before then (a card purchase of
+// June) lands in its month while the card side goes to the opening balances, and a card payment
+// posted from an old bank statement moves nothing (owner's request 2026-11-12).
 async function beforeCountLines(input, lines, config, notes) {
   const { count } = config;
-  if (!count || input.isHistorical || input.migrationRunId || input.countRule === 'skip') return lines;
+  if (input.isHistorical || input.migrationRunId || input.countRule === 'skip') return lines;
   // A count, and a manual entry (suspense settlements among them): the accountant names the box on purpose
   if (['CASHCOUNT', 'OPENING_CASH', 'MANUAL', 'YEAR_CLOSE'].includes(input.eventType)) return lines;
   // In the count: a day before it, the count day itself when the count is its end, or (for an
   // operation with its time) any moment up to the count
   const inputDate = input.date || new Date();
   const day = toDay(inputDate);
-  const inCount = isDay(inputDate) ? day < count.day || (day === count.day && count.endOfDay) : new Date(inputDate) <= count.at;
-  if (!inCount) return lines;
-  const counted = lines.filter((line) => count.accountIds.has(String(line.accountId)));
+  const inCount = !!count && (isDay(inputDate) ? day < count.day || (day === count.day && count.endOfDay) : new Date(inputDate) <= count.at);
+  const accountOf = (line) => config.accountsById.get(String(line.accountId));
+  const beforeTracking = (line) => { const from = accountOf(line)?.trackedFrom; return !!from && day < from; };
+  const early = (line) => (inCount && count.accountIds.has(String(line.accountId))) || beforeTracking(line);
+  const counted = lines.filter(early);
   if (!counted.length) return lines;
   const opening = await resolveAccount('opening_balance');
-  const nameOf = (line) => config.accountsById.get(String(line.accountId))?.name;
-  notes.push(`تاريخ العملية ${day} قبل الجرد (${count.day})، والجرد احتسب هذا المال: سُجّل على الأرصدة الافتتاحية بدل ${[...new Set(counted.map(nameOf))].join('، ')}`);
+  const nameOf = (line) => accountOf(line)?.name;
+  const counts = counted.filter((line) => inCount && count.accountIds.has(String(line.accountId)));
+  const tracked = counted.filter((line) => !counts.includes(line));
+  if (counts.length) notes.push(`تاريخ العملية ${day} قبل الجرد (${count.day})، والجرد احتسب هذا المال: سُجّل على الأرصدة الافتتاحية بدل ${[...new Set(counts.map(nameOf))].join('، ')}`);
+  if (tracked.length) notes.push(`تاريخ العملية ${day} قبل بدء متابعة ${[...new Set(tracked.map(nameOf))].join('، ')}، ورصيده الافتتاحي يشملها: سُجّلت على الأرصدة الافتتاحية`);
   return lines.flatMap((line) => {
-    if (!count.accountIds.has(String(line.accountId))) return [line];
+    if (!early(line)) return [line];
     // A foreign-currency line worth no cents moves nothing once it is in dollars
     if (!line.debit && !line.credit) return [];
     return [{

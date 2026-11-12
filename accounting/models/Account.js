@@ -31,6 +31,10 @@ const accountSchema = new Schema({
   postingVersion: { type: Number, default: 0 },
   sortOrder: { type: Number, default: 0 },
   analysisCategory: String,
+  // The first day this account is followed in the books ('2026-10-01' for a credit card whose debt
+  // was opened on 30-09). Anything posted before it reaches the opening balances instead of this
+  // account, as for a counted box before the count (ledger.beforeCountLines). Empty: the count rules.
+  trackedFrom: { type: String, default: null },
   // A bank whose statement balance includes money it holds that the books keep apart (the 25,000 TRY
   // Kuveyt Turk card guarantee in 170100): the statements screen compares the statement with this
   // account plus that one. Display only: no entry reads it.
