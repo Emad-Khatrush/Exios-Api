@@ -339,6 +339,10 @@ router.post('/bank/trip-cost-settlements/:id/cancel', P.purchases, P.treasury, P
 router.get('/balances/:id', can('treasury', 'payments', 'purchases', 'payroll', 'reports'), documents.accountBalance);
 
 router.get('/bank/lines', P.treasury, documents.listBankLines);
+// A guarantee the bank counts inside an account's statement balance (display only, no entries)
+router.get('/bank/held-account', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/statementHeld').options(req.query.accountId))));
+router.put('/bank/held-account', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session =>
+  require('./services/posting/statementHeld').set(req.body?.accountId, req.body?.heldAccountId || null, { session, req })))));
 router.get('/bank/duplicate-settlement', P.treasury, P.payments, P.purchases, handle(async (req, res) => res.json(await require('./services/posting/bankDuplicateSettlement').preview(req.query.accountId))));
 router.post('/bank/duplicate-settlement', P.treasury, P.payments, P.purchases, P.cancel, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session => require('./services/posting/bankDuplicateSettlement').apply(req.body || {}, { session, req })))));
 router.get('/bank/lines/:id', P.treasury, documents.bankLineDetails);

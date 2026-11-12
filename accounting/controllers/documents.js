@@ -504,10 +504,12 @@ module.exports.listBankLines = handle(async (req, res) => {
   // Movements missing from inside the statement, by the breaks of its running balance
   const trail = await require('../services/posting/statementGaps').forAccount(req.query.accountId);
   const trial = process.env.EXIOS_QA === '1' ? await MigrationRun.findOne({ status: 'review', bankTrialEnabled: true }).select('runId').lean() : null;
+  // Money the bank shows inside this balance and the books keep apart (a card guarantee)
+  const heldAccount = await require('../services/posting/statementHeld').balances(await Account.findById(req.query.accountId).select('statementHeldAccountId').lean(), statement.day);
   res.json({ lines, total, hasMore: total > lines.length, unmatchedMovements: movements.filter(m => !m.balanceAdjustment),
     balanceAdjustments: movements.filter(m => m.balanceAdjustment), bookBalance: balance,
     statementBalance: statement.balance, statementBalanceDay: statement.day, statementBalanceStatus: statement.status,
-    bookBalanceAtStatement: bookAtStatement, bankTrialRunId: trial?.runId || null,
+    bookBalanceAtStatement: bookAtStatement, heldAccount, bankTrialRunId: trial?.runId || null,
     statementTrail: { status: trail.status, checked: trail.checked, withoutBalance: trail.withoutBalance, gaps: trail.gaps.slice(-20), gapCount: trail.gaps.length } });
 });
 

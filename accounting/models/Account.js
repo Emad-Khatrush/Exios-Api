@@ -31,6 +31,10 @@ const accountSchema = new Schema({
   postingVersion: { type: Number, default: 0 },
   sortOrder: { type: Number, default: 0 },
   analysisCategory: String,
+  // A bank whose statement balance includes money it holds that the books keep apart (the 25,000 TRY
+  // Kuveyt Turk card guarantee in 170100): the statements screen compares the statement with this
+  // account plus that one. Display only: no entry reads it.
+  statementHeldAccountId: { type: Schema.Types.ObjectId, ref: 'AccountingAccount', default: null },
   // Explicit customer wallet used to reconcile a partner current account's deposits.
   walletCustomerCode: { type: String, trim: true, uppercase: true },
   // Set on accounts created by the setup script, so re-running it recognises them even
