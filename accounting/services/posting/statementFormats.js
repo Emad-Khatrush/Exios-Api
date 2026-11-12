@@ -16,6 +16,28 @@ const round2 = (value) => Math.round(value * 100) / 100;
 const TR_MONTHS = { ocak: 1, şubat: 2, mart: 3, nisan: 4, mayıs: 5, haziran: 6, temmuz: 7, ağustos: 8, eylül: 9, ekim: 10, kasım: 11, aralık: 12 };
 const dotDay = (text) => { const [d, m, y] = text.split('.'); return `${y}-${m}-${d}`; };
 
+// A Kuveyt Türk currency exchange: "DövizSatış,DövizTürü:USD,DövizKuru:44.34842,DövizMiktarı:693"
+// is printed the same on both accounts: on the lira account with the lira received (30.733,46), on
+// the dollar account with the dollars sold (-693,00). What the other account moved is the line's own
+// figure: the dollars on the lira side, the dollars times the bank's rate on the dollar side. Only
+// when the line's amount agrees with the rate and its sign with "Satış/Alış"; otherwise left for review.
+function kuveytExchange(body, amount) {
+  const match = String(body).replace(/\s+/g, '').match(/Döviz(Satış|Alış),DövizTürü:([A-Z]{3}),DövizKuru:([\d.]+),DövizMiktarı:([\d.]+)/i);
+  if (!match) return {};
+  const selling = /sat/i.test(match[1]);
+  const foreign = match[2].toUpperCase(), rate = Number(match[3]), quantity = Number(match[4]);
+  if (!(rate > 0) || !(quantity > 0)) return {};
+  const lira = quantity * rate;
+  const description = `Döviz ${selling ? 'Satış' : 'Alış'}: ${quantity} ${foreign}, Kur ${rate}`;
+  // The dollar account: the amount is the dollars themselves (out when selling)
+  if (Math.abs(Math.abs(amount) - quantity) <= 0.005 && (selling ? amount < 0 : amount > 0))
+    return { description, counterAmount: round2(lira), counterCurrency: 'TRY', exchangeRate: rate };
+  // The lira account: the amount is the lira, within the bank's rounding (in when selling)
+  if (Math.abs(Math.abs(amount) - lira) <= Math.max(1, lira * 0.0005) && (selling ? amount > 0 : amount < 0))
+    return { description, counterAmount: quantity, counterCurrency: foreign, exchangeRate: rate };
+  return { description };
+}
+
 // ---- Kuveyt Türk current account (Hesap Özeti) ----
 // "01.09.2026A05XFKrediKartıNo:5398********5271,KrediKartıBorçÖdemesi-25.000,0048.184,03"
 const kuveytAccount = {
@@ -26,6 +48,9 @@ const kuveytAccount = {
     const starts = /^\d{2}\.\d{2}\.\d{4}[A-Z0-9]{5}/;
     const lines = text.split(/\r?\n/).map(line => line.trim());
     const rows = [];
+    // The balance carried in ("DevirBakiyesi33.742,48"): the first line's amount is checked against it
+    const opening = text.match(new RegExp(`Devir\\s*Bakiyesi\\s*(${TR_AMOUNT})`, 'i'));
+    let previous = opening ? trNumber(opening[1]) : null;
     for (let i = 0; i < lines.length; i += 1) {
       if (!starts.test(lines[i])) continue;
       // A long description wraps: the amount and balance (even the "-" alone) come on the next
@@ -37,13 +62,30 @@ const kuveytAccount = {
         match = joined.match(pattern);
       }
       if (!match) continue;
-      const [, day, reference, body, amount, balance] = match;
+      const [, day, reference] = match;
+      let [, , , body, amount, balance] = match;
+      // An amount never starts with a zero before another digit: that zero ends the description
+      // ("DövizMiktarı:1150" + "49.823,09" read as "115" + "049.823,09")
+      while (/^0\d/.test(amount)) { body += '0'; amount = amount.slice(1); }
+      // Digits that end the description are glued to the amount ("DövizMiktarı:693" + "30.733,46"
+      // read as "69" + "330.733,46", owner's statement 2026-11-12). The running balance settles it:
+      // the amount is what moved the balance, and the extra leading digits go back to the description
+      if (previous !== null && Math.abs(previous + trNumber(amount) - trNumber(balance)) > 0.005 && /^\d/.test(amount)) {
+        for (let cut = 1; cut < amount.length - 3; cut += 1) {
+          const rest = amount.slice(cut);
+          if (!new RegExp(`^${TR_AMOUNT}$`).test(rest) || /^0\d/.test(rest)) continue;
+          if (Math.abs(previous + trNumber(rest) - trNumber(balance)) <= 0.005) { body += amount.slice(0, cut); amount = rest; break; }
+        }
+      }
+      previous = trNumber(balance);
       // The text comes without spaces: the two kinds of line are written out again readably
       const card = body.match(/KrediKartıNo:([\d*]+)/);
       let description = body;
       if (/KrediKartıBorçÖdemesi/i.test(body)) description = `Kredi Kartı Borç Ödemesi${card ? ` (kart ${card[1].slice(-4)})` : ''}`;
       else if (/FASTParaTransferi/i.test(body)) description = `FAST Para Transferi - Gönderen: ${(body.match(/Gönderen:([^,]+)/) || [])[1] || ''}`.trim();
-      rows.push({ day: dotDay(day), description, reference, amount: trNumber(amount), balanceAfter: trNumber(balance) });
+      const row = { day: dotDay(day), description, reference, amount: trNumber(amount), balanceAfter: trNumber(balance) };
+      Object.assign(row, kuveytExchange(body, row.amount));
+      rows.push(row);
     }
     return rows;
   },
