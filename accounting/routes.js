@@ -339,6 +339,16 @@ router.post('/bank/trip-cost-settlements/:id/cancel', P.purchases, P.treasury, P
 router.get('/balances/:id', can('treasury', 'payments', 'purchases', 'payroll', 'reports'), documents.accountBalance);
 
 router.get('/bank/lines', P.treasury, documents.listBankLines);
+// The first and last day this account's statement already holds: an export of the same account
+// worded differently (the Kuveyt card Excel next to its PDF) leaves those days out on import
+router.get('/bank/statement-range', P.treasury, handle(async (req, res) => {
+  const mongoose = require('mongoose');
+  if (!mongoose.isValidObjectId(req.query.accountId)) return res.json({ from: null, to: null });
+  const { BankStatementLine } = require('./models/documents');
+  const accountId = new mongoose.Types.ObjectId(String(req.query.accountId));
+  const [range] = await BankStatementLine.aggregate([{ $match: { accountId } }, { $group: { _id: null, from: { $min: '$day' }, to: { $max: '$day' } } }]);
+  res.json({ from: range?.from || null, to: range?.to || null });
+}));
 // A guarantee the bank counts inside an account's statement balance (display only, no entries)
 router.get('/bank/held-account', P.treasury, handle(async (req, res) => res.json(await require('./services/posting/statementHeld').options(req.query.accountId))));
 router.put('/bank/held-account', P.treasury, handle(async (req, res) => res.json(await require('./services/transaction').runInTransaction(session =>
