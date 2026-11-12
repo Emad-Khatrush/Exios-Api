@@ -125,6 +125,23 @@ async function createSalary(input, { session, req }) {
     const commissions = settings?.accountRoles?.employee_commission_expense ? await resolveAccount('employee_commission_expense') : salaries;
     lines.push({ accountId: commissions._id, debit: commissionUsd, office: input.office, employeeId: employee._id, label: `عمولات ${name} ${input.month}` });
   }
+  // A salary of a past month paid later (October's paid on 8 November): the expense belongs to its
+  // month. It is accrued on that month's last day against salaries payable, and the payment day
+  // only settles the payable, so the payment month carries no expense (owner's request 2026-11-12)
+  if (input.month < input.day.slice(0, 7)) {
+    const payable = await resolveAccount(`salary_payable_${currency.toLowerCase()}`).catch(() => null);
+    if (!payable) throw fail(`لا يوجد حساب رواتب مستحقة بعملة ${currency}: شغّل الإعداد`);
+    const [year, month] = input.month.split('-').map(Number);
+    const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+    const dims = { office: input.office, employeeId: employee._id };
+    await postEntry({
+      eventType: 'SALARY_ACCRUAL', eventKey: `SALARY_ACCRUAL:${doc._id}`, date: monthEnd,
+      description: `استحقاق راتب ${name} - ${input.month}`, source: { model: 'AccountingSalaryPayment', id: doc._id },
+      lines: [...lines, moneyLine(payable, 'credit', gross, grossUsd, { ...dims, label: `راتب مستحق ${name} ${input.month}` })],
+    }, { session, user: req?.user });
+    lines.length = 0;
+    lines.push(moneyLine(payable, 'debit', gross, grossUsd, { ...dims, label: `سداد راتب مستحق ${name} ${input.month}` }));
+  }
   if (deduction) lines.push(moneyLine(loans, 'credit', deduction, deductionUsd, { employeeId: employee._id, label: 'خصم سلفة' }));
   if (paidMinor) lines.push(moneyLine(cash, 'credit', paidMinor, await valueOut(cash, paidMinor, { day: input.day, docRate, rates }), { label: `صافي راتب ${name}` }));
   await addFxLine(lines, input.office);
