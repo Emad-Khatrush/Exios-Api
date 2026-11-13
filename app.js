@@ -56,6 +56,7 @@ const companyNotes = require('./routes/companyNotes');
 const { routes: accountingRoutes, systemRoutes: accountingSystemRoutes, initAccounting } = require('./accounting');
 const goals = require('./routes/goals');
 const files = require('./routes/files');
+const staffAccess = require('./routes/staffAccess');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -89,6 +90,7 @@ redisClient?.on('error', (err) => {
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const { WhatsAppMongoStore, SafeRemoteAuth } = require('./utils/whatsappStore');
 const { isAdmin, protect } = require('./middleware/check-auth');
+const { allow } = require('./middleware/permissions');
 const { generatePDF } = require('./utils/sender');
 const Orders = require('./models/order');
 
@@ -489,8 +491,10 @@ app.use('/api', campaigns);
 app.use('/api', companyNotes);
 app.use('/api', goals);
 app.use('/api', files);
+app.use('/api', staffAccess);
 
-app.get('/api/get-qr-code', (req, res) => {
+// Whoever scans this QR links their phone as the company's sending number: staff only
+app.get('/api/get-qr-code', protect, staffOnly, (req, res) => {
   if (qrCodeData) {
     res.status(200).json({ qrCode: qrCodeData });
   } else {
@@ -540,7 +544,7 @@ app.post('/api/sendWhatsupImages', protect, staffOnly, requireWhatsApp, async (r
   }
 });
 
-app.post('/api/inventorySendWhatsupMessages', protect, requireWhatsApp, async (req, res) => {
+app.post('/api/inventorySendWhatsupMessages', protect, allow(['inventory', 'warehouse', 'marketing'], staffOnly), requireWhatsApp, async (req, res) => {
   try {
     const { data } = req.body;
     let index = 0;
@@ -564,7 +568,7 @@ app.post('/api/inventorySendWhatsupMessages', protect, requireWhatsApp, async (r
   }
 })
 
-app.post('/api/sendMessagesToClients', protect, isAdmin, requireWhatsApp, async (req, res) => {
+app.post('/api/sendMessagesToClients', protect, allow(['marketing'], isAdmin), requireWhatsApp, async (req, res) => {
   const { imgUrl, content, target, testMode, testBigData, skip, limit } = req.body;
 
   try {

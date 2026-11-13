@@ -3,6 +3,7 @@ const multer = require('multer');
 
 const users = require('../controllers/users');
 const { protect, isEmployee, isAdmin, isClient, allowAdminsAndEmployee, allowAdminsAndAccountants } = require('../middleware/check-auth');
+const { allow, anyStaff } = require('../middleware/permissions');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -20,13 +21,13 @@ router.route('/home')
       .get(protect, isAdmin, users.getHomeData)
 
 router.route('/employees')
-      .get(protect, allowAdminsAndEmployee, users.getEmployees)
+      .get(protect, anyStaff(allowAdminsAndEmployee), users.getEmployees)
 
 router.route('/clients')
-      .get(protect, allowAdminsAndEmployee, users.getClients)
+      .get(protect, anyStaff(allowAdminsAndEmployee), users.getClients)
       
 router.route('/customer/:id')
-      .get(protect, allowAdminsAndEmployee, users.getCustomerData)
+      .get(protect, anyStaff(allowAdminsAndEmployee), users.getCustomerData)
 
 router.post('/account/create', upload.single('passportImage'), users.createUser);
 
@@ -40,29 +41,29 @@ router.route('/account/passport/upload')
       .post(protect, isClient, upload.single('passportImage'), users.uploadPassport);
 
 router.route('/customerId/:id/update')
-      .put(protect, allowAdminsAndEmployee, users.updateCustomerId);
+      .put(protect, allow(['clients'], allowAdminsAndEmployee), users.updateCustomerId);
 
 // Only admins can edit a customer's name, username, phone and city
 router.route('/customer/:id/info')
-      .put(protect, isAdmin, users.updateCustomerInfo);
+      .put(protect, allow(['clients'], isAdmin), users.updateCustomerInfo);
 
 // Only admins set special prices; employees see them when creating shipment invoices
 router.route('/customer/:id/specialPrices')
-      .put(protect, allowAdminsAndAccountants, allowAdminsAndEmployee, users.updateSpecialPrices);
+      .put(protect, allow(['special_prices'], allowAdminsAndAccountants, allowAdminsAndEmployee), users.updateSpecialPrices);
 
 // Only admins and accountants can review passport verifications
 router.route('/customer/:id/passportVerification')
-      .put(protect, allowAdminsAndAccountants, users.updatePassportVerification);
+      .put(protect, allow(['passports'], allowAdminsAndAccountants), users.updatePassportVerification);
 
 router.route('/passportVerifications')
-      .get(protect, allowAdminsAndAccountants, users.getPendingPassportVerifications);
+      .get(protect, allow(['passports'], allowAdminsAndAccountants), users.getPendingPassportVerifications);
 
 // Admin only - the "Approved" tab in Passport Review.
 router.route('/passportVerifications/approved')
-      .get(protect, isAdmin, users.getApprovedPassportVerifications);
+      .get(protect, allow(['passports'], isAdmin), users.getApprovedPassportVerifications);
 
 router.route('/specialPriceCustomers')
-      .get(protect, allowAdminsAndAccountants, allowAdminsAndEmployee, users.getSpecialPriceCustomers);
+      .get(protect, allow(['special_prices'], allowAdminsAndAccountants, allowAdminsAndEmployee), users.getSpecialPriceCustomers);
 
 router.post('/verifyToken', users.verifyToken);
 

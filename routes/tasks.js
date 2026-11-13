@@ -2,6 +2,7 @@ const express = require('express');
 
 const tasks = require('../controllers/tasks');
 const { protect, allowAdminsAndEmployee } = require('../middleware/check-auth');
+const { allow, anyStaff } = require('../middleware/permissions');
 const multer = require('multer');
 const upload = multer({
       storage: multer.memoryStorage(),
@@ -12,27 +13,27 @@ const upload = multer({
 const router  = express.Router();
 
 router.route('/mytasks')
-      .get(protect, allowAdminsAndEmployee, tasks.getMyTasks)
+      .get(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.getMyTasks)
 
 router.route('/task/:id')
-      .get(protect, allowAdminsAndEmployee, tasks.getTask)
-      .put(protect, allowAdminsAndEmployee, tasks.updateTask)
+      .get(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.getTask)
+      .put(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.updateTask)
 
 router.route('/task/:id/readed')
-      .post(protect, allowAdminsAndEmployee, tasks.markAsReaded)
+      .post(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.markAsReaded)
 
 router.route('/task/:id/status')
-      .put(protect, allowAdminsAndEmployee, tasks.changeTaskStatus)
+      .put(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.changeTaskStatus)
 
 router.route('/create/task')
-      .post(protect, allowAdminsAndEmployee, upload.array('files'), tasks.createTask)
+      .post(protect, allow(['tasks'], allowAdminsAndEmployee), upload.array('files'), tasks.createTask)
 
 router.route('/task/uploadFiles')
-      .post(protect, allowAdminsAndEmployee, upload.array('files'), tasks.uploadFiles)
-      .delete(protect, allowAdminsAndEmployee, tasks.deleteFile)
+      .post(protect, allow(['tasks'], allowAdminsAndEmployee), upload.array('files'), tasks.uploadFiles)
+      .delete(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.deleteFile)
 
 router.route('/task/:id/comments')
-      .get(protect, allowAdminsAndEmployee, tasks.getComments)
-      .post(protect, allowAdminsAndEmployee, tasks.createComment)
+      .get(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.getComments)
+      .post(protect, allow(['tasks'], allowAdminsAndEmployee), tasks.createComment)
 
 module.exports = router;

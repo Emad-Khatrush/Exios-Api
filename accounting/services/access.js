@@ -1,8 +1,8 @@
 // Who may do what in accounting (spec 7-أ.11, as the owner decided it):
-// - The owner accounts (two admin accounts) can do everything, and are the only ones who can
-//   give access to others.
-// - Any other admin or accountant has only the permissions the owner gave them. Without them
-//   they do not see the accounting section at all.
+// - The owner accounts (two admin accounts) can do everything. They give access to others here,
+//   and so can admins, in Settings > Permissions (owner's decision, controllers/staffAccess.js).
+// - Any other staff member (admin, accountant or employee) has only the permissions given to them.
+//   Without them they do not see the accounting section at all.
 const mongoose = require('mongoose');
 const { AccountingMember } = require('../models');
 const User = require('../../models/user');
@@ -81,7 +81,7 @@ async function isOwner(user) {
 async function accessOf(user) {
   if (!user) return { isOwner: false, permissions: [] };
   if (await isOwner(user)) return { isOwner: true, permissions: KEYS };
-  if (!user.roles?.isAdmin && !user.roles?.isAccountant) return { isOwner: false, permissions: [] };
+  if (!user.roles?.isAdmin && !user.roles?.isAccountant && !user.roles?.isEmployee) return { isOwner: false, permissions: [] };
   const member = await AccountingMember.findOne({ userId: user._id }).lean();
   return { isOwner: false, permissions: (member?.permissions || []).filter((key) => KEYS.includes(key)) };
 }
@@ -129,7 +129,7 @@ async function listMembers() {
 async function setMember(userId, permissions, by) {
   if (!mongoose.isValidObjectId(userId)) throw new ErrorHandler(400, 'المستخدم غير صالح');
   const user = await User.findById(userId).select('roles').lean();
-  if (!user || (!user.roles?.isAdmin && !user.roles?.isAccountant)) throw new ErrorHandler(400, 'الصلاحيات تُعطى لحسابات المدير والمحاسب فقط');
+  if (!user || (!user.roles?.isAdmin && !user.roles?.isAccountant && !user.roles?.isEmployee)) throw new ErrorHandler(400, 'الصلاحيات تُعطى لحسابات الموظفين فقط');
   if (await isOwner({ ...user, _id: userId })) throw new ErrorHandler(400, 'حساب المالك له كل الصلاحيات دائماً');
   const clean = [...new Set((Array.isArray(permissions) ? permissions : []).filter((key) => KEYS.includes(key)))];
   if (!clean.length) {

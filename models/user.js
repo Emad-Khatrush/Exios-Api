@@ -98,6 +98,16 @@ const userSchema = new Schema({
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   walletExchangeVersion: { type: Number, default: 0 },
+  // What a staff member who is not an admin may open (constants/staffPermissions.js), set by an admin
+  // or an owner in Settings > Permissions. `kind` is the type of work (data entry, cashier...). No kind
+  // yet: the person keeps the access their role gave before permissions existed
+  // (middleware/permissions.js), until someone saves theirs.
+  staffAccess: {
+    kind: String,
+    permissions: { type: [String], default: undefined },
+    updatedAt: Date,
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  },
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function(password) {
