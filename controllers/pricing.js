@@ -39,7 +39,7 @@ const DEFAULTS = {
   },
   // Hidden until the office enters its real numbers
   alipay: { visible: false, note: '', tiers: [{ upTo: 5000, rate: 0, fee: 0 }, { upTo: null, rate: 0, fee: 0 }] },
-  swift: { visible: false, note: '', percent: 0, fixedFee: 0, minFee: 0 },
+  swift: { visible: false, note: '', tiers: [{ upTo: 10000, type: 'percent', value: 0 }, { upTo: null, type: 'percent', value: 0 }], fixedFee: 0, minFee: 0 },
   fcl: {
     visible: false,
     note: '',
@@ -56,7 +56,28 @@ const DEFAULTS = {
   ],
 };
 
+// The kinds of goods China routes are priced by; other routes start with one price. The office
+// can rename, add or remove them; a kind without a price is not shown.
+const CHINA_CATEGORIES = [
+  { key: 'normal', label: 'بضائع عادية' },
+  { key: 'cosmetics', label: 'تجميل وصحة وماركات', price: 0 },
+  { key: 'medical', label: 'بضائع طبية', price: 0 },
+];
+const BASE_CATEGORY = [{ key: 'normal', label: 'بضائع عادية' }];
+
+// Notes written in the old Pricing page were HTML-ish (<br/>): keep the line breaks, drop tags
+const cleanNote = (value) => String(value ?? '')
+  .replace(/<\s*\/?\s*br\s*\/?\s*>/gi, '\n')
+  .replace(/<[^>]*>/g, '')
+  .replace(/&nbsp;/g, ' ')
+  .replace(/[ \t]+\n/g, '\n')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
 const routeKey = (price) => `${price.country}-${price.shippingType}`;
+
+// SWIFT brackets; an older single-rate setting becomes one open bracket
+const swiftTiers = (swift) => (swift?.tiers?.length ? swift.tiers : [{ upTo: null, type: 'percent', value: Number(swift?.percent) || 0 }]);
 const orderOf = (key) => { const i = ROUTE_ORDER.indexOf(key); return i < 0 ? 99 : i; };
 
 async function loadConfig() {
@@ -76,6 +97,10 @@ async function shippingRoutes(config) {
     .map((price) => {
       const key = routeKey(price);
       const display = shown.get(key) || {};
+      const base = Number(price.sellingPrice) || 0;
+      const saved = display.categories?.length ? display.categories : (price.country === 'china' ? CHINA_CATEGORIES : BASE_CATEGORY);
+      // The first kind's price is always the route price invoices use
+      const categories = saved.map((c, i) => ({ key: c.key, label: c.label, price: i === 0 ? base : Number(c.price) || 0 }));
       return {
         key,
         country: price.country,
@@ -83,11 +108,12 @@ async function shippingRoutes(config) {
         label: `${METHOD_LABELS[price.shippingType] || price.shippingType} من ${COUNTRY_LABELS[price.country] || price.country}`,
         countryLabel: COUNTRY_LABELS[price.country] || price.country,
         unit: price.shippingType === 'sea' ? 'cbm' : 'kg',
-        price: Number(price.sellingPrice) || 0,
+        price: base,
+        categories,
         visible: display.visible !== false,
         duration: display.duration ?? DEFAULT_DURATIONS[key] ?? '',
         // The free text the office wrote for this route before (ShipmentPrice.priceDescription)
-        note: display.note ?? price.priceDescription ?? '',
+        note: cleanNote(display.note ?? price.priceDescription ?? ''),
         minCharge: Number(display.minCharge) || 0,
       };
     })
@@ -109,7 +135,7 @@ module.exports.getPublic = async (req, res, next) => {
       shipping: visible('shipping') && routes.length ? {
         note: config.shipping.note || '',
         volumetricDivisor: config.shipping.volumetricDivisor || 6000,
-        routes: routes.map(({ visible: _v, ...route }) => route),
+        routes: routes.map(({ visible: _v, ...route }) => ({ ...route, categories: route.categories.filter((c) => c.price > 0) })),
       } : null,
       purchase: visible('purchase') ? {
         note: config.purchase.note || '',
@@ -123,7 +149,7 @@ module.exports.getPublic = async (req, res, next) => {
       } : null,
       swift: visible('swift') ? {
         note: config.swift.note || '',
-        percent: config.swift.percent || 0,
+        tiers: swiftTiers(config.swift),
         fixedFee: config.swift.fixedFee || 0,
         minFee: config.swift.minFee || 0,
       } : null,
@@ -145,6 +171,7 @@ module.exports.getConfig = async (req, res, next) => {
     res.status(200).json({
       ...config,
       shipping: { ...config.shipping, routes: await shippingRoutes(config) },
+      swift: { ...config.swift, tiers: swiftTiers(config.swift) },
       exchangeRate: { visible: config.exchangeRate?.visible !== false, current: await currentRate() },
     });
   } catch (error) {
@@ -176,6 +203,17 @@ function cleanTiers(list, clean, label) {
 
 const digits = (value) => String(value ?? '').replace(/\D/g, '').slice(0, 15);
 
+// A commission bracket: a percentage of the amount or a fixed amount (purchases, SWIFT)
+const commissionTier = (t) => ({ type: t.type === 'fixed' ? 'fixed' : 'percent', value: num(t.value, { max: t.type === 'fixed' ? 1e6 : 100 }) });
+
+// A route's kinds of goods: named, at most 8; the first keeps its place as the base price
+function cleanCategories(route) {
+  if (!Array.isArray(route.categories) || !route.categories.length) return [];
+  return route.categories.slice(0, 8)
+    .map((c, i) => ({ key: text(c.key, 40) || `kind-${i + 1}`, label: text(c.label, 60), price: num(c.price, { max: 100000 }) }))
+    .filter((c, i) => i === 0 || c.label);
+}
+
 module.exports.saveConfig = async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -193,12 +231,17 @@ module.exports.saveConfig = async (req, res, next) => {
         visible: bool(body.shipping.visible),
         note: text(body.shipping.note),
         volumetricDivisor: num(body.shipping.volumetricDivisor, { min: 1000, max: 10000 }) || 6000,
-        routes: routes.map((r) => ({ key: r.key, visible: bool(r.visible), duration: text(r.duration, 60), note: text(r.note), minCharge: num(r.minCharge) })),
+        routes: routes.map((r) => ({
+          key: r.key, visible: bool(r.visible), duration: text(r.duration, 60), note: text(r.note, 1500), minCharge: num(r.minCharge),
+          categories: cleanCategories(r),
+        })),
       };
-      priceUpdates = routes.filter((r) => r.price !== undefined).map((r) => {
+      // The first kind's price is the route price invoices read (ShipmentPrice)
+      priceUpdates = routes.map((r) => {
         const [country, shippingType] = r.key.split('-');
-        const price = num(r.price, { max: 100000 });
-        if (!(price > 0)) throw fail(`سعر ${r.key} يجب أن يكون أكبر من صفر`);
+        const categories = cleanCategories(r);
+        const price = categories.length ? categories[0].price : num(r.price, { max: 100000 });
+        if (!(price > 0)) throw fail(`ضع سعر «${categories[0]?.label || 'البضائع العادية'}» لخط ${r.label || r.key}: هو السعر الذي تقرؤه الفواتير`);
         return { country, shippingType, price };
       });
     }
@@ -211,7 +254,7 @@ module.exports.saveConfig = async (req, res, next) => {
         visible: bool(body.purchase.visible),
         note: text(body.purchase.note),
         minCommission: num(body.purchase.minCommission),
-        tiers: cleanTiers(body.purchase.tiers, (t) => ({ type: t.type === 'fixed' ? 'fixed' : 'percent', value: num(t.value, { max: t.type === 'fixed' ? 1e6 : 100 }) }), 'عمولات الشراء'),
+        tiers: cleanTiers(body.purchase.tiers, commissionTier, 'عمولات الشراء'),
         sites,
       };
     }
@@ -226,7 +269,7 @@ module.exports.saveConfig = async (req, res, next) => {
       update.swift = {
         visible: bool(body.swift.visible),
         note: text(body.swift.note),
-        percent: num(body.swift.percent, { max: 100 }),
+        tiers: cleanTiers(body.swift.tiers, commissionTier, 'حوالات سويفت'),
         fixedFee: num(body.swift.fixedFee, { max: 1e5 }),
         minFee: num(body.swift.minFee, { max: 1e5 }),
       };

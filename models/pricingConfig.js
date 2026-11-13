@@ -35,6 +35,10 @@ const pricingConfigSchema = new Schema({
       duration: { type: String, default: '' },
       note: { type: String, default: '' },
       minCharge: { type: Number, default: 0 },
+      // Price by kind of goods (regular, cosmetics and brands, medical...). The first is the
+      // route's base price: it is read from and saved to ShipmentPrice, the one invoices use.
+      // A category without a price is not shown to customers.
+      categories: [{ _id: false, key: String, label: String, price: { type: Number, default: 0 } }],
     }],
   },
 
@@ -58,6 +62,9 @@ const pricingConfigSchema = new Schema({
   swift: {
     visible: { type: Boolean, default: false },
     note: { type: String, default: '' },
+    // Commission by transfer amount (USD): { upTo, type: 'fixed' | 'percent', value }, like purchases
+    tiers: { type: [tier], default: undefined },
+    // Older single-rate form, read only to build the first tiers
     percent: { type: Number, default: 0 },
     fixedFee: { type: Number, default: 0 },
     minFee: { type: Number, default: 0 },
