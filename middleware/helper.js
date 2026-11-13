@@ -156,6 +156,48 @@ exports.getTapTypeQuery = (tapType) => {
     }
 }
 
+// The only order fields a customer may read. The client app names the fields it wants in the query
+// string, which must never be trusted as a projection: the order also holds cost prices
+// (originPrice, originShipmentPrice), profit (netIncome), staff notes and accounting fields.
+// Adding a field here is what makes it visible to customers.
+const CLIENT_ORDER_FIELDS = [
+    'orderId', 'createdAt', 'updatedAt', 'placedAt', 'orderStatus',
+    'isPayment', 'isShipment', 'isFinished', 'isCanceled', 'unsureOrder',
+    'productName', 'quantity', 'customerInfo', 'totalInvoice', 'debt', 'credit',
+    'activity', 'images',
+    'customization.note', 'customization.theme',
+    'shipment.method', 'shipment.fromWhere', 'shipment.toWhere', 'shipment.estimatedDelivery',
+    'shipment.weight', 'shipment.packageCount',
+    'paymentList._id', 'paymentList.status', 'paymentList.images', 'paymentList.settings',
+    'paymentList.deliveredPackages.arrivedAt', 'paymentList.deliveredPackages.trackingNumber',
+    'paymentList.deliveredPackages.shipmentMethod', 'paymentList.deliveredPackages.weight',
+    'paymentList.deliveredPackages.exiosPrice', 'paymentList.deliveredPackages.boxesCount',
+    'paymentList.deliveredPackages.locationPlace', 'paymentList.deliveredPackages.deliveredInfo',
+];
+
+// Builds the projection for a customer's order query from the fields they asked for, keeping only
+// allowed ones. Asking for a parent ('paymentList') gives its allowed children; asking for a field
+// inside an allowed one ('customerInfo.phone') is kept. Nothing valid asked for: every allowed field.
+// `exclude` drops allowed fields for one endpoint: the lists leave out the order's images, which only
+// the single-order endpoint filters down to the customer's own receipts.
+exports.buildClientOrderProjection = (requested = {}, exclude = []) => {
+    const fields = CLIENT_ORDER_FIELDS.filter(field => !exclude.includes(field));
+    const projection = {};
+    for (const key of Object.keys(requested)) {
+        if (key.includes('$')) continue;
+        for (const allowed of fields) {
+            if (key === allowed || key.startsWith(allowed + '.')) projection[key] = 1;
+            else if (allowed.startsWith(key + '.')) projection[allowed] = 1;
+        }
+    }
+    // A field and one of its own sub-fields together is a path collision in MongoDB: keep the parent
+    for (const key of Object.keys(projection)) {
+        if (Object.keys(projection).some(other => key.startsWith(other + '.'))) delete projection[key];
+    }
+    if (Object.keys(projection).length === 0) fields.forEach(field => { projection[field] = 1; });
+    return projection;
+}
+
 exports.convertObjDataFromStringToNumberType = (obj) => {
     for (let prop in obj) {
         if (obj.hasOwnProperty(prop)) {

@@ -510,7 +510,15 @@ function requireWhatsApp(req, res, next) {
   return res.status(503).json({ success: false, message });
 }
 
-app.post('/api/sendWhatsupMessage', requireWhatsApp, async (req, res) => {
+// Sending from the company's WhatsApp number is for signed-in staff only, never customers or
+// anonymous callers. Used with `protect` before it.
+function staffOnly(req, res, next) {
+  const roles = req.user?.roles || {};
+  if (roles.isAdmin || roles.isEmployee || roles.isAccountant) return next();
+  return res.status(403).json({ success: false, message: 'authorize-invalid' });
+}
+
+app.post('/api/sendWhatsupMessage', protect, staffOnly, requireWhatsApp, async (req, res) => {
   const { phoneNumber, message } = req.body
   try {
     await sendMessage(client, validatePhoneNumber(phoneNumber), message);
@@ -520,7 +528,7 @@ app.post('/api/sendWhatsupMessage', requireWhatsApp, async (req, res) => {
   }
 });
 
-app.post('/api/sendWhatsupImages', requireWhatsApp, async (req, res) => {
+app.post('/api/sendWhatsupImages', protect, staffOnly, requireWhatsApp, async (req, res) => {
   const { imgUrls, phoneNumber } = req.body
   try {
     for (const imgUrl of imgUrls || []) {

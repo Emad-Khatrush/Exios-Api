@@ -8,7 +8,7 @@ const ErrorHandler = require('../utils/errorHandler');
 const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { errorMessages } = require('../constants/errorTypes');
 const Offices = require('../models/office');
-const { addChangedField, getTapTypeQuery, convertObjDataFromStringToNumberType } = require('../middleware/helper');
+const { addChangedField, getTapTypeQuery, buildClientOrderProjection } = require('../middleware/helper');
 const { orderLabels } = require('../constants/orderLabels');
 const { ORDER_THEME_IDS } = require('../constants/orderThemes');
 const mongoose = require('mongoose');
@@ -1577,7 +1577,7 @@ module.exports.getClientHomeData = async (req, res, next) => {
 module.exports.getOrdersForUser = async (req, res, next) => {
   try {
     const { type } = req.params;
-    const query = convertObjDataFromStringToNumberType(req.query);
+    const query = buildClientOrderProjection(req.query, ['images']);
 
     let orders;
     if (type === 'all') {
@@ -1763,7 +1763,7 @@ module.exports.getOrdersClientBySearch= async (req, res, next) => {
   })
 
   // show only the important fields
-  const orderedList = convertObjDataFromStringToNumberType(req.query);
+  const orderedList = buildClientOrderProjection(req.query, ['images']);
   query.push({
     $project: orderedList
   })
@@ -2011,7 +2011,7 @@ module.exports.getClientOrder = async (req, res, next) => {
   const id = req.params.id;
   if (!id) return next(new ErrorHandler(404, errorMessages.ORDER_NOT_FOUND));
 
-  const orderedByList = convertObjDataFromStringToNumberType(req.query);
+  const orderedByList = buildClientOrderProjection(req.query);
   try {
     let query = { orderId : String(id), user: req.user._id };
     if (mongoose.Types.ObjectId.isValid(id)) {
