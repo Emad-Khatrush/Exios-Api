@@ -4,6 +4,7 @@ const { getPrices, updatePrices, getExchangeRate, updateExchangeRate, updatePric
 const { protect, isAdmin, allowAdminsAndAccountants } = require('../middleware/check-auth');
 const { allow, anyStaff } = require('../middleware/permissions');
 const tripNumbering = require('../controllers/tripNumbering');
+const pricing = require('../controllers/pricing');
 
 const router  = express.Router();
 
@@ -16,6 +17,12 @@ router.route('/shipmentPrices')
 
 router.route('/shipmentPricesDescription')
       .put(protect, allow(['settings_prices'], allowAdminsAndAccountants), updatePricesDescription);
+
+// The customer Prices page: public (it can be shown before signing in), and its settings
+router.get('/pricing', pricing.getPublic);
+router.route('/pricing/config')
+      .get(protect, allow(['settings_prices'], allowAdminsAndAccountants), pricing.getConfig)
+      .put(protect, allow(['settings_prices'], allowAdminsAndAccountants), pricing.saveConfig);
 
 router.route('/exchangeRate')
       .get(protect, getExchangeRate)
