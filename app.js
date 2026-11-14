@@ -196,6 +196,8 @@ let whatsappStore; // created once DB is connected
 let isShuttingDown = false;
 let isBackupRestart = false; // Chrome is being closed on purpose for a clean backup
 let shownQrThisClient = false; // current client needed a QR scan (= new link)
+// 'disconnected' reasons that mean the link is gone for good (not a hiccup)
+const WHATSAPP_UNLINKED_REASONS = ['LOGOUT', 'UNPAIRED', 'UNPAIRED_IDLE'];
 
 // Closes Chrome and waits for the process to exit, so it has flushed
 // IndexedDB and Local Storage to disk before we copy the profile.
@@ -413,10 +415,14 @@ async function initializeWhatsAppClient() {
       if (isShuttingDown || isBackupRestart) return;
 
       try {
-        // Only wipe the stored session on an explicit logout; a network drop
-        // or Heroku restart should just reconnect with the existing session.
-        if (reason === 'LOGOUT' && await whatsappStore.sessionExists({ session: 'RemoteAuth' })) {
-          console.log('Logged out — deleting session from store');
+        // Wipe the stored session only when WhatsApp itself says this device
+        // is no longer linked (logged out here, or removed from the phone's
+        // "Linked devices"). Keeping it would restore a dead session on every
+        // retry and the QR would never come back. Network drops, conflicts,
+        // a hang or a Heroku restart keep the session and just reconnect.
+        if (WHATSAPP_UNLINKED_REASONS.includes(reason)) {
+          console.log(`WhatsApp device unlinked (${reason}) — deleting saved session from MongoDB.`);
+          clearTimeout(snapshotRefreshTimer);
           await whatsappStore.delete({ session: 'RemoteAuth' });
         }
       } catch (err) {

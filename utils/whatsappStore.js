@@ -19,10 +19,11 @@ class SafeRemoteAuth extends RemoteAuth {
     ];
   }
 
-  // whatsapp-web.js calls disconnect() on transient states too (CONFLICT,
-  // UNLAUNCHED, UNPAIRED_IDLE), and the stock version deletes the saved
-  // session from Mongo — so one hiccup forced a new QR scan. Only a real
-  // logout (logout() below) wipes it now.
+  // whatsapp-web.js calls disconnect() on every non-accepted state, transient
+  // ones too (CONFLICT, UNLAUNCHED, ...), and the stock version deletes the
+  // saved session from Mongo — so one hiccup forced a new QR scan. The app's
+  // 'disconnected' handler decides instead: it wipes the session only when
+  // WhatsApp says the device was unlinked (LOGOUT / UNPAIRED).
   async disconnect() {
     clearInterval(this.backupSync);
   }
@@ -65,6 +66,10 @@ class SafeRemoteAuth extends RemoteAuth {
         await this.store.uploadSnapshot({ session: this.sessionName });
         return true;
       } catch (err) {
+        if (err.code === 'SESSION_DELETED') {
+          console.log('WhatsApp session was unlinked during the upload — backup discarded.');
+          return false;
+        }
         if (i === attempts) {
           console.error(`WhatsApp session upload failed after ${attempts} attempts:`, err.message);
           return false;
@@ -89,6 +94,15 @@ class WhatsAppMongoStore {
     this.mongoose = mongoose;
     this.dataPath = path.resolve(dataPath);
     this.cachedSessions = new Set();
+    // Bumped by delete(), so an upload that was already running when the
+    // device got unlinked doesn't bring the dead session back afterwards.
+    this.deletions = 0;
+  }
+
+  sessionDeletedError() {
+    const err = new Error('WhatsApp session was deleted');
+    err.code = 'SESSION_DELETED';
+    return err;
   }
 
   bucket(session) {
@@ -117,6 +131,7 @@ class WhatsAppMongoStore {
   }
 
   async uploadSnapshot({ session }) {
+    const deletionsAtStart = this.deletions;
     if (!this.cachedSessions.has(session)) throw new Error('No local WhatsApp snapshot to upload');
     // Upload a private copy so a newer snapshot can't overwrite it mid-upload.
     const uploadPath = path.join(this.dataPath, `${session}.uploading.zip`);
@@ -132,6 +147,11 @@ class WhatsAppMongoStore {
       });
     } finally {
       await fs.promises.rm(uploadPath, { force: true });
+    }
+
+    if (this.deletions !== deletionsAtStart) {
+      await this.wipeMongo(session);
+      throw this.sessionDeletedError();
     }
 
     // Keep only the newest backup, and drop chunks left behind by uploads that
@@ -173,12 +193,21 @@ class WhatsAppMongoStore {
     console.log(`WhatsApp session downloaded in ${((Date.now() - started) / 1000).toFixed(0)}s.`);
   }
 
+  // Empties whatsapp-<session>.files and .chunks completely, including chunks
+  // left behind by uploads that were killed half-way.
+  async wipeMongo(session) {
+    const db = this.mongoose.connection.db;
+    await db.collection(`whatsapp-${session}.files`).deleteMany({});
+    await db.collection(`whatsapp-${session}.chunks`).deleteMany({});
+  }
+
+  // Removes the session everywhere (local snapshot + MongoDB), so the next
+  // start shows a fresh QR instead of restoring an unlinked device.
   async delete({ session }) {
+    this.deletions++;
     this.cachedSessions.delete(session);
     await fs.promises.rm(this.cachePath(session), { force: true });
-    const bucket = this.bucket(session);
-    const docs = await bucket.find({ filename: `${session}.zip` }).toArray();
-    await Promise.all(docs.map((d) => bucket.delete(d._id)));
+    await this.wipeMongo(session);
   }
 }
 
