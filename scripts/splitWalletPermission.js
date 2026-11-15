@@ -1,10 +1,11 @@
 // node scripts/splitWalletPermission.js [--apply]
 //
 // The 'wallets' staff permission used to cover both the wallets list and putting money in or taking
-// it out of a wallet. On 2026-11-16 the owner split it: 'wallets' is now the list only, and deposit /
-// withdrawal / exchange / cancelling a wallet payment is 'wallet_transactions'.
-// Staff saved with 'wallets' before the split could do both, so they get 'wallet_transactions' too
-// and nobody loses what they could do; the owner then unticks it for whoever should only look.
+// it out of a wallet. On 2026-11-16 the owner split it: 'wallets' is now the list only, deposit /
+// withdrawal / cancelling a wallet payment is 'wallet_transactions', and exchange is 'wallet_exchange'.
+// Staff saved with 'wallets' before the split get 'wallet_transactions' too, so they keep depositing
+// and withdrawing; the owner then unticks it for whoever should only look. 'wallet_exchange' is NOT
+// given here: the owner ticks it by hand for whoever should exchange.
 // Without --apply it only lists who would change. Run it once, right after deploying the split.
 //
 //   MIGRATE_URI  the database (default: MONGO_URL_2 / MONGO_URL, as the app uses)

@@ -6,9 +6,10 @@ const { allow, anyStaff } = require('../middleware/permissions');
 
 const router  = express.Router();
 // 'wallets' only shows the wallets list; putting money in or taking it out of a wallet (deposit,
-// withdrawal, exchange, cancelling a wallet payment) is 'wallet_transactions' (owner, 2026-11-16).
-router.post('/wallet/:id/exchange/quote', protect, allow(['wallet_transactions'], allowAdminsAndAccountants), walletExchange.quote);
-router.post('/wallet/:id/exchange', protect, allow(['wallet_transactions'], allowAdminsAndAccountants), walletExchange.create);
+// withdrawal, cancelling a wallet payment) is 'wallet_transactions', and exchanging between the
+// customer's currencies is 'wallet_exchange' (owner, 2026-11-16).
+router.post('/wallet/:id/exchange/quote', protect, allow(['wallet_exchange'], allowAdminsAndAccountants), walletExchange.quote);
+router.post('/wallet/:id/exchange', protect, allow(['wallet_exchange'], allowAdminsAndAccountants), walletExchange.create);
 const multer = require('multer');
 const upload = multer({
       storage: multer.memoryStorage(),

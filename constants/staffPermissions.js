@@ -24,7 +24,9 @@ const PERMISSION_GROUPS = [
       { key: 'passports', label: 'توثيق جوازات السفر', hint: 'قبول أو رفض جوازات العملاء' },
       { key: 'special_prices', label: 'الأسعار الخاصة', hint: 'أسعار شحن خاصة لعملاء محددين' },
       { key: 'wallets', label: 'قائمة المحافظ وحركاتها', hint: 'تبويب المحافظ في صفحة العملاء: أرصدة العملاء وآخر الإيداعات والدفعات (عرض فقط)' },
-      { key: 'wallet_transactions', label: 'الإضافة والخصم من المحفظة', hint: 'إضافة رصيد لمحفظة العميل، السحب النقدي، الصرافة داخل المحفظة، وإلغاء دفعة من المحفظة' },
+      { key: 'wallet_transactions', label: 'الإضافة والخصم من المحفظة', hint: 'إضافة رصيد لمحفظة العميل، السحب النقدي، وإلغاء دفعة من المحفظة' },
+      // Not in any staff type below: given only to whoever the owner ticks it for (owner, 2026-11-16)
+      { key: 'wallet_exchange', label: 'الصرافة داخل المحفظة', hint: 'تحويل رصيد العميل بين الدولار والدينار' },
       { key: 'debts', label: 'الديون', hint: 'ديون العملاء وتسديدها وإقفالها' },
       { key: 'returned_payments', label: 'المبالغ المرجعة', hint: 'المبالغ المرجعة من الموردين' },
       { key: 'expenses', label: 'مصروفات المكتب', hint: 'عرض وتسجيل مصروفات المكتب' },
