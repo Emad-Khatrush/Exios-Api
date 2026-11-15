@@ -1550,8 +1550,9 @@ module.exports.updateStatusOfOrder = async (req, res, next) => {
 module.exports.getClientHomeData = async (req, res, next) => {
   try {
     const receivedOrders = await Orders.countDocuments({ user: req.user._id, isFinished: true, unsureOrder: false });
-    const readyForReceivement = await Orders.countDocuments({ user: req.user._id, unsureOrder: false, $or: [ { isPayment: true, orderStatus: 4 }, { isPayment: false, orderStatus: 3 } ] });
-    const activeOrders = await Orders.countDocuments({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false });
+    // A shipment stopped by the office (prohibited goods) is neither active nor ready to collect
+    const readyForReceivement = await Orders.countDocuments({ user: req.user._id, unsureOrder: false, shippingBlocked: { $ne: true }, $or: [ { isPayment: true, orderStatus: 4 }, { isPayment: false, orderStatus: 3 } ] });
+    const activeOrders = await Orders.countDocuments({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false, shippingBlocked: { $ne: true } });
     const totalPaidInvoices = (await Orders.aggregate([
       { $match: { user: req.user._id, isCanceled: false, unsureOrder: false } },
       { $group: { _id: 'id', total: { $sum: '$totalInvoice' } } },
@@ -1574,6 +1575,10 @@ module.exports.getClientHomeData = async (req, res, next) => {
   }
 }
 
+// The customer's lists that a stopped shipment must leave (it shows under "blocked" instead)
+const CLIENT_TABS_WITHOUT_BLOCKED = ['active', 'arrivedWarehouse', 'readyForPickup'];
+const notBlocked = { $ne: ['$shippingBlocked', true] };
+
 module.exports.getOrdersForUser = async (req, res, next) => {
   try {
     const { type } = req.params;
@@ -1582,8 +1587,12 @@ module.exports.getOrdersForUser = async (req, res, next) => {
     let orders;
     if (type === 'all') {
       orders = await Orders.find({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false }, query).sort({ createdAt: -1 });
+    } else if (type === 'blocked') {
+      // Shipments the office stopped (prohibited goods): their own list, out of the active ones
+      orders = await Orders.find({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false, shippingBlocked: true }, query).sort({ createdAt: -1 });
     } else {
       const queryType = getTapTypeQuery(type);
+      if (CLIENT_TABS_WITHOUT_BLOCKED.includes(type)) queryType.shippingBlocked = { $ne: true };
       orders = await Orders.find({ ...queryType, user: req.user._id, isCanceled: false }, query).sort({ createdAt: -1 });
     }
 
@@ -1609,6 +1618,7 @@ module.exports.getOrdersForUser = async (req, res, next) => {
                     { $eq: ["$isFinished", false] },
                     { $eq: ["$unsureOrder", false] },
                     { $eq: ["$isCanceled", false] },
+                    notBlocked,
                     {
                       $or: [
                         { $and: [{ $eq: ["$isPayment", true] }, { $eq: ["$isShipment", true] }] },
@@ -1636,6 +1646,7 @@ module.exports.getOrdersForUser = async (req, res, next) => {
               $cond: [
                 {
                   $and: [
+                    notBlocked,
                     { $eq: ["$unsureOrder", false] },
                     { $eq: ["$isCanceled", false] },
                     {
@@ -1672,6 +1683,7 @@ module.exports.getOrdersForUser = async (req, res, next) => {
               $cond: [
                 {
                   $and: [
+                    notBlocked,
                     { $eq: ["$unsureOrder", false] },
                     { $eq: ["$isCanceled", false] },
                     {
@@ -1703,6 +1715,15 @@ module.exports.getOrdersForUser = async (req, res, next) => {
               ]
             }
           },
+          blockedOrders: {
+            $sum: {
+              $cond: [
+                { $and: [{ $eq: ["$shippingBlocked", true] }, { $eq: ["$isFinished", false] }, { $eq: ["$unsureOrder", false] }] },
+                1,
+                0
+              ]
+            }
+          },
           invoiceOrders: {
             $sum: {
               $cond: [
@@ -1728,6 +1749,7 @@ module.exports.getOrdersForUser = async (req, res, next) => {
         unsureOrders: 0,
         warehouseArrived: 0,
         readyForReceivement: 0,
+        blockedOrders: 0,
         invoiceOrders: 0
       }
     }

@@ -9,9 +9,12 @@ const { sendEmail } = require("../utils/sender");
 
 module.exports.sendPasswordToken = async (req, res, next) => {
   try {
-    const { email } = req.body;
-
-    const user = await User.findOne({ username: email });
+    // Text only, and matched in any letter case (as sign-in does): older accounts kept the case they
+    // were typed with. Escaped, so characters like . or * in it are not a pattern.
+    const email = typeof req.body.email === 'string' ? req.body.email.trim() : '';
+    if (!email) return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
+    const escaped = email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const user = await User.findOne({ username: { $regex: `^${escaped}$`, $options: 'i' } });
 
     if (!user) {
       return next(new ErrorHandler(400, errorMessages.USER_NOT_FOUND));
@@ -31,9 +34,9 @@ module.exports.sendPasswordToken = async (req, res, next) => {
       createdAt: Date.now(),
     }).save();
 
-    await sendEmail(email, 'اعادة كلمة المرور', {
+    await sendEmail(user.username, 'اعادة كلمة المرور', {
       fullName: `${user.firstName} ${user.lastName}`,
-      resetLink: `http://www.exioslibya.com/reset-password?token=${resetToken}&id=${user._id}`,
+      resetLink: `https://www.exioslibya.com/reset-password?token=${resetToken}&id=${user._id}`,
     }, '../templates/resetPassword.handlebars');
     res.status(200).send({});
 
@@ -45,6 +48,9 @@ module.exports.sendPasswordToken = async (req, res, next) => {
 module.exports.resetNewPassword = async (req, res, next) => {
   try {
     const { password, userId, token } = req.body;
+    if (typeof password !== 'string' || password.length < 6 || typeof userId !== 'string' || typeof token !== 'string') {
+      return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
+    }
 
     const passwordResetToken = await Token.findOne({ userId });
     if (!passwordResetToken) {
@@ -57,7 +63,8 @@ module.exports.resetNewPassword = async (req, res, next) => {
     const hash = await bcrypt.hash(password, 12);
     await User.updateOne(
       { _id: userId },
-      { $set: { password: hash } },
+      // a new password also lifts any sign-in pause from wrong passwords
+      { $set: { password: hash, failedLoginCount: 0 }, $unset: { failedLoginSince: '', loginLockedUntil: '' } },
       { new: true }
     );
 

@@ -166,6 +166,8 @@ const CLIENT_ORDER_FIELDS = [
     'productName', 'quantity', 'customerInfo', 'totalInvoice', 'debt', 'credit',
     'activity', 'images',
     'customization.note', 'customization.theme',
+    // A shipment the office stopped (prohibited goods) and why: the customer must see both
+    'shippingBlocked', 'shippingBlockReason', 'shippingBlockedAt',
     'shipment.method', 'shipment.fromWhere', 'shipment.toWhere', 'shipment.estimatedDelivery',
     'shipment.weight', 'shipment.packageCount',
     'paymentList._id', 'paymentList.status', 'paymentList.images', 'paymentList.settings',

@@ -11,6 +11,9 @@ exports.errorMessages = {
   USER_ROLE_INVALID: 'user-role-invalid',
   PASSPORT_IMAGE_REQUIRED: 'passport-image-required',
   PASSPORT_UPLOAD_FAILED: 'passport-upload-failed',
+  // too many wrong passwords: sign-in to this account is paused for a while
+  ACCOUNT_LOCKED: 'account-locked',
+  TOO_MANY_REQUESTS: 'too-many-requests',
   // order errors
   ORDER_ID_TAKEN: 'order-id-taken',
   ORDER_NOT_FOUND: 'order-not-found',

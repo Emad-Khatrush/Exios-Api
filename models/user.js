@@ -48,6 +48,11 @@ const userSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  // Wrong passwords in a row (counted from the first one in the current window), and until when
+  // sign-in is paused after too many. Never sent out with the account.
+  failedLoginCount: { type: Number, default: 0, select: false },
+  failedLoginSince: { type: Date, select: false },
+  loginLockedUntil: { type: Date, select: false },
   isAgreeToTermsOfCompany: {
     type: Boolean,
     default: false,

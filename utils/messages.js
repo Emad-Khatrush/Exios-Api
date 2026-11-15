@@ -1,40 +1,25 @@
 const axios = require('axios');
 
+// Any stored or typed phone -> a whatsapp-web.js ID (218912345678@c.us).
+//   - Libyan mobiles (91-95) in any form: 912345678, 0912345678, 218912345678, +218 91..., 2180912345678
+//   - Every other number is expected with its country code (905321234567, +971 50..., 00971...) and kept as is
+//   - Spaces, dashes, brackets and Arabic/Persian digits are tolerated
 const validatePhoneNumber = (phone) => {
-  let cleanPhone = `${phone}`.trim();
+  let p = `${phone ?? ''}`.split('@')[0]
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/\D/g, '');
 
-  // 1. Handle your specific hardcoded test case
-  if (cleanPhone.includes('5535728209')) {
-      return '905535728209@c.us';
-  }
+  if (p.startsWith('00')) p = p.slice(2);
 
-  // 2. Strip any existing WhatsApp domain suffixes if passed in
-  cleanPhone = cleanPhone.split('@')[0];
+  // Test-mode number (Turkish), stored without its country code
+  if (p === '5535728209') return '905535728209@c.us';
 
-  // 3. Strip international indicators (+ or 00)
-  if (cleanPhone.startsWith('+')) {
-      cleanPhone = cleanPhone.substring(1);
-  } else if (cleanPhone.startsWith('00')) {
-      cleanPhone = cleanPhone.substring(2);
-  }
+  if (/^2180\d{9}$/.test(p)) p = `218${p.slice(4)}`;          // 218 + local 0: 2180912345678
+  if (/^09[1-5]\d{7}$/.test(p)) p = `218${p.slice(1)}`;       // 0912345678
+  else if (/^9[1-5]\d{7}$/.test(p)) p = `218${p}`;            // 912345678
 
-  // 4. Define specific Libyan mobile patterns (Carrier prefixes: 91, 92, 93, 94, 95)
-  const isLibyanLocalWithZero = /^09[1-5]\d{7}$/.test(cleanPhone);  // Matches: 091XXXXXXX (10 digits)
-  const isLibyanLocalNoZero   = /^9[1-5]\d{7}$/.test(cleanPhone);    // Matches: 91XXXXXXX (9 digits)
-  const isAlreadyLibyanIntl   = /^2189[1-5]\d{7}$/.test(cleanPhone); // Matches: 21891XXXXXXX (12 digits)
-
-  // 5. Apply formatting logic based on the match
-  if (isLibyanLocalWithZero) {
-      // Remove the leading '0' and prepend Libyan country code '218'
-      cleanPhone = '218' + cleanPhone.substring(1);
-  } 
-  else if (isLibyanLocalNoZero) {
-      // Prepend '218' directly
-      cleanPhone = '218' + cleanPhone;
-  }
-
-  // 6. Return the clean string formatted as a whatsapp-web.js JID
-  return `${cleanPhone}@c.us`;
+  return `${p}@c.us`;
 };
 
 const formatPhoneNumber = (phone) => {

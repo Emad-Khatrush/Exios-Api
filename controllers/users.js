@@ -15,13 +15,25 @@ const { uploadToGoogleCloud } = require('../utils/googleClould');
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const numbers = '0123456789';
-  const { repeatedPassword, password, email, phone } = req.body;
+  // Only what a customer fills in at sign-up. Everything else on the account (prices, roles, access,
+  // status...) is set by us, so it is never taken from the request.
+  const text = (v) => (typeof v === 'string' ? v.trim() : '');
+  const email = text(req.body.email).toLowerCase();
+  const password = typeof req.body.password === 'string' ? req.body.password : '';
+  const repeatedPassword = typeof req.body.repeatedPassword === 'string' ? req.body.repeatedPassword : '';
+  const firstName = text(req.body.firstName);
+  const lastName = text(req.body.lastName);
+  const city = text(req.body.city);
+  const phone = Number(formatPhoneNumber(text(req.body.phone)));
+  const isAgreeToTermsOfCompany = req.body.isAgreeToTermsOfCompany === true || req.body.isAgreeToTermsOfCompany === 'true';
 
   try {
     if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
+    if (!email || !password || !firstName || !lastName || !phone) return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     if (repeatedPassword !== password) return next(new ErrorHandler(400, errorMessages.PASSWORD_NOT_MATCH));
     const customerId = generateString(1, characters) + generateString(3, numbers);
-    const userFound = await User.findOne({ $or: [ { customerId }, { username: email } ] });
+    // Login matches the email in any letter case, so the same email in other case counts as taken
+    const userFound = await User.findOne({ $or: [ { customerId }, { username: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } } ] });
     if (!!userFound) return next(new ErrorHandler(400, errorMessages.USER_EXIST));
 
     const phoneExist = await User.findOne({ phone });
@@ -30,9 +42,13 @@ module.exports.createUser = async (req, res, next) => {
     const uploadedPassport = await uploadToGoogleCloud(req.file, 'exios-passports');
     if (!uploadedPassport?.publicUrl) return next(new ErrorHandler(500, errorMessages.PASSPORT_UPLOAD_FAILED));
 
-    const hashedPassword = await bcrypt.hash(req.body.password, 12);
+    const hashedPassword = await bcrypt.hash(password, 12);
     const user = await User.create({
-      ...req.body,
+      firstName,
+      lastName,
+      phone,
+      city,
+      isAgreeToTermsOfCompany,
       username: email,
       password: hashedPassword,
       customerId,
@@ -53,6 +69,24 @@ module.exports.createUser = async (req, res, next) => {
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+// Sign-up asks this on its first step, so a used email or phone is caught there and not after the passport upload.
+// It uses the same tests as createUser (email in any letter case, phone stored without +, 00, 218 or leading 0).
+module.exports.checkSignupAvailability = async (req, res, next) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const phoneText = typeof req.body.phone === 'string' && req.body.phone.trim() ? formatPhoneNumber(req.body.phone) : '';
+
+  try {
+    const emailTaken = email
+      ? !!(await User.exists({ username: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } }))
+      : false;
+    const phoneTaken = /^\d+$/.test(phoneText) ? !!(await User.exists({ phone: Number(phoneText) })) : false;
+    res.status(200).json({ emailTaken, phoneTaken });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
   }
 }
 
@@ -467,8 +501,18 @@ module.exports.searchForClient = async (req, res, next) => {
   }
 }
 
+// Sign-in protection: 10 wrong passwords within 15 minutes pause sign-in to that account for
+// 15 minutes. Resetting the password (forgot password) lifts the pause at once.
+const MAX_FAILED_LOGINS = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const LOGIN_SECRETS = '+password +failedLoginCount +failedLoginSince +loginLockedUntil';
+
 module.exports.login = async (req, res, next) => {
-  const { username, password, loginType, loginMethod } = req.body;
+  const { loginType, loginMethod } = req.body;
+  // Text only: an object here ({ "$ne": null }…) must not reach the database query
+  const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
+  const password = typeof req.body.password === 'string' ? req.body.password : '';
 
   if (!username || !password) {
     return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
@@ -477,9 +521,11 @@ module.exports.login = async (req, res, next) => {
   try {
     let user;
     if (loginMethod === 'phone') {
-      user = await User.findOne({ phone: Number(formatPhoneNumber(username)) }).select('+password');
+      user = await User.findOne({ phone: Number(formatPhoneNumber(username)) }).select(LOGIN_SECRETS);
     } else {
-      user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i'} }).select('+password');
+      // The email is matched as plain text (any letter case). Escaped, so ".*" or other patterns in
+      // it cannot match someone else's account or slow the database down.
+      user = await User.findOne({ username: { $regex: `^${escapeRegex(username)}$`, $options: 'i'} }).select(LOGIN_SECRETS);
     }
     if (!user) {
       return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
@@ -493,16 +539,37 @@ module.exports.login = async (req, res, next) => {
     if (loginType === 'admin' && user.roles.isClient) {
       return next(new ErrorHandler(400, errorMessages.USER_ROLE_INVALID));
     }
+    // Paused after too many wrong passwords: not even checked until the pause ends
+    const now = Date.now();
+    if (user.loginLockedUntil && user.loginLockedUntil.getTime() > now) {
+      return next(new ErrorHandler(429, errorMessages.ACCOUNT_LOCKED));
+    }
+
     const isMatch = await user.matchPassword(password);
 
     if (!isMatch) {
+      // Count it; wrong passwords older than the window start a new count
+      const fresh = !user.failedLoginSince || now - user.failedLoginSince.getTime() > LOGIN_WINDOW_MS;
+      const count = (fresh ? 0 : user.failedLoginCount || 0) + 1;
+      if (count >= MAX_FAILED_LOGINS) {
+        await User.updateOne({ _id: user._id }, {
+          $set: { loginLockedUntil: new Date(now + LOGIN_LOCK_MS), failedLoginCount: 0 },
+          $unset: { failedLoginSince: '' },
+        });
+        return next(new ErrorHandler(429, errorMessages.ACCOUNT_LOCKED));
+      }
+      await User.updateOne({ _id: user._id }, {
+        $set: { failedLoginCount: count, ...(fresh ? { failedLoginSince: new Date(now) } : {}) },
+      });
       return next(new ErrorHandler(404, errorMessages.INVALID_CREDENTIALS));
     }
-    if (loginMethod === 'phone') {
-      user = await User.findOne({ phone: Number(formatPhoneNumber(username)) }, { password: 0 });
-    } else {
-      user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i'} }, { password: 0 });
+
+    // Signed in: forget earlier wrong passwords
+    if (user.failedLoginCount || user.loginLockedUntil) {
+      await User.updateOne({ _id: user._id }, { $set: { failedLoginCount: 0 }, $unset: { failedLoginSince: '', loginLockedUntil: '' } });
     }
+    // The same account again, without the password
+    user = await User.findById(user._id, { password: 0 });
     
     const token = await user.getSignedToken();
     res.status(200).json({

@@ -57,6 +57,7 @@ const { routes: accountingRoutes, systemRoutes: accountingSystemRoutes, initAcco
 const goals = require('./routes/goals');
 const files = require('./routes/files');
 const staffAccess = require('./routes/staffAccess');
+const feedback = require('./routes/feedback');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -100,6 +101,10 @@ let isWhatsAppReady = false;
 let isInitializingWhatsApp = false; // guards against overlapping initialize() calls
 
 const app = express();
+// The host's router sits in front of the app: trust its X-Forwarded-For (one hop), so req.ip is the
+// visitor's own address. Without it every request has the router's address and per-visitor limits
+// (sign-in, password reset, sign-up check) would count all customers as one.
+app.set('trust proxy', 1);
 app.get('/', (req, res) => res.json({ service: 'Exios API', environment: isQa ? 'qa' : 'production', databaseConnected: mongoose.connection.readyState === 1 }));
 app.get('/health', (req, res) => res.status(mongoose.connection.readyState === 1 ? 200 : 503).json({ ok: mongoose.connection.readyState === 1, environment: isQa ? 'qa' : 'production' }));
 
@@ -492,6 +497,7 @@ app.use('/api', companyNotes);
 app.use('/api', goals);
 app.use('/api', files);
 app.use('/api', staffAccess);
+app.use('/api', feedback);
 
 // Whoever scans this QR links their phone as the company's sending number: staff only
 app.get('/api/get-qr-code', protect, staffOnly, (req, res) => {
@@ -917,11 +923,38 @@ app.use(async (req, res) => {
  * @param {string} jid - Target WhatsApp ID (phone_number@c.us)
  * @param {string} text - The message body
  */
+// Asks WhatsApp for the number's real ID before sending, so numbers whose WhatsApp ID differs
+// from how they are written (some countries) still arrive, and numbers that are not on WhatsApp
+// fail right away with an error isPermanentSendError recognises (no wasted retries).
+// Cached, since a campaign message resolves the same number for the photo and the text.
+const resolvedJids = new Map();
+const RESOLVED_JIDS_MAX = 5000;
+
+async function resolveJid(waClient, jid) {
+    if (resolvedJids.has(jid)) return resolvedJids.get(jid);
+    let numberId;
+    try {
+        numberId = await waClient.getNumberId(jid.split('@')[0]);
+    } catch (error) {
+        // The lookup itself failed (not the number): send to the ID as written, as before
+        console.error(`Could not look up ${jid} on WhatsApp, sending as is:`, error.message);
+        return jid;
+    }
+    if (!numberId) {
+        throw new Error(`${jid} is not a valid WhatsApp number`);
+    }
+    const resolved = numberId._serialized || jid;
+    if (resolvedJids.size >= RESOLVED_JIDS_MAX) resolvedJids.clear();
+    resolvedJids.set(jid, resolved);
+    return resolved;
+}
+
 async function sendMessage(waClient, jid, text) {
     if (!waClient || !isWhatsAppReady) {
         throw new Error('whatsup-auth-not-found');
     }
     try {
+        jid = await resolveJid(waClient, jid);
         await waClient.sendMessage(jid, text);
         console.log(`Message successfully sent to ${jid}`);
     } catch (error) {
@@ -1035,6 +1068,7 @@ async function sendPhoto(waClient, jid, imgUrl) {
     }
     let media;
     try {
+        jid = await resolveJid(waClient, jid);
         media = await downloadImage(imgUrl);
         await patchMediaIdCollision(waClient);
         await waClient.sendMessage(jid, media);

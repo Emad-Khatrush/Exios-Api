@@ -31,6 +31,20 @@ router.route('/customer/:id')
 
 router.post('/account/create', upload.single('passportImage'), users.createUser);
 
+// Public, so it is limited per address: enough for a person fixing typos, too few to scan for accounts
+const checkHits = new Map();
+const limitSignupCheck = (req, res, next) => {
+  const now = Date.now();
+  const key = req.ip;
+  const hits = (checkHits.get(key) || []).filter((t) => now - t < 10 * 60 * 1000);
+  if (hits.length >= 30) return res.status(429).json({ success: false, message: 'too-many-requests' });
+  hits.push(now);
+  checkHits.set(key, hits);
+  if (checkHits.size > 5000) checkHits.clear();
+  next();
+};
+router.post('/account/check', limitSignupCheck, users.checkSignupAvailability);
+
 router.route('/account/update')
       .put(protect, isClient, users.updateUser);
 
@@ -67,6 +81,7 @@ router.route('/specialPriceCustomers')
 
 router.post('/verifyToken', users.verifyToken);
 
-router.post('/login', users.login);
+const { loginByIp } = require('../middleware/rateLimit');
+router.post('/login', loginByIp, users.login);
 
 module.exports = router;

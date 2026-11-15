@@ -58,6 +58,20 @@ const uploadToGoogleCloud = async (file, folderName) => {
   }
 };
 
+// Like uploadToGoogleCloud, but the link is returned only once the file is fully stored, with its
+// content type, so a browser can show it the moment it is returned. Throws when the upload fails
+// instead of handing back a link to nothing.
+const saveToGoogleCloud = async (file, folderName) => {
+  if (isQa) return require('./qaFiles').upload(file, folderName);
+  const cloudFile = bucket.file(`${folderName}/${getRandomChars(10)}${file.originalname}`);
+  await cloudFile.save(file.buffer, {
+    resumable: false,
+    contentType: file.mimetype,
+    metadata: { cacheControl: 'public, max-age=31536000, immutable' },
+  });
+  return { publicUrl: `https://storage.googleapis.com/${bucket.name}/${cloudFile.name}` };
+};
+
 // Removes an object previously returned by uploadToGoogleCloud, given its public URL.
 const deleteFromGoogleCloud = async (publicUrl) => {
   if (isQa) return require('./qaFiles').remove(publicUrl);
@@ -108,4 +122,4 @@ const downloadUrlFor = async (publicUrl, filename) => {
   return url;
 };
 
-module.exports = { storage, uploadToGoogleCloud, deleteFromGoogleCloud, downloadUrlFor };
+module.exports = { storage, uploadToGoogleCloud, saveToGoogleCloud, deleteFromGoogleCloud, downloadUrlFor };

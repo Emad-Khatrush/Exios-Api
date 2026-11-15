@@ -44,9 +44,9 @@ const DEFAULTS = {
     visible: false,
     note: '',
     containers: [
-      { key: '20ft', label: "حاوية 20 قدم", route: 'الصين إلى طرابلس', price: 0, duration: '', visible: true },
-      { key: '40ft', label: "حاوية 40 قدم", route: 'الصين إلى طرابلس', price: 0, duration: '', visible: true },
-      { key: '40hq', label: "حاوية 40 قدم عالية (HQ)", route: 'الصين إلى طرابلس', price: 0, duration: '', visible: true },
+      { key: '20ft', label: "حاوية 20 قدم", carrier: '', fromPort: 'شنغهاي', toPort: 'طرابلس', route: '', price: 0, duration: '', visible: true },
+      { key: '40ft', label: "حاوية 40 قدم", carrier: '', fromPort: 'شنغهاي', toPort: 'طرابلس', route: '', price: 0, duration: '', visible: true },
+      { key: '40hq', label: "حاوية 40 قدم عالية (HQ)", carrier: '', fromPort: 'شنغهاي', toPort: 'طرابلس', route: '', price: 0, duration: '', visible: true },
     ],
   },
   offices: [
@@ -79,6 +79,32 @@ const routeKey = (price) => `${price.country}-${price.shippingType}`;
 // SWIFT brackets; an older single-rate setting becomes one open bracket
 const swiftTiers = (swift) => (swift?.tiers?.length ? swift.tiers : [{ upTo: null, type: 'percent', value: Number(swift?.percent) || 0 }]);
 const orderOf = (key) => { const i = ROUTE_ORDER.indexOf(key); return i < 0 ? 99 : i; };
+
+// The later of two dates, either may be missing
+const latest = (...dates) => dates.filter(Boolean).map((d) => new Date(d)).filter((d) => !Number.isNaN(d.getTime()))
+  .sort((a, b) => b - a)[0] || null;
+
+// JSON with object keys sorted, so a saved value and a cleaned one compare equal whatever their key order
+const canon = (value) => JSON.stringify(value, (_k, v) => (v && typeof v === 'object' && !Array.isArray(v)
+  ? Object.keys(v).sort().reduce((o, k) => { o[k] = v[k]; return o; }, {})
+  : v));
+
+// What counts as a price change, per part: notes, durations and visibility do not
+const PRICE_FIELDS = {
+  purchase: (s) => ({ minCommission: s?.minCommission ?? 0, tiers: s?.tiers || [], sites: s?.sites || [] }),
+  alipay: (s) => ({ tiers: s?.tiers || [] }),
+  swift: (s) => ({ tiers: swiftTiers(s), fixedFee: s?.fixedFee ?? 0, minFee: s?.minFee ?? 0 }),
+};
+// A route's base price lives in ShipmentPrice (its own updatedAt), so only the other kinds, the
+// minimum and the carrier (a new line usually means a new price) here
+const routePrices = (r) => ({
+  minCharge: Number(r?.minCharge) || 0,
+  carrier: r?.carrier || '',
+  kinds: (r?.categories || []).map((c, i) => ({ label: c.label || '', price: i === 0 ? 0 : Number(c.price) || 0 })),
+});
+const containerPrices = (c) => ({
+  label: c?.label || '', carrier: c?.carrier || '', fromPort: c?.fromPort || '', toPort: c?.toPort || '', route: c?.route || '', price: Number(c?.price) || 0,
+});
 
 async function loadConfig() {
   let config = await PricingConfig.findOne({ key: 'main' }).lean();
@@ -115,6 +141,9 @@ async function shippingRoutes(config) {
         // The free text the office wrote for this route before (ShipmentPrice.priceDescription)
         note: cleanNote(display.note ?? price.priceDescription ?? ''),
         minCharge: Number(display.minCharge) || 0,
+        carrier: display.carrier || '',
+        // The last time any price of the route changed, for "updated on" in the app
+        updatedAt: latest(price.updatedAt, display.pricesUpdatedAt),
       };
     })
     .sort((a, b) => orderOf(a.key) - orderOf(b.key));
@@ -130,24 +159,30 @@ module.exports.getPublic = async (req, res, next) => {
     const config = await loadConfig();
     const routes = (await shippingRoutes(config)).filter((r) => r.visible && r.price > 0);
     const visible = (section) => !!config[section]?.visible;
+    // Parts saved before change times were kept show the time the settings were last saved
+    const updated = (value) => latest(value) || config.updatedAt || null;
     res.status(200).json({
       exchangeRate: config.exchangeRate?.visible ? await currentRate() : null,
       shipping: visible('shipping') && routes.length ? {
         note: config.shipping.note || '',
         volumetricDivisor: config.shipping.volumetricDivisor || 6000,
-        routes: routes.map(({ visible: _v, ...route }) => ({ ...route, categories: route.categories.filter((c) => c.price > 0) })),
+        routes: routes.map(({ visible: _v, ...route }) => ({ ...route, updatedAt: updated(route.updatedAt), categories: route.categories.filter((c) => c.price > 0) })),
+        updatedAt: updated(latest(...routes.map((r) => r.updatedAt))),
       } : null,
       purchase: visible('purchase') ? {
+        updatedAt: updated(config.purchase.pricesUpdatedAt),
         note: config.purchase.note || '',
         minCommission: config.purchase.minCommission || 0,
         tiers: config.purchase.tiers || [],
         sites: config.purchase.sites || [],
       } : null,
       alipay: visible('alipay') && (config.alipay.tiers || []).some((t) => t.rate > 0) ? {
+        updatedAt: updated(config.alipay.pricesUpdatedAt),
         note: config.alipay.note || '',
         tiers: (config.alipay.tiers || []).filter((t) => t.rate > 0),
       } : null,
       swift: visible('swift') ? {
+        updatedAt: updated(config.swift.pricesUpdatedAt),
         note: config.swift.note || '',
         tiers: swiftTiers(config.swift),
         fixedFee: config.swift.fixedFee || 0,
@@ -155,7 +190,11 @@ module.exports.getPublic = async (req, res, next) => {
       } : null,
       fcl: visible('fcl') && (config.fcl.containers || []).some((c) => c.visible !== false && c.price > 0) ? {
         note: config.fcl.note || '',
-        containers: config.fcl.containers.filter((c) => c.visible !== false && c.price > 0),
+        containers: config.fcl.containers.filter((c) => c.visible !== false && c.price > 0)
+          .map(({ visible: _v, pricesUpdatedAt, ...c }) => ({
+            carrier: '', fromPort: '', toPort: '', route: '', duration: '', ...c, updatedAt: updated(pricesUpdatedAt),
+          })),
+        updatedAt: updated(latest(...config.fcl.containers.filter((c) => c.visible !== false && c.price > 0).map((c) => c.pricesUpdatedAt))),
       } : null,
       offices: (config.offices || []).filter((o) => o.whatsapp),
       updatedAt: config.updatedAt,
@@ -172,6 +211,8 @@ module.exports.getConfig = async (req, res, next) => {
       ...config,
       shipping: { ...config.shipping, routes: await shippingRoutes(config) },
       swift: { ...config.swift, tiers: swiftTiers(config.swift) },
+      // Rows saved before shipping lines and ports existed get them empty
+      fcl: { ...config.fcl, containers: (config.fcl?.containers || []).map((c) => ({ carrier: '', fromPort: '', toPort: '', route: '', duration: '', ...c })) },
       exchangeRate: { visible: config.exchangeRate?.visible !== false, current: await currentRate() },
     });
   } catch (error) {
@@ -219,31 +260,43 @@ module.exports.saveConfig = async (req, res, next) => {
     const body = req.body || {};
     const current = await loadConfig();
     const update = {};
+    const now = new Date();
+    // A part whose prices changed gets now; otherwise it keeps its time. A part saved before times
+    // were kept gets the previous save time, so later saves of other parts do not move it.
+    const stamp = (before, after, previous) => (canon(before) !== canon(after) ? now : (previous || current.updatedAt || now));
 
     if (body.exchangeRate) update.exchangeRate = { visible: bool(body.exchangeRate.visible) };
 
     // Shipping: how each route is shown here, its price in ShipmentPrice
     let priceUpdates = [];
     if (body.shipping) {
-      const known = new Set((await ShipmentPrices.find({}).lean()).map(routeKey));
+      const known = new Map((await ShipmentPrices.find({}).lean()).map((p) => [routeKey(p), p]));
+      const before = new Map((current.shipping?.routes || []).map((r) => [r.key, r]));
       const routes = (Array.isArray(body.shipping.routes) ? body.shipping.routes : []).filter((r) => known.has(r.key));
       update.shipping = {
         visible: bool(body.shipping.visible),
         note: text(body.shipping.note),
         volumetricDivisor: num(body.shipping.volumetricDivisor, { min: 1000, max: 10000 }) || 6000,
-        routes: routes.map((r) => ({
-          key: r.key, visible: bool(r.visible), duration: text(r.duration, 60), note: text(r.note, 1500), minCharge: num(r.minCharge),
-          categories: cleanCategories(r),
-        })),
+        routes: routes.map((r) => {
+          const route = {
+            key: r.key, visible: bool(r.visible), duration: text(r.duration, 60), note: text(r.note, 1500), minCharge: num(r.minCharge), carrier: text(r.carrier, 60),
+            categories: cleanCategories(r),
+          };
+          const old = before.get(r.key);
+          // A route first saved here has no kinds of its own yet: compare with nothing, but keep no stamp
+          route.pricesUpdatedAt = old ? stamp(routePrices(old), routePrices(route), old.pricesUpdatedAt) : null;
+          return route;
+        }),
       };
-      // The first kind's price is the route price invoices read (ShipmentPrice)
+      // The first kind's price is the route price invoices read (ShipmentPrice). Only written
+      // when it changed, so ShipmentPrice.updatedAt is the time the price really changed.
       priceUpdates = routes.map((r) => {
         const [country, shippingType] = r.key.split('-');
         const categories = cleanCategories(r);
         const price = categories.length ? categories[0].price : num(r.price, { max: 100000 });
         if (!(price > 0)) throw fail(`ضع سعر «${categories[0]?.label || 'البضائع العادية'}» لخط ${r.label || r.key}: هو السعر الذي تقرؤه الفواتير`);
         return { country, shippingType, price };
-      });
+      }).filter((p) => Number(known.get(`${p.country}-${p.shippingType}`)?.sellingPrice) !== p.price);
     }
 
     if (body.purchase) {
@@ -257,12 +310,14 @@ module.exports.saveConfig = async (req, res, next) => {
         tiers: cleanTiers(body.purchase.tiers, commissionTier, 'عمولات الشراء'),
         sites,
       };
+      update.purchase.pricesUpdatedAt = stamp(PRICE_FIELDS.purchase(current.purchase), PRICE_FIELDS.purchase(update.purchase), current.purchase?.pricesUpdatedAt);
     }
 
     if (body.alipay) {
       const tiers = cleanTiers(body.alipay.tiers, (t) => ({ rate: num(t.rate, { max: 100 }), fee: num(t.fee, { max: 1e5 }) }), 'حوالات علي باي');
       if (bool(body.alipay.visible) && tiers.some((t) => !(t.rate > 0))) throw fail('ضع سعر اليوان لكل شريحة في علي باي قبل إظهارها للعملاء');
       update.alipay = { visible: bool(body.alipay.visible), note: text(body.alipay.note), tiers };
+      update.alipay.pricesUpdatedAt = stamp(PRICE_FIELDS.alipay(current.alipay), PRICE_FIELDS.alipay(update.alipay), current.alipay?.pricesUpdatedAt);
     }
 
     if (body.swift) {
@@ -273,17 +328,29 @@ module.exports.saveConfig = async (req, res, next) => {
         fixedFee: num(body.swift.fixedFee, { max: 1e5 }),
         minFee: num(body.swift.minFee, { max: 1e5 }),
       };
+      update.swift.pricesUpdatedAt = stamp(PRICE_FIELDS.swift(current.swift), PRICE_FIELDS.swift(update.swift), current.swift?.pricesUpdatedAt);
     }
 
     if (body.fcl) {
-      const containers = (Array.isArray(body.fcl.containers) ? body.fcl.containers : []).slice(0, 12).map((c, i) => ({
-        key: text(c.key, 40) || `container-${i + 1}`,
-        label: text(c.label, 60),
-        route: text(c.route, 80),
-        price: num(c.price, { max: 1e6 }),
-        duration: text(c.duration, 60),
-        visible: bool(c.visible),
-      })).filter((c) => c.label);
+      const before = new Map((current.fcl?.containers || []).map((c) => [c.key, c]));
+      // Several shipping lines per container type and route, so room for more rows than before
+      const containers = (Array.isArray(body.fcl.containers) ? body.fcl.containers : []).slice(0, 40).map((c, i) => {
+        const row = {
+          key: text(c.key, 40) || `container-${i + 1}`,
+          label: text(c.label, 60),
+          carrier: text(c.carrier, 60),
+          fromPort: text(c.fromPort, 60),
+          toPort: text(c.toPort, 60),
+          route: text(c.route, 80),
+          price: num(c.price, { max: 1e6 }),
+          duration: text(c.duration, 60),
+          visible: bool(c.visible),
+        };
+        const old = before.get(row.key);
+        row.pricesUpdatedAt = old ? stamp(containerPrices(old), containerPrices(row), old.pricesUpdatedAt) : now;
+        return row;
+      }).filter((c) => c.label);
+      if (new Set(containers.map((c) => c.key)).size !== containers.length) throw fail('حاويتان بنفس المعرّف، أعد تحميل الصفحة ثم احفظ');
       update.fcl = { visible: bool(body.fcl.visible), note: text(body.fcl.note), containers };
     }
 
