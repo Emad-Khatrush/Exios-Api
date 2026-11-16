@@ -58,6 +58,7 @@ const goals = require('./routes/goals');
 const files = require('./routes/files');
 const staffAccess = require('./routes/staffAccess');
 const feedback = require('./routes/feedback');
+const loyalty = require('./routes/loyalty');
 const Redis = require('ioredis');
 
 let REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -498,6 +499,7 @@ app.use('/api', goals);
 app.use('/api', files);
 app.use('/api', staffAccess);
 app.use('/api', feedback);
+app.use('/api', loyalty);
 
 // Whoever scans this QR links their phone as the company's sending number: staff only
 app.get('/api/get-qr-code', protect, staffOnly, (req, res) => {

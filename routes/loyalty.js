@@ -1,0 +1,29 @@
+const express = require('express');
+const loyalty = require('../controllers/loyalty');
+const { protect, isClient } = require('../middleware/check-auth');
+const { allow, PERMISSION_DENIED } = require('../middleware/permissions');
+const ErrorHandler = require('../utils/errorHandler');
+
+const router = express.Router();
+
+// For staff whose permissions are not configured yet: employees keep the access the payment and
+// customer screens gave them (read points, redeem on an order); anyone else is refused with 403.
+// The loyalty-only routes have no such fallback: they need the `loyalty` permission (or an admin).
+const employeesOnly = (req, res, next) => (req.user?.roles?.isEmployee || req.user?.roles?.isAdmin
+  ? next()
+  : next(new ErrorHandler(403, PERMISSION_DENIED)));
+
+// Customers: read only, their own points (the app never redeems)
+router.get('/client/loyalty', protect, isClient, loyalty.mine);
+router.get('/client/loyalty/history', protect, isClient, loyalty.myHistory);
+router.get('/client/order/:id/loyalty', protect, isClient, loyalty.myOrder);
+
+// Staff
+router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);
+router.get('/user/:id/loyalty', protect, allow(['loyalty', 'clients'], employeesOnly), loyalty.customer);
+router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty']), loyalty.adjust);
+router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
+router.post('/order/:id/loyalty/redeem', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.redeem);
+router.put('/order/:id/loyalty/no-points', protect, allow(['loyalty']), loyalty.noPoints);
+
+module.exports = router;
