@@ -21,6 +21,9 @@ const invoiceSchema = new Schema({
     type: Number,
     required: true
   },
+  // A delivery: what loyalty points paid on the packages' shipping before it (total is what was
+  // left to pay; each line of list carries its own pointsUsd)
+  pointsUsd: Number,
   referenceId: {
     type: Number,
     required: true,

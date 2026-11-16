@@ -253,6 +253,18 @@ module.exports.getUserPackagesOfOrdersAdmin = async (req, res, next) => {
       }
     }
 
+    // What loyalty points already paid on each package's shipping: the delivery asks only the rest
+    if (tabType !== 'finished') {
+      const pairs = (orders || []).flatMap((order) => (order.paymentList || []).map((pkg) => ({ orderId: order._id, packageId: pkg._id })));
+      if (pairs.length) {
+        const paid = await require('../accounting/services/loyalty').pointsPaidOnPackages(pairs);
+        for (const order of orders) for (const pkg of order.paymentList || []) {
+          const pointsUsd = paid.get(String(pkg._id)) || 0;
+          if (pointsUsd > 0) pkg.pointsUsd = pointsUsd;
+        }
+      }
+    }
+
     res.status(200).json({
       results: orders,
     });

@@ -13,6 +13,11 @@ const employeesOnly = (req, res, next) => (req.user?.roles?.isEmployee || req.us
   ? next()
   : next(new ErrorHandler(403, PERMISSION_DENIED)));
 
+// The delivery routes' old guard (admins, employees and accountants), answering 403 to anyone else
+const deliveryStaffOnly = (req, res, next) => (req.user?.roles?.isEmployee || req.user?.roles?.isAdmin || req.user?.roles?.isAccountant
+  ? next()
+  : next(new ErrorHandler(403, PERMISSION_DENIED)));
+
 // Customers: read only, their own points (the app never redeems)
 router.get('/client/loyalty', protect, isClient, loyalty.mine);
 router.get('/client/loyalty/history', protect, isClient, loyalty.myHistory);
@@ -25,6 +30,9 @@ router.get('/user/:id/loyalty', protect, allow(['loyalty', 'clients'], employees
 router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty']), loyalty.adjust);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
 router.post('/order/:id/loyalty/redeem', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.redeem);
+// At a delivery: whoever delivers or takes payments (accountants too), as the delivery routes allow
+router.get('/user/:id/loyalty/delivery-quote', protect, allow(['loyalty', 'delivery', 'invoices_payments'], deliveryStaffOnly), loyalty.deliveryQuote);
+router.post('/user/:id/loyalty/redeem-packages', protect, allow(['loyalty', 'delivery', 'invoices_payments'], deliveryStaffOnly), loyalty.redeemPackages);
 router.put('/order/:id/loyalty/no-points', protect, allow(['loyalty']), loyalty.noPoints);
 
 module.exports = router;

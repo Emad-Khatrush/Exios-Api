@@ -16,7 +16,7 @@ const Orders = require('../models/order');
 const {
   validatePackages, validatePayment, loadDeliverablePackages, getUserWalletMap, withCalculatedRate,
   checkSufficientFunds, allocatePayment, claimPackagesForDelivery, payAllocations, payFeesLYD,
-  updateOrderStatuses, createInvoice, invoiceItem, cleanUpInventory,
+  updateOrderStatuses, createInvoice, invoiceItem, pointsUsdOf, cleanUpInventory,
 } = require('./helperApi');
 
 // A batch of 8 is ~370 round trips: a few seconds even when the database is far away
@@ -123,7 +123,8 @@ async function next(req, jobId) {
     if (!invoiceId) {
       invoiceId = (await createInvoice(req.user, customerId, packages, { amountUSD: invoiced.amountUSD, amountLYD: invoiced.amountLYD, rate }, invoiced.total, session))._id;
     } else {
-      await Invoices.updateOne({ _id: invoiceId }, { $push: { list: { $each: packages.map(invoiceItem) } }, $set: invoiced }, { session });
+      const batchPoints = pointsUsdOf(packages);
+      await Invoices.updateOne({ _id: invoiceId }, { $push: { list: { $each: packages.map(invoiceItem) } }, $set: invoiced, ...(batchPoints > 0 && { $inc: { pointsUsd: batchPoints } }) }, { session });
     }
 
     await cleanUpInventory(packages, session);

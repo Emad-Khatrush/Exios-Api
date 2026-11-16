@@ -266,22 +266,51 @@ async function redeemKeys(target, session) {
 const spendableLots = (user, now, session) => LoyaltyPoint.find({ user: oid(user), kind: { $in: LOTS }, remaining: { $gt: 0 }, expiresAt: { $gt: now } })
   .select('remaining expiresAt').sort({ expiresAt: 1, _id: 1 }).session(session || null).lean();
 
+// The quote over some claims of one customer: { balance, maxPoints, owedCents, billedCents, usedOnTarget }.
+// The 20% cap is pooled over the claims (what was billed on them, less what points already paid).
+async function quoteKeys(user, keys, session, now) {
+  // One at a time: operations of one transaction must not run concurrently
+  const ledger = await claimLedger({ $in: keys }, session);
+  const redeemed = await redeemedOn(keys, session);
+  const lots = await spendableLots(user, now, session);
+  const billedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.billed || 0, 0), 0);
+  const owedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.open || 0, 0), 0);
+  const usedOnTarget = keys.reduce((sum, key) => sum + (redeemed.get(key) || 0), 0);
+  const balance = lots.reduce((sum, lot) => sum + lot.remaining, 0);
+  const maxPoints = Math.max(Math.min(balance, owedCents, redeemCap(billedCents, usedOnTarget)), 0);
+  return { lots, quote: { balance, maxPoints, owedCents, billedCents, usedOnTarget } };
+}
+
 async function quoteOf({ userId, target }, session, now = new Date()) {
   if (!target?.orderId || !mongoose.isValidObjectId(target.orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
   const order = await Order.findById(target.orderId).select('orderId user placedAt').session(session || null).lean();
   if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
   if (!userId || String(order.user) !== String(userId)) throw new ErrorHandler(400, 'هذه الطلبية ليست لهذا العميل');
   const keys = await redeemKeys(target, session);
-  // One at a time: operations of one transaction must not run concurrently
-  const ledger = await claimLedger({ $in: keys }, session);
-  const redeemed = await redeemedOn(keys, session);
-  const lots = await spendableLots(order.user, now, session);
-  const billedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.billed || 0, 0), 0);
-  const owedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.open || 0, 0), 0);
-  const usedOnTarget = keys.reduce((sum, key) => sum + (redeemed.get(key) || 0), 0);
-  const balance = lots.reduce((sum, lot) => sum + lot.remaining, 0);
-  const maxPoints = Math.max(Math.min(balance, owedCents, redeemCap(billedCents, usedOnTarget)), 0);
-  return { order, keys, lots, quote: { balance, maxPoints, owedCents, billedCents, usedOnTarget } };
+  const { lots, quote } = await quoteKeys(order.user, keys, session, now);
+  return { orders: [order], keys, lots, quote };
+}
+
+// The shipping claims `SHP:<order>:<package>` of some packages of one customer, which may belong to
+// several of their orders (never the packages' transport or customs fees). A package that is not the
+// customer's, of a cancelled order or already handed over is refused.
+async function packagesQuoteOf({ userId, packageIds }, session, now = new Date()) {
+  if (!userId || !mongoose.isValidObjectId(userId)) throw new ErrorHandler(400, 'حدد العميل');
+  const ids = [...new Set((packageIds || []).map((id) => String(id).trim()).filter(Boolean))];
+  if (!ids.length) throw new ErrorHandler(400, 'اختر الطرود');
+  if (ids.some((id) => !mongoose.isValidObjectId(id))) throw new ErrorHandler(400, 'بعض الطرود المحددة ليست لهذا العميل');
+  const orders = await Order.find({ user: oid(userId), isCanceled: { $ne: true }, 'paymentList._id': { $in: ids.map(oid) } })
+    .select('orderId user placedAt paymentList._id paymentList.status.received').sort({ _id: 1 }).session(session || null).lean();
+  const owner = new Map();
+  for (const order of orders) for (const pkg of order.paymentList || []) owner.set(String(pkg._id), { order, pkg });
+  const keys = ids.map((id) => {
+    const found = owner.get(id);
+    if (!found) throw new ErrorHandler(400, 'بعض الطرود المحددة ليست لهذا العميل');
+    if (found.pkg.status?.received) throw new ErrorHandler(400, 'بعض الطرود المحددة سُلّمت من قبل');
+    return shipmentKey(found.order._id, id);
+  });
+  const { lots, quote } = await quoteKeys(oid(userId), keys, session, now);
+  return { orders: orders.map(({ paymentList, ...order }) => order), keys, lots, quote };
 }
 
 // What the customer can pay with points on a target: { balance, maxPoints, owedCents, billedCents, usedOnTarget }
@@ -289,17 +318,34 @@ async function redeemQuote({ userId, target }, { session } = {}) {
   return (await quoteOf({ userId, target }, session)).quote;
 }
 
+// The same quote over the shipping of some packages (the delivery screen)
+async function packagesQuote({ userId, packageIds }, { session } = {}) {
+  return (await packagesQuoteOf({ userId, packageIds }, session)).quote;
+}
+
 // Pays `points` of the target with the customer's points, oldest lots first: one redeem movement
 // per claim paid, and one entry Dr loyalty_points (the customer) / Cr customer_receivable (the
 // claims, by what is still owed on each). At most 20% of the invoice, what is owed and the balance.
 async function redeem({ userId, target, points }, { session, req } = {}) {
+  return redeemOn(userId, points, (now) => quoteOf({ userId, target }, session, now), { session, req });
+}
+
+// The same over the shipping of some packages of the customer, possibly of several orders (the
+// delivery screen). The 20% cap is pooled over the packages. One entry per order, so cancelling an
+// order reverses exactly what was paid on it (restoreOrder reverses a redemption's whole entry).
+async function redeemPackages({ userId, packageIds, points }, { session, req } = {}) {
+  return redeemOn(userId, points, (now) => packagesQuoteOf({ userId, packageIds }, session, now), { session, req });
+}
+
+// What redeem and redeemPackages share. quoteFor(now) gives { orders, keys, lots, quote }.
+async function redeemOn(userId, points, quoteFor, { session, req } = {}) {
   assertInTransaction(session);
   if (!Number.isInteger(points) || points < 1) throw new ErrorHandler(400, 'اكتب عدد النقاط (رقم صحيح من 1 فأكثر)');
   if (!(await getConfig()).settings?.liveEnabled) throw new ErrorHandler(400, 'الترحيل المحاسبي الحي غير مفعّل؛ لا يمكن الدفع بالنقاط الآن');
   // Every redemption of the customer waits for the one before it (a write conflict otherwise)
   if (userId) await lockWalletOwner(userId, session);
   const now = new Date();
-  const { order, keys, lots, quote } = await quoteOf({ userId, target }, session, now);
+  const { orders, keys, lots, quote } = await quoteFor(now);
   if (points > quote.balance) throw new ErrorHandler(400, 'رصيد النقاط لا يكفي');
   if (points > quote.owedCents) throw new ErrorHandler(400, 'النقاط المطلوبة أكثر من المبلغ المستحق على هذه الفاتورة');
   if (points > quote.maxPoints) throw new ErrorHandler(400, 'النقاط المطلوبة أكثر من المسموح على هذه الفاتورة');
@@ -311,8 +357,15 @@ async function redeem({ userId, target, points }, { session, req } = {}) {
     const result = await LoyaltyPoint.updateOne({ _id: lotId, remaining: { $gte: take } }, { $inc: { remaining: -take } }, { session });
     if (result.modifiedCount !== 1) throw new ErrorHandler(409, 'تغيّر رصيد النقاط أثناء العملية. أعد المحاولة.');
   }
-  const office = await officeOf(order);
-  const movements = parts.map((part) => {
+  const ordersById = new Map(orders.map((order) => [String(order._id), order]));
+  // The parts by order, in the order the claims were split
+  const groups = new Map();
+  for (const part of parts) {
+    const orderId = parseKey(part.key).orderId;
+    const order = ordersById.get(orderId);
+    if (!order) throw new Error(`Loyalty: claim ${part.key} is not on the quoted orders`);
+    if (!groups.has(orderId)) groups.set(orderId, { order, office: await officeOf(order), items: [] });
+    const group = groups.get(orderId);
     const sources = [];
     let rest = part.usd;
     while (rest > 0) {
@@ -324,26 +377,40 @@ async function redeem({ userId, target, points }, { session, req } = {}) {
       if (source.points === 0) taken.shift();
     }
     const _id = new mongoose.Types.ObjectId();
-    return { _id, user: order.user, kind: 'redeem', points: part.usd, arKey: part.key, orderId: order._id, office,
-      sources, eventKey: `LOYALTY_REDEEM:${_id}`, createdBy: req?.user?._id };
-  });
+    group.items.push({ part, movement: { _id, user: order.user, kind: 'redeem', points: part.usd, arKey: part.key, orderId: order._id,
+      office: group.office, sources, eventKey: `LOYALTY_REDEEM:${_id}`, createdBy: req?.user?._id } });
+  }
   const receivable = await resolveAccount('customer_receivable');
-  const partnerId = oid(order.user);
-  const entry = await postEntry({
-    eventType: 'LOYALTY_REDEEM',
-    eventKey: movements[0].eventKey, // the first movement's id names the entry (and its LOYALTY_RESTORE reversal)
-    description: `دفع بنقاط الولاء (${points} نقطة) - طلب ${order.orderId || order._id}`,
-    source: { model: 'LoyaltyPoint', id: movements[0]._id },
-    lines: [
-      { role: 'loyalty_points', debit: points, partnerId, orderId: order._id },
-      ...claimLines(parts, 'credit', partnerId).map((line) => ({ ...line, accountId: receivable._id })),
-    ],
-  }, { session, user: req?.user });
-  await LoyaltyPoint.create(movements.map((movement) => ({ ...movement, journalEntryId: entry._id })), { session, ordered: true });
-  await syncOrder(order._id, { session, user: req?.user });
+  const entryIds = [];
+  for (const { order, items } of groups.values()) {
+    const movements = items.map(({ movement }) => movement);
+    const sum = movements.reduce((total, movement) => total + movement.points, 0);
+    const partnerId = oid(order.user);
+    const entry = await postEntry({
+      eventType: 'LOYALTY_REDEEM',
+      eventKey: movements[0].eventKey, // the first movement's id names the entry (and its LOYALTY_RESTORE reversal)
+      description: `دفع بنقاط الولاء (${sum} نقطة) - طلب ${order.orderId || order._id}`,
+      source: { model: 'LoyaltyPoint', id: movements[0]._id },
+      lines: [
+        { role: 'loyalty_points', debit: sum, partnerId, orderId: order._id },
+        ...claimLines(items.map(({ part }) => part), 'credit', partnerId).map((line) => ({ ...line, accountId: receivable._id })),
+      ],
+    }, { session, user: req?.user });
+    await LoyaltyPoint.create(movements.map((movement) => ({ ...movement, journalEntryId: entry._id })), { session, ordered: true });
+    entryIds.push(entry._id);
+  }
+  for (const { order } of groups.values()) await syncOrder(order._id, { session, user: req?.user });
   const open = await openBalances(keys, session);
   const remainingOwedCents = keys.reduce((sum, key) => sum + Math.max(open.get(key) || 0, 0), 0);
-  return { points, usd: points / 100, remainingOwedCents, journalEntryId: entry._id };
+  return { points, usd: points / 100, remainingOwedCents, journalEntryId: entryIds[0], ...(entryIds.length > 1 && { journalEntryIds: entryIds }) };
+}
+
+// The dollars points paid on each package's shipping claim SHP:<order>:<package> (net of what came
+// back), by package id: what a delivery no longer asks the customer to pay
+async function pointsPaidOnPackages(pairs, session) {
+  const keys = pairs.map(({ orderId, packageId }) => shipmentKey(orderId, packageId));
+  const redeemed = await redeemedOn(keys, session);
+  return new Map(pairs.map(({ packageId }, i) => [String(packageId), (redeemed.get(keys[i]) || 0) / 100]));
 }
 
 // ---- Expiry, no-points orders and cancellation (spec "Expiry", "No points", accounting table) ----
@@ -726,7 +793,7 @@ async function settleOrders({ now = new Date() } = {}) {
 }
 
 module.exports = {
-  awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, expireDue, settleOrders, setNoPoints,
+  awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };

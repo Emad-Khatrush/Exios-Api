@@ -133,6 +133,8 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
     packages.push({
       ...selected,
       deliveryInvoiceId: undefined,
+      // Never what the client sent: set below from the ledger
+      pointsUsd: undefined,
       feeOnly: false,
       feeField: undefined,
       id: packageId,
@@ -154,11 +156,30 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
         ...FEE_KEYS.filter(({ field }) => feesOf[field] && !(feesOf[field].currency === 'LYD' && feeMode !== 'usd')).map(({ suffix }) => `SHP:${order._id}:${packageId}:${suffix}`),
       ] : undefined,
       cost: Number((weight * exiosPrice + feeUSD).toFixed(2)),
+      // Kept to take off what loyalty points already paid on the shipping (below)
+      orderMongoId: order._id,
+      shippingUSD: Number((weight * exiosPrice).toFixed(2)),
+      feeUSD,
     });
   }
 
   if (packages.length === 0) {
     throw new ErrorHandler(400, 'No packages selected');
+  }
+
+  // Points already paid on a package's shipping claim SHP:<order>:<package> (net of what came back)
+  // are not asked again: the shipping is reduced by them, never below zero; the fees never are
+  const paidWithPoints = await require('../accounting/services/loyalty').pointsPaidOnPackages(
+    packages.map((pkg) => ({ orderId: pkg.orderMongoId, packageId: pkg.id })), session);
+  for (const pkg of packages) {
+    const pointsUsd = roundToTwo(Math.min(paidWithPoints.get(pkg.id) || 0, pkg.shippingUSD));
+    if (pointsUsd > 0) {
+      pkg.pointsUsd = pointsUsd;
+      pkg.cost = Number((pkg.shippingUSD - pointsUsd + pkg.feeUSD).toFixed(2));
+    }
+    delete pkg.orderMongoId;
+    delete pkg.shippingUSD;
+    delete pkg.feeUSD;
   }
 
   const totalCost = roundToTwo(packages.reduce((sum, pkg) => sum + pkg.cost, 0));
@@ -416,7 +437,12 @@ const invoiceItem = (pkg) => ({
   orderId: pkg?.orderId,
   ...(pkg?.domesticFee && { domesticFee: pkg.domesticFee }),
   ...(pkg?.customsFee && { customsFee: pkg.customsFee }),
+  // The part of the shipping loyalty points paid before the delivery (cost is what was left to pay)
+  ...(pkg?.pointsUsd > 0 && { pointsUsd: pkg.pointsUsd }),
 });
+
+// What loyalty points paid on a delivery's packages, in dollars
+const pointsUsdOf = (packages) => roundToTwo((packages || []).reduce((sum, pkg) => sum + (Number(pkg?.pointsUsd) || 0), 0));
 
 async function createInvoice(user, customerId, selectedPackages, payment, totalCost, session) {
   const latestInvoice = await Invoices.findOne({})
@@ -440,6 +466,9 @@ async function createInvoice(user, customerId, selectedPackages, payment, totalC
     rate: payment.rate || 0,
     list: selectedPackages.map(invoiceItem),
   };
+  // total is what was left to pay; pointsUsd what loyalty points paid on the shipping before
+  const pointsUsd = pointsUsdOf(selectedPackages);
+  if (pointsUsd > 0) invoice.pointsUsd = pointsUsd;
 
   if (session) return (await Invoices.create([invoice], { session }))[0];
   return Invoices.create(invoice);
@@ -749,4 +778,4 @@ try {
 }
 
 module.exports = {
-  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, invoiceItem, updateOrderStatuses, useWalletBalance, processPackagesPayment, allocatePayment, payAllocations, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, claimPackagesForDelivery, calculateRate, withCalculatedRate };
+  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, invoiceItem, pointsUsdOf, updateOrderStatuses, useWalletBalance, processPackagesPayment, allocatePayment, payAllocations, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, claimPackagesForDelivery, calculateRate, withCalculatedRate };

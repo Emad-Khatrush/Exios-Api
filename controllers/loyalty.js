@@ -129,3 +129,17 @@ module.exports.noPoints = handle(async (req) => {
   await runInTransaction((session) => loyalty.setNoPoints(order._id, { enabled: req.body?.enabled === true || req.body?.enabled === 'true', reason: req.body?.reason }, { session, req }));
   return withNoPointsAudit(order._id, await loyalty.orderLoyalty(order._id));
 });
+
+// ---- Staff: points at a delivery (the customer page's delivery dialog) ----
+
+// The packages' shipping a delivery can pay with points: { balance, maxPoints, owedCents, billedCents, usedOnTarget }
+module.exports.deliveryQuote = handle(async (req) => {
+  const user = await findCustomer(req.params.id);
+  return loyalty.packagesQuote({ userId: user._id, packageIds: asList(req.query.packageIds) });
+});
+
+module.exports.redeemPackages = handle(async (req) => {
+  const user = await findCustomer(req.params.id);
+  const packageIds = asList(req.body?.packageIds);
+  return runInTransaction((session) => loyalty.redeemPackages({ userId: user._id, packageIds, points: asPoints(req.body?.points) }, { session, req }));
+});
