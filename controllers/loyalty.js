@@ -62,7 +62,7 @@ const handle = (fn) => async (req, res, next) => {
 
 module.exports.mine = handle((req) => customerPoints(req.user._id));
 
-module.exports.myHistory = handle((req) => loyalty.historyOf(req.user._id, { page: req.query.page, ...HISTORY }));
+module.exports.myHistory = handle((req) => loyalty.historyOf(req.user._id, { page: req.query.page, type: req.query.type, ...HISTORY }));
 
 module.exports.myOrders = handle((req) => loyalty.ordersPointsOf(req.user._id));
 
@@ -85,7 +85,7 @@ module.exports.customer = handle(async (req) => {
   const user = await findCustomer(req.params.id);
   const [summary, history] = await Promise.all([
     loyalty.summaryOf(user._id),
-    loyalty.historyOf(user._id, { page: req.query.page, limit: req.query.limit || HISTORY.limit }),
+    loyalty.historyOf(user._id, { page: req.query.page, limit: req.query.limit || HISTORY.limit, type: req.query.type }),
   ]);
   return { ...summary, history };
 });

@@ -5,12 +5,14 @@
 // billed less what was written off and what was paid with points, and a later reprice never earns
 // again. Only orders placed on or after LOYALTY_START_DATE take part.
 const mongoose = require('mongoose');
+const moment = require('moment-timezone');
 const Order = require('../../../models/order');
 const LoyaltyPoint = require('../../../models/loyaltyPoint');
 const PricingConfig = require('../../../models/pricingConfig');
 const { JournalEntry } = require('../../models');
 const { postEntry, reverseEntry } = require('../ledger');
 const { getConfig } = require('../config');
+const { TZ } = require('../dates');
 const { runInTransaction, assertInTransaction } = require('../transaction');
 const ErrorHandler = require('../../../utils/errorHandler');
 const { lockWalletOwner } = require('../../../utils/walletLock');
@@ -715,39 +717,70 @@ async function customersWithPoints({ search, sort = 'balance', expiringOnly = fa
 const GAIN_KINDS = ['earn', 'add', 'restore'];
 const signedPoints = (m) => (GAIN_KINDS.includes(m.kind) ? m.points : -m.points);
 
+// The history's filters: which kinds of movement each one shows
+const HISTORY_TYPES = {
+  all: null,
+  earn: ['earn'],
+  spend: ['redeem'],
+  expire: ['expire', 'revoke'],
+  staff: ['add', 'deduct'],
+  returned: ['restore'],
+};
+// The month of a movement, in Libya time: 'YYYY-MM'
+const monthKey = (date) => moment(date).tz(TZ).format('YYYY-MM');
+
 // A customer's movements, newest first, with the order number, the reason and the balance right
-// after each one (every movement walked oldest first, so it is right on any page; pages from 1)
-async function historyOf(userId, { page, limit } = {}) {
+// after each one (every movement walked oldest first, so it is right on any page and whatever the
+// filter; pages from 1). `type` keeps one kind of movement (HISTORY_TYPES); `months` has, for each
+// month on the page, what that month gained and spent over all its movements of that type.
+async function historyOf(userId, { page, limit, type } = {}) {
+  const typeName = type === undefined || type === null || type === '' ? 'all' : String(type);
+  if (!Object.prototype.hasOwnProperty.call(HISTORY_TYPES, typeName)) throw new ErrorHandler(400, 'نوع الحركة غير معروف');
   const paging = pageOf({ page, limit });
-  if (!userId || !mongoose.isValidObjectId(userId)) return { rows: [], total: 0 };
-  const filter = { user: oid(userId) };
-  const [movements, all] = await Promise.all([
+  if (!userId || !mongoose.isValidObjectId(userId)) return { rows: [], total: 0, months: [] };
+  const kinds = HISTORY_TYPES[typeName];
+  const user = oid(userId);
+  const filter = kinds ? { user, kind: { $in: kinds } } : { user };
+  const [movements, total, all] = await Promise.all([
     LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt')
       .sort({ createdAt: -1, _id: -1 }).skip((paging.page - 1) * paging.limit).limit(paging.limit).lean(),
-    LoyaltyPoint.find(filter).select('kind points').sort({ createdAt: 1, _id: 1 }).lean(),
+    LoyaltyPoint.countDocuments(filter),
+    LoyaltyPoint.find({ user }).select('kind points createdAt').sort({ createdAt: 1, _id: 1 }).lean(),
   ]);
-  const total = all.length;
   const balanceAfter = new Map();
   let running = 0;
   for (const m of all) {
     running += signedPoints(m);
     balanceAfter.set(String(m._id), running);
   }
+  const pageMonths = [...new Set(movements.map((m) => monthKey(m.createdAt)))];
+  const totals = new Map(pageMonths.map((month) => [month, { month, gained: 0, spent: 0 }]));
+  for (const m of all) {
+    if (kinds && !kinds.includes(m.kind)) continue;
+    const entry = totals.get(monthKey(m.createdAt));
+    if (!entry) continue;
+    const delta = signedPoints(m);
+    if (delta > 0) entry.gained += delta;
+    else entry.spent += -delta;
+  }
   const orderIds = [...new Set(movements.filter((m) => m.orderId).map((m) => String(m.orderId)))];
   const numbers = new Map((await Order.find({ _id: { $in: orderIds } }).setOptions({ withDeleted: true }).select('orderId').lean())
     .map((o) => [String(o._id), o.orderId]));
   return {
     rows: movements.map((m) => ({
+      id: String(m._id),
       kind: m.kind,
       points: m.points,
       orderId: m.orderId,
       orderNumber: m.orderId ? numbers.get(String(m.orderId)) : undefined,
       reason: m.reason,
       createdAt: m.createdAt,
+      month: monthKey(m.createdAt),
       expiresAt: LOTS.includes(m.kind) ? m.expiresAt : undefined,
       balanceAfter: balanceAfter.get(String(m._id)) ?? 0,
     })),
     total,
+    months: pageMonths.map((month) => totals.get(month)),
   };
 }
 
@@ -836,6 +869,6 @@ async function settleOrders({ now = new Date() } = {}) {
 
 module.exports = {
   awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
-  pointsOfPayment, redeemInPayment, adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE,
+  pointsOfPayment, redeemInPayment, adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };
