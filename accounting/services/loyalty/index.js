@@ -239,10 +239,21 @@ async function summaryOf(userId) {
 // One order's points: earned, on the way, paid with points, or why it earns none
 async function orderLoyalty(orderId) {
   const order = await Order.findById(orderId).select(ORDER_FIELDS).lean();
-  const movements = await LoyaltyPoint.find({ orderId: oid(orderId) }).select('kind points').lean();
+  const movements = await LoyaltyPoint.find({ orderId: oid(orderId) }).select('kind points arKey').lean();
   const sum = (kind) => movements.filter((m) => m.kind === kind).reduce((total, m) => total + m.points, 0);
-  const pending = order ? (await pendingOf([order])).reduce((total, row) => total + row.points, 0) : 0;
+  const pendingRows = order ? await pendingOf([order]) : [];
+  const pending = pendingRows.reduce((total, row) => total + row.points, 0);
+  // Per package (shipment claims only): earned = earn less revoke on its key, pending as in pendingOf
+  const packages = {};
+  for (const pkg of order?.paymentList || []) {
+    const arKey = shipmentKey(order._id, pkg._id);
+    const forKey = (kind) => movements.filter((m) => m.kind === kind && m.arKey === arKey).reduce((total, m) => total + m.points, 0);
+    const earned = Math.max(forKey('earn') - forKey('revoke'), 0);
+    const row = pendingRows.find((r) => r.arKey === arKey);
+    if (earned > 0 || row) packages[String(pkg._id)] = { earned, pending: row ? row.points : 0, waitingFor: row ? row.waitingFor : null };
+  }
   return {
+    packages,
     earned: Math.max(sum('earn') - sum('revoke'), 0),
     pending,
     redeemed: Math.max(sum('redeem') - sum('restore'), 0),
