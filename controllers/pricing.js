@@ -1,5 +1,6 @@
 // The customer Prices page (Exios-Client) and its settings (admin: Settings > Customer prices).
-// - GET  /pricing         public: only what is visible, shipping prices merged in from ShipmentPrice
+// - GET  /pricing         public: only what is visible, shipping prices merged in from ShipmentPrice.
+//                          ?parts=shipping,fcl sends only those sections (each prices page asks for its own)
 // - GET  /pricing/config  staff with settings_prices: everything, hidden parts included
 // - PUT  /pricing/config  same: saves the page and the shipping price of each route
 const PricingConfig = require('../models/pricingConfig');
@@ -115,9 +116,10 @@ async function loadConfig() {
   return config;
 }
 
-// Every shipping route there is a price for, with how it is shown
-async function shippingRoutes(config) {
-  const prices = await ShipmentPrices.find({}).lean();
+// Every shipping route there is a price for, with how it is shown. The prices can be passed in when
+// they were read alongside the config.
+async function shippingRoutes(config, prices = null) {
+  prices = prices || await ShipmentPrices.find({}).lean();
   const shown = new Map((config.shipping?.routes || []).map((r) => [r.key, r]));
   return prices
     .map((price) => {
@@ -154,48 +156,61 @@ async function currentRate() {
   return rate ? { rate: rate.rate, updatedAt: rate.updatedAt } : null;
 }
 
+const PARTS = ['shipping', 'fcl', 'purchase', 'alipay', 'swift'];
+
 module.exports.getPublic = async (req, res, next) => {
   try {
-    const config = await loadConfig();
-    const routes = (await shippingRoutes(config)).filter((r) => r.visible && r.price > 0);
+    // Only the sections asked for (all of them when none are named). A section left out is absent
+    // from the answer; a section the office hides is null, as before.
+    const asked = String(req.query.parts || '').split(',').map((p) => p.trim()).filter((p) => PARTS.includes(p));
+    const want = (part) => !asked.length || asked.includes(part);
+
+    // The reads don't depend on each other: one round trip to the database instead of three in a row
+    const [config, prices, rate] = await Promise.all([
+      loadConfig(),
+      want('shipping') ? ShipmentPrices.find({}).lean() : null,
+      currentRate(),
+    ]);
+    const routes = want('shipping') ? (await shippingRoutes(config, prices)).filter((r) => r.visible && r.price > 0) : [];
     const visible = (section) => !!config[section]?.visible;
     // Parts saved before change times were kept show the time the settings were last saved
     const updated = (value) => latest(value) || config.updatedAt || null;
+    const section = (part, build) => (want(part) ? { [part]: build() } : {});
     res.status(200).json({
-      exchangeRate: config.exchangeRate?.visible ? await currentRate() : null,
-      shipping: visible('shipping') && routes.length ? {
+      exchangeRate: config.exchangeRate?.visible ? rate : null,
+      ...section('shipping', () => (visible('shipping') && routes.length ? {
         note: config.shipping.note || '',
         volumetricDivisor: config.shipping.volumetricDivisor || 6000,
         routes: routes.map(({ visible: _v, ...route }) => ({ ...route, updatedAt: updated(route.updatedAt), categories: route.categories.filter((c) => c.price > 0) })),
         updatedAt: updated(latest(...routes.map((r) => r.updatedAt))),
-      } : null,
-      purchase: visible('purchase') ? {
+      } : null)),
+      ...section('purchase', () => (visible('purchase') ? {
         updatedAt: updated(config.purchase.pricesUpdatedAt),
         note: config.purchase.note || '',
         minCommission: config.purchase.minCommission || 0,
         tiers: config.purchase.tiers || [],
         sites: config.purchase.sites || [],
-      } : null,
-      alipay: visible('alipay') && (config.alipay.tiers || []).some((t) => t.rate > 0) ? {
+      } : null)),
+      ...section('alipay', () => (visible('alipay') && (config.alipay.tiers || []).some((t) => t.rate > 0) ? {
         updatedAt: updated(config.alipay.pricesUpdatedAt),
         note: config.alipay.note || '',
         tiers: (config.alipay.tiers || []).filter((t) => t.rate > 0),
-      } : null,
-      swift: visible('swift') ? {
+      } : null)),
+      ...section('swift', () => (visible('swift') ? {
         updatedAt: updated(config.swift.pricesUpdatedAt),
         note: config.swift.note || '',
         tiers: swiftTiers(config.swift),
         fixedFee: config.swift.fixedFee || 0,
         minFee: config.swift.minFee || 0,
-      } : null,
-      fcl: visible('fcl') && (config.fcl.containers || []).some((c) => c.visible !== false && c.price > 0) ? {
+      } : null)),
+      ...section('fcl', () => (visible('fcl') && (config.fcl.containers || []).some((c) => c.visible !== false && c.price > 0) ? {
         note: config.fcl.note || '',
         containers: config.fcl.containers.filter((c) => c.visible !== false && c.price > 0)
           .map(({ visible: _v, pricesUpdatedAt, ...c }) => ({
             carrier: '', fromPort: '', toPort: '', route: '', duration: '', ...c, updatedAt: updated(pricesUpdatedAt),
           })),
         updatedAt: updated(latest(...config.fcl.containers.filter((c) => c.visible !== false && c.price > 0).map((c) => c.pricesUpdatedAt))),
-      } : null,
+      } : null)),
       offices: (config.offices || []).filter((o) => o.whatsapp),
       updatedAt: config.updatedAt,
     });

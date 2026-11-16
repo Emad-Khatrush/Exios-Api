@@ -2045,8 +2045,8 @@ module.exports.getClientOrder = async (req, res, next) => {
     order.paymentList = order.paymentList.filter(package => package.settings.visableForClient);
 
     // The trip (رحلة) each package is loaded on, same lookup as the admin's package flights.
-    // Only the trip name goes to the customer: the inventory holds other customers' packages and
-    // internal costs, so nothing else from it may leave here.
+    // Only the trip name and its arrival date go to the customer: the inventory holds other
+    // customers' packages and internal costs, so nothing else from it may leave here.
     // Callers choose the fields (projection from the query), so a package may come without _id:
     // those simply get no trip instead of failing the whole order.
     const result = order.toJSON();
@@ -2056,24 +2056,24 @@ module.exports.getClientOrder = async (req, res, next) => {
         'orders.paymentList._id': { $in: packageIds },
         inventoryType: 'inventoryGoods',
         shippingType: { $ne: 'domestic' }
-      }).select('voyage orders.paymentList._id').lean();
+      }).select('voyage arrivalDate orders.paymentList._id').lean();
 
       const wanted = new Set(packageIds.map(pkgId => pkgId.toString()));
-      const tripNameByPackage = {};
+      const tripByPackage = {};
       for (const trip of trips) {
         for (const invOrder of (trip.orders || [])) {
           const list = Array.isArray(invOrder.paymentList) ? invOrder.paymentList : (invOrder.paymentList ? [invOrder.paymentList] : []);
           for (const invPkg of list) {
             const pkgId = invPkg?._id?.toString();
-            if (pkgId && wanted.has(pkgId)) tripNameByPackage[pkgId] = trip.voyage;
+            if (pkgId && wanted.has(pkgId)) tripByPackage[pkgId] = trip;
           }
         }
       }
 
       for (const pkg of (result.paymentList || [])) {
         if (!pkg?._id) continue;
-        const tripName = tripNameByPackage[pkg._id.toString()];
-        if (tripName) pkg.trip = { voyage: tripName };
+        const trip = tripByPackage[pkg._id.toString()];
+        if (trip?.voyage) pkg.trip = { voyage: trip.voyage, ...(trip.arrivalDate ? { arrivalDate: trip.arrivalDate } : {}) };
       }
     }
 
