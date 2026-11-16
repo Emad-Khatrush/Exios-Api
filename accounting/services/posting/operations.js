@@ -647,5 +647,5 @@ module.exports = {
   OVERPAID_LABEL, OVERPAID_REVIEW_CENTS,
   repostPaymentRate,
   postStatement, repostStatement, reverseStatement, postCashPayment, reverseCashPayment,
-  postGeneralDebt, postDebtWriteOff, reverseBalance, resolveClaimKeys, splitOverClaims, openBalances, statementKind,
+  postGeneralDebt, postDebtWriteOff, reverseBalance, resolveClaimKeys, splitOverClaims, openBalances, claimLines, statementKind,
 };
