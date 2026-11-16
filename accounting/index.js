@@ -13,6 +13,7 @@ async function initAccounting() {
       console.log(`[accounting] default setup created ${report.created.length} items`);
     }
     await require('./seed/merchantSetup').ensureMerchantSetup();
+    await require('./seed/loyaltySetup').ensureLoyaltySetup();
   } catch (error) {
     console.error('[accounting] default setup failed:', error.message);
   }
