@@ -10,10 +10,15 @@ const LoyaltyPoint = require('../../../models/loyaltyPoint');
 const { JournalEntry } = require('../../models');
 const { postEntry } = require('../ledger');
 const { getConfig } = require('../config');
-const { runInTransaction } = require('../transaction');
+const { runInTransaction, assertInTransaction } = require('../transaction');
+const ErrorHandler = require('../../../utils/errorHandler');
+const { lockWalletOwner } = require('../../../utils/walletLock');
+const { lockClaimAllocations } = require('../claims/locks');
+const { syncOrder } = require('../claims/sync');
+const { openBalances, resolveClaimKeys, splitOverClaims, claimLines } = require('../posting/operations');
 const { resolveAccount } = require('../roles');
 const { purchaseKey, shipmentKey, parseKey, CLAIM_EVENTS } = require('../claims/keys');
-const { earnPoints, EXPIRY_DAYS, SOON_DAYS } = require('./rules');
+const { earnPoints, redeemCap, takeOldest, EXPIRY_DAYS, SOON_DAYS } = require('./rules');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LOTS = ['earn', 'add', 'restore'];
@@ -230,4 +235,100 @@ async function orderLoyalty(orderId) {
   };
 }
 
-module.exports = { awardDue, summaryOf, orderLoyalty, claimLedger, claimState, earnKey, loyaltyStartDate };
+// ---- Redeeming (staff only; spec "Redeeming") ----
+
+// The claims a payment target pays that points may pay: a purchase or shipping invoice, never a
+// package's transport or customs fee, nor a debt not tied to an order
+async function redeemKeys(target, session) {
+  const keys = await resolveClaimKeys({ orderId: target.orderId, category: target.category, packageIds: target.packageIds }, session);
+  return keys.filter((key) => {
+    const parsed = parseKey(key);
+    return ['purchase', 'shipment'].includes(parsed.kind) && !parsed.domesticFee && !parsed.customsFee;
+  });
+}
+
+// The customer's lots still spendable now, oldest first
+const spendableLots = (user, now, session) => LoyaltyPoint.find({ user: oid(user), kind: { $in: LOTS }, remaining: { $gt: 0 }, expiresAt: { $gt: now } })
+  .select('remaining expiresAt').sort({ expiresAt: 1, _id: 1 }).session(session || null).lean();
+
+async function quoteOf({ userId, target }, session, now = new Date()) {
+  if (!target?.orderId || !mongoose.isValidObjectId(target.orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
+  const order = await Order.findById(target.orderId).select('orderId user placedAt').session(session || null).lean();
+  if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
+  if (!userId || String(order.user) !== String(userId)) throw new ErrorHandler(400, 'هذه الطلبية ليست لهذا العميل');
+  const keys = await redeemKeys(target, session);
+  // One at a time: operations of one transaction must not run concurrently
+  const ledger = await claimLedger({ $in: keys }, session);
+  const redeemed = await redeemedOn(keys, session);
+  const lots = await spendableLots(order.user, now, session);
+  const billedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.billed || 0, 0), 0);
+  const owedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.open || 0, 0), 0);
+  const usedOnTarget = keys.reduce((sum, key) => sum + (redeemed.get(key) || 0), 0);
+  const balance = lots.reduce((sum, lot) => sum + lot.remaining, 0);
+  const maxPoints = Math.max(Math.min(balance, owedCents, redeemCap(billedCents, usedOnTarget)), 0);
+  return { order, keys, lots, quote: { balance, maxPoints, owedCents, billedCents, usedOnTarget } };
+}
+
+// What the customer can pay with points on a target: { balance, maxPoints, owedCents, billedCents, usedOnTarget }
+async function redeemQuote({ userId, target }, { session } = {}) {
+  return (await quoteOf({ userId, target }, session)).quote;
+}
+
+// Pays `points` of the target with the customer's points, oldest lots first: one redeem movement
+// per claim paid, and one entry Dr loyalty_points (the customer) / Cr customer_receivable (the
+// claims, by what is still owed on each). At most 20% of the invoice, what is owed and the balance.
+async function redeem({ userId, target, points }, { session, req } = {}) {
+  assertInTransaction(session);
+  if (!Number.isInteger(points) || points < 1) throw new ErrorHandler(400, 'اكتب عدد النقاط (رقم صحيح من 1 فأكثر)');
+  if (!(await getConfig()).settings?.liveEnabled) throw new ErrorHandler(400, 'الترحيل المحاسبي الحي غير مفعّل؛ لا يمكن الدفع بالنقاط الآن');
+  // Every redemption of the customer waits for the one before it (a write conflict otherwise)
+  if (userId) await lockWalletOwner(userId, session);
+  const now = new Date();
+  const { order, keys, lots, quote } = await quoteOf({ userId, target }, session, now);
+  if (points > quote.balance) throw new ErrorHandler(400, 'رصيد النقاط لا يكفي');
+  if (points > quote.owedCents) throw new ErrorHandler(400, 'النقاط المطلوبة أكثر من المبلغ المستحق على هذه الفاتورة');
+  if (points > quote.maxPoints) throw new ErrorHandler(400, 'النقاط المطلوبة أكثر من المسموح على هذه الفاتورة');
+  await lockClaimAllocations(keys, session);
+  const parts = await splitOverClaims(keys, points, session);
+  // The lots each claim's part used, oldest first
+  const taken = takeOldest(lots, points).map((source) => ({ ...source }));
+  for (const { lotId, points: take } of taken) {
+    const result = await LoyaltyPoint.updateOne({ _id: lotId, remaining: { $gte: take } }, { $inc: { remaining: -take } }, { session });
+    if (result.modifiedCount !== 1) throw new ErrorHandler(409, 'تغيّر رصيد النقاط أثناء العملية. أعد المحاولة.');
+  }
+  const office = await officeOf(order);
+  const movements = parts.map((part) => {
+    const sources = [];
+    let rest = part.usd;
+    while (rest > 0) {
+      const source = taken[0];
+      const take = Math.min(source.points, rest);
+      sources.push({ lotId: source.lotId, points: take });
+      source.points -= take;
+      rest -= take;
+      if (source.points === 0) taken.shift();
+    }
+    const _id = new mongoose.Types.ObjectId();
+    return { _id, user: order.user, kind: 'redeem', points: part.usd, arKey: part.key, orderId: order._id, office,
+      sources, eventKey: `LOYALTY_REDEEM:${_id}`, createdBy: req?.user?._id };
+  });
+  const receivable = await resolveAccount('customer_receivable');
+  const partnerId = oid(order.user);
+  const entry = await postEntry({
+    eventType: 'LOYALTY_REDEEM',
+    eventKey: movements[0].eventKey,
+    description: `دفع بنقاط الولاء (${points} نقطة) - طلب ${order.orderId || order._id}`,
+    source: { model: 'LoyaltyPoint', id: movements[0]._id },
+    lines: [
+      { role: 'loyalty_points', debit: points, partnerId, orderId: order._id },
+      ...claimLines(parts, 'credit', partnerId).map((line) => ({ ...line, accountId: receivable._id })),
+    ],
+  }, { session, user: req?.user });
+  await LoyaltyPoint.create(movements.map((movement) => ({ ...movement, journalEntryId: entry._id })), { session, ordered: true });
+  await syncOrder(order._id, { session, user: req?.user });
+  const open = await openBalances(keys, session);
+  const remainingOwedCents = keys.reduce((sum, key) => sum + Math.max(open.get(key) || 0, 0), 0);
+  return { points, usd: points / 100, remainingOwedCents, journalEntryId: entry._id };
+}
+
+module.exports = { awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, claimLedger, claimState, earnKey, loyaltyStartDate };
