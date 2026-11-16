@@ -7,6 +7,7 @@
 const mongoose = require('mongoose');
 const Order = require('../../../models/order');
 const LoyaltyPoint = require('../../../models/loyaltyPoint');
+const PricingConfig = require('../../../models/pricingConfig');
 const { JournalEntry } = require('../../models');
 const { postEntry, reverseEntry } = require('../ledger');
 const { getConfig } = require('../config');
@@ -183,11 +184,12 @@ async function orderNumberOf(orderId, session) {
 
 // The movements that carry an entry, and the builder of each (the live path and the backlog
 // poster use the same ones). A redeem is always posted when made (it needs live accounting).
-const POSTED_KINDS = ['earn', 'expire', 'revoke', 'restore'];
+const POSTED_KINDS = ['earn', 'expire', 'revoke', 'restore', 'add', 'deduct'];
 async function postMovementEntry(movement, session) {
   if (movement.kind === 'earn') return postEarnEntry(movement, await orderNumberOf(movement.orderId, session), session);
   if (movement.kind === 'expire' || movement.kind === 'revoke') return postTakeBackEntry(movement, session);
   if (movement.kind === 'restore') return postRestoreEntry(movement, session);
+  if (movement.kind === 'add' || movement.kind === 'deduct') return postAdjustEntry(movement, session);
   return null;
 }
 
@@ -458,6 +460,173 @@ async function setNoPoints(orderId, { enabled, reason } = {}, { session, req } =
   if (enabled) await revokeOrder(order._id, session);
 }
 
+// ---- Staff: adjustments, the customers list and the history (spec "Staff management") ----
+
+const DEFAULT_ADJUST_OFFICE = 'tripoli';
+const HISTORY_PAGE_SIZE = 20;
+const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const pageOf = ({ page, limit } = {}, max = 100) => {
+  const size = Math.min(Math.max(parseInt(limit, 10) || HISTORY_PAGE_SIZE, 1), max);
+  return { page: Math.max(parseInt(page, 10) || 1, 1), limit: size };
+};
+
+// The office serving the customer's city (Settings > Customer prices > offices), else Tripoli
+async function customerOffice(city, session) {
+  const name = String(city || '').trim();
+  if (!name) return DEFAULT_ADJUST_OFFICE;
+  const config = await PricingConfig.findOne({ key: 'main' }).select('offices').session(session || null).lean();
+  const office = (config?.offices || []).find((o) => (o.cities || []).some((c) => String(c).trim() === name));
+  const { offices } = await getConfig();
+  return office?.key && offices.has(office.key) ? office.key : DEFAULT_ADJUST_OFFICE;
+}
+
+// An add (Dr loyalty_expense / Cr loyalty_points) or a deduct (the reverse), with the movement's eventKey
+async function postAdjustEntry(movement, session, user) {
+  const add = movement.kind === 'add';
+  const expense = { role: 'loyalty_expense', office: movement.office || DEFAULT_ADJUST_OFFICE };
+  const liability = { role: 'loyalty_points', partnerId: movement.user };
+  const entry = await postEntry({
+    eventType: add ? 'LOYALTY_ADD' : 'LOYALTY_DEDUCT',
+    eventKey: movement.eventKey,
+    description: `${add ? 'إضافة' : 'خصم'} نقاط ولاء (${movement.points} نقطة)${movement.reason ? ` - ${movement.reason}` : ''}`,
+    source: { model: 'LoyaltyPoint', id: movement._id },
+    lines: add
+      ? [{ ...expense, debit: movement.points }, { ...liability, credit: movement.points }]
+      : [{ ...liability, debit: movement.points }, { ...expense, credit: movement.points }],
+  }, { session, ...(user && { user }) });
+  await LoyaltyPoint.updateOne({ _id: movement._id }, { $set: { journalEntryId: entry._id } }, { session });
+  return entry;
+}
+
+// Staff add (points > 0: a new lot expiring 365 days later) or deduct (points < 0: oldest lots
+// first, never below zero) with a required reason, shown to the customer in their history
+async function adjust({ userId, points, reason } = {}, { session, req } = {}) {
+  assertInTransaction(session);
+  const why = String(reason || '').trim();
+  if (!why) throw new ErrorHandler(400, 'اكتب سبب تعديل النقاط');
+  if (!Number.isInteger(points) || points === 0) throw new ErrorHandler(400, 'اكتب عدد النقاط (رقم صحيح غير الصفر)');
+  if (!userId || !mongoose.isValidObjectId(userId)) throw new ErrorHandler(400, 'حدد العميل');
+  const customer = await mongoose.connection.collection('users').findOne({ _id: oid(userId) }, { projection: { city: 1 }, session });
+  if (!customer) throw new ErrorHandler(404, 'العميل غير موجود');
+  // Every movement of the customer's points waits for the one before it
+  await lockWalletOwner(customer._id, session);
+  const now = new Date();
+  const office = await customerOffice(customer.city, session);
+  const _id = new mongoose.Types.ObjectId();
+  const base = { _id, user: customer._id, points: Math.abs(points), office, reason: why, eventKey: `LOYALTY_ADJUST:${_id}`, createdBy: req?.user?._id };
+  let movement;
+  if (points > 0) {
+    movement = { ...base, kind: 'add', remaining: points, earnedAt: now, expiresAt: new Date(now.getTime() + EXPIRY_DAYS * DAY_MS) };
+  } else {
+    const lots = await spendableLots(customer._id, now, session);
+    const balance = lots.reduce((sum, lot) => sum + lot.remaining, 0);
+    if (-points > balance) throw new ErrorHandler(400, 'رصيد النقاط لا يكفي');
+    const sources = takeOldest(lots, -points);
+    for (const { lotId, points: take } of sources) {
+      const result = await LoyaltyPoint.updateOne({ _id: lotId, remaining: { $gte: take } }, { $inc: { remaining: -take } }, { session });
+      if (result.modifiedCount !== 1) throw new ErrorHandler(409, 'تغيّر رصيد النقاط أثناء العملية. أعد المحاولة.');
+    }
+    movement = { ...base, kind: 'deduct', sources };
+  }
+  const [created] = await LoyaltyPoint.create([movement], { session });
+  if ((await getConfig()).settings?.liveEnabled) await postAdjustEntry(created.toObject(), session, req?.user);
+}
+
+// Every customer with a balance or a history: their balance (unexpired lots), what expires within
+// 30 days and their last movement. Totals cover every customer (the liability), whatever the filter.
+async function customersWithPoints({ search, sort = 'balance', expiringOnly = false, page, limit } = {}) {
+  const paging = pageOf({ page, limit });
+  const now = new Date();
+  const soonLimit = new Date(now.getTime() + SOON_DAYS * DAY_MS);
+  const isLive = { $and: [{ $in: ['$kind', LOTS] }, { $gt: ['$remaining', 0] }, { $gt: ['$expiresAt', now] }] };
+  const isSoon = { $and: [isLive, { $lte: ['$expiresAt', soonLimit] }] };
+  const perCustomer = [
+    { $group: {
+      _id: '$user',
+      points: { $sum: { $cond: [isLive, '$remaining', 0] } },
+      soonPoints: { $sum: { $cond: [isSoon, '$remaining', 0] } },
+      soonAt: { $min: { $cond: [isSoon, '$expiresAt', null] } },
+      lastMovementAt: { $max: '$createdAt' },
+    } },
+  ];
+  const [totals] = await LoyaltyPoint.aggregate([...perCustomer, { $group: {
+    _id: null, points: { $sum: '$points' }, customers: { $sum: { $cond: [{ $gt: ['$points', 0] }, 1, 0] } },
+  } }]);
+  const match = {};
+  if (expiringOnly === true || expiringOnly === 'true') match.soonPoints = { $gt: 0 };
+  const text = String(search || '').trim();
+  if (text) {
+    const pattern = escapeRegex(text);
+    match.$or = [
+      { 'customer.customerId': { $regex: pattern, $options: 'i' } },
+      { 'customer.name': { $regex: pattern, $options: 'i' } },
+      { 'customer.phoneText': { $regex: pattern, $options: 'i' } },
+    ];
+  }
+  const order = sort === 'expiring'
+    ? { hasSoon: -1, soonAt: 1, points: -1, _id: 1 }
+    : { points: -1, _id: 1 };
+  const [result] = await LoyaltyPoint.aggregate([
+    ...perCustomer,
+    { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'customer',
+      pipeline: [{ $project: { customerId: 1, phone: 1, firstName: 1, lastName: 1 } }] } },
+    { $unwind: { path: '$customer', preserveNullAndEmptyArrays: true } },
+    { $set: {
+      'customer.name': { $trim: { input: { $concat: [{ $ifNull: ['$customer.firstName', ''] }, ' ', { $ifNull: ['$customer.lastName', ''] }] } } },
+      'customer.phoneText': { $toString: { $ifNull: ['$customer.phone', ''] } },
+      hasSoon: { $cond: [{ $gt: ['$soonPoints', 0] }, 1, 0] },
+    } },
+    { $match: match },
+    { $sort: order },
+    { $facet: {
+      rows: [{ $skip: (paging.page - 1) * paging.limit }, { $limit: paging.limit }],
+      count: [{ $count: 'total' }],
+    } },
+  ]);
+  const points = totals?.points || 0;
+  return {
+    totals: { points, usd: points / 100, customers: totals?.customers || 0 },
+    rows: (result?.rows || []).map((row) => ({
+      userId: row._id,
+      name: row.customer?.name || '',
+      customerId: row.customer?.customerId || '',
+      phone: row.customer?.phone ?? null,
+      points: row.points,
+      usd: row.points / 100,
+      expiringSoon: row.soonPoints > 0 ? { points: row.soonPoints, at: row.soonAt } : null,
+      lastMovementAt: row.lastMovementAt,
+    })),
+    total: result?.count?.[0]?.total || 0,
+  };
+}
+
+// A customer's movements, newest first, with the order number and the reason (pages from 1)
+async function historyOf(userId, { page, limit } = {}) {
+  const paging = pageOf({ page, limit });
+  if (!userId || !mongoose.isValidObjectId(userId)) return { rows: [], total: 0 };
+  const filter = { user: oid(userId) };
+  const [movements, total] = await Promise.all([
+    LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt')
+      .sort({ createdAt: -1, _id: -1 }).skip((paging.page - 1) * paging.limit).limit(paging.limit).lean(),
+    LoyaltyPoint.countDocuments(filter),
+  ]);
+  const orderIds = [...new Set(movements.filter((m) => m.orderId).map((m) => String(m.orderId)))];
+  const numbers = new Map((await Order.find({ _id: { $in: orderIds } }).setOptions({ withDeleted: true }).select('orderId').lean())
+    .map((o) => [String(o._id), o.orderId]));
+  return {
+    rows: movements.map((m) => ({
+      kind: m.kind,
+      points: m.points,
+      orderId: m.orderId,
+      orderNumber: m.orderId ? numbers.get(String(m.orderId)) : undefined,
+      reason: m.reason,
+      createdAt: m.createdAt,
+      expiresAt: LOTS.includes(m.kind) ? m.expiresAt : undefined,
+    })),
+    total,
+  };
+}
+
 // The hourly job: every lot past its expiry loses what is left on it, one transaction per lot;
 // a lot that fails is logged and skipped.
 async function expireDue({ now = new Date() } = {}) {
@@ -524,5 +693,6 @@ async function settleOrders({ now = new Date() } = {}) {
 
 module.exports = {
   awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, expireDue, settleOrders, setNoPoints,
+  adjust, customersWithPoints, historyOf, HISTORY_PAGE_SIZE,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };
