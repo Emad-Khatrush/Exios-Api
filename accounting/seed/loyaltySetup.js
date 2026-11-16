@@ -21,8 +21,10 @@ async function ensureLoyaltySetup() {
       const { parent: unused, ...fields } = spec;
       account = await Account.create({ ...fields, code: String(code), parentId: parent._id, seedKey });
     }
-    // Only fill roles that are absent; an existing mapping is kept.
-    if (!settings.accountRoles?.[role]) {
+    // Only fill roles that are absent, or point at an account that no longer exists (a database
+    // restored without it); a mapping to a live account is kept.
+    const mapped = settings.accountRoles?.[role];
+    if (!mapped || !(await Account.exists({ _id: mapped }))) {
       await AccountingSettings.updateOne({ _id: settings._id }, { $set: { [`accountRoles.${role}`]: account._id } });
     }
   }
