@@ -48,8 +48,9 @@ router.route('/user/:id/statement/:statementId')
       .put(protect, canManageStatements, wallet.updateStatement)
       .delete(protect, canManageStatements, wallet.deleteStatement)
 
+// The Activity tab of the Wallets section: open to staff holding 'wallets' (admins as before)
 router.route('/statements/latest')
-      .get(protect, isAdmin, wallet.getLatestStatements)
+      .get(protect, allow(['wallets'], isAdmin), wallet.getLatestStatements)
 
 router.route('/statements/deleted')
       .get(protect, isAdmin, wallet.getDeletedStatements)
