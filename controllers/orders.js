@@ -27,7 +27,7 @@ const { returnOrderPayments } = require('../utils/orderCancellation');
 const { normalizePackages, guardMeasures, keepDeliveryState } = require('../utils/packageMeasures');
 const roundFee = (n) => Math.round(n * 100) / 100;
 const { payFeesLYD } = require('../utils/helperApi');
-const { cancelInvoicePackages, deliveryInvoiceOf, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, claimPackagesForDelivery, withCalculatedRate } = require('../utils/helperApi');
+const { cancelInvoicePackages, deliveryInvoiceOf, getPurchaseItemsByDate, getInvoicesQuery, cleanUpInventory, createInvoice, updateOrderStatuses, useWalletBalance, processPackagesPayment, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, redeemDeliveryPoints, claimPackagesForDelivery, withCalculatedRate } = require('../utils/helperApi');
 
 const { ObjectId } = mongodb;
 
@@ -1870,12 +1870,17 @@ module.exports.markPackagesAsDelivered = async (req, res, next) => {
     const id = req.params.id;
     validatePackages(req.body.selectedPackages);
     const paymentAmounts = validatePayment(req.body.payment, { allowZero: true });
+    // Loyalty points paid with this delivery (staff only, like the route): part of the payment
+    const points = require('../accounting/services/loyalty').pointsOfPayment(req.body.points);
 
     // Costs come from the database. Credit delivery uses the explicitly agreed, validated rate.
     const allowPartial = req.body.allowPartial === true;
     const partialDelivery = require('../utils/partialDelivery');
     const feeMode = allowPartial || req.body.feeMode === 'usd' ? 'usd' : 'separate';
     const { invoice } = await require('../accounting/services/transaction').runInTransaction(async (session) => {
+      // The points first, in this transaction: the packages are then priced net of them, and the
+      // payment is checked against what is left. Any failure below gives the points back.
+      await redeemDeliveryPoints(id, req.body.selectedPackages, points, { session, req });
       const { packages, totalCost, feesLYD, totalFeeLYD } = await loadDeliverablePackages(id, req.body.selectedPackages, { feeMode, session });
       // Nothing paid is right only for packages that cost nothing (free shipping with a purchase)
       if (!allowPartial && !paymentAmounts.amountUSD && !paymentAmounts.amountLYD && totalCost > 0) {
@@ -2228,11 +2233,16 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
     const { receivedAmount, currency, createdAt, paymentType, customerId, category, list, rate } = req.body;
     const newList = typeof list === 'string' ? JSON.parse(list) : (list || []);
     if (paymentType !== 'cash') throw new ErrorHandler(400, 'Use the wallet payment action for wallet deductions');
-    if (!['USD', 'LYD', 'EURO'].includes(currency) || !Number.isFinite(Number(receivedAmount)) || Math.round(Number(receivedAmount) * 100) <= 0 || typeof receivedAmount === 'boolean') throw new ErrorHandler(400, 'Enter a positive payment amount and valid currency');
+    // Loyalty points sent with the payment: paid first in the same transaction, the cash pays the
+    // rest. Only points (no amount) is accepted when they close what is due.
+    const points = require('../accounting/services/loyalty').pointsOfPayment(req.body.points);
+    if (points > 0 && !['invoice', 'receivedGoods'].includes(category)) throw new ErrorHandler(400, 'النقاط تُستعمل فقط مع دفعة فاتورة الشراء أو الشحن');
+    const pointsOnly = points > 0 && (receivedAmount === undefined || receivedAmount === null || receivedAmount === '' || Number(receivedAmount) === 0);
+    if (!pointsOnly && (!['USD', 'LYD', 'EURO'].includes(currency) || !Number.isFinite(Number(receivedAmount)) || Math.round(Number(receivedAmount) * 100) <= 0 || typeof receivedAmount === 'boolean')) throw new ErrorHandler(400, 'Enter a positive payment amount and valid currency');
     if (!createdAt || Number.isNaN(new Date(createdAt).getTime())) throw new ErrorHandler(400, 'Invalid payment date');
     await assertOpenPeriod(req.user, createdAt);
     // Money in another currency counts at its own rate; without one it cannot be valued (owner's rule)
-    if (currency && currency !== 'USD' && !(Number.isFinite(Number(rate)) && Number(rate) > 0)) {
+    if (!pointsOnly && currency && currency !== 'USD' && !(Number.isFinite(Number(rate)) && Number(rate) > 0)) {
       return next(new ErrorHandler(400, `Type the exchange rate for a payment in ${currency}.`));
     }
 
@@ -2258,6 +2268,12 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       if (customerId && String(customerId) !== String(order.user)) throw new ErrorHandler(400, 'Payment customer does not own this order');
       if (category === 'receivedGoods' && await Balances.exists({ order: order._id, deliveryInvoiceId: { $exists: true }, status: { $in: ['open', 'overdue'] }, amount: { $gt: 0 } }).session(session)) {
         throw new ErrorHandler(400, 'للسداد على فاتورة تسليم جزئي، أودع المبلغ في المحفظة ثم سدد الدين المرتبط بالطرد من قسم الديون');
+      }
+      if (points > 0) {
+        const packageIds = category === 'receivedGoods' ? (newList || []).map((p) => String(p?._id || p?.id || '')).filter(Boolean) : [];
+        const target = { orderId: order._id, category, ...(packageIds.length && { packageIds }) };
+        await require('../accounting/services/loyalty').redeemInPayment({ userId: order.user, target, points, pointsOnly }, { session, req });
+        if (pointsOnly) return { points };
       }
       await Orders.updateOne({ _id: order._id }, { $inc: { accountingMutationVersion: 1 } }, { session });
       const data = {

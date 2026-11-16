@@ -187,6 +187,17 @@ async function loadDeliverablePackages(customerId, selectedPackages, { feeMode =
   return { packages, totalCost, feesLYD, totalFeeLYD };
 }
 
+// Points sent with a delivery (owner's decision: they are part of the payment, not a step before
+// it). Redeemed in the delivery's own transaction, before the packages are priced, on the selected
+// packages' shipping claims (same cap, balance and owed checks): the delivery then collects only the
+// rest, and any later failure rolls the points back with it. Returns the points used (0: none).
+async function redeemDeliveryPoints(customerId, selectedPackages, points, { session, req } = {}) {
+  if (!(points > 0)) return 0;
+  const packageIds = [...new Set((selectedPackages || []).map((pkg) => String(pkg?.id || '')).filter(Boolean))];
+  await require('../accounting/services/loyalty').redeemPackages({ userId: customerId, packageIds, points }, { session, req });
+  return points;
+}
+
 // Claim packages before any wallet movement. A competing transaction conflicts and retries,
 // then sees the package already received instead of charging it again.
 async function claimPackagesForDelivery(customerId, selectedPackages, session) {
@@ -778,4 +789,4 @@ try {
 }
 
 module.exports = {
-  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, invoiceItem, pointsUsdOf, updateOrderStatuses, useWalletBalance, processPackagesPayment, allocatePayment, payAllocations, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, claimPackagesForDelivery, calculateRate, withCalculatedRate };
+  payFeesLYD, cancelInvoicePackages, deliveryInvoiceOf, refundWalletPayment, statementOfPayment, getPurchaseItemsByDate, getInvoicesQuery, formatDate, cleanUpInventory, isNewCustomer, createInvoice, invoiceItem, pointsUsdOf, updateOrderStatuses, useWalletBalance, processPackagesPayment, allocatePayment, payAllocations, checkSufficientFunds, truncateToTwo, getUserWalletMap, validatePayment, validatePackages, loadDeliverablePackages, redeemDeliveryPoints, claimPackagesForDelivery, calculateRate, withCalculatedRate };

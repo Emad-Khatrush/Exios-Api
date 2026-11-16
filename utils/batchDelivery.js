@@ -14,7 +14,7 @@ const ErrorHandler = require('./errorHandler');
 const Invoices = require('../models/invoice');
 const Orders = require('../models/order');
 const {
-  validatePackages, validatePayment, loadDeliverablePackages, getUserWalletMap, withCalculatedRate,
+  validatePackages, validatePayment, loadDeliverablePackages, redeemDeliveryPoints, getUserWalletMap, withCalculatedRate,
   checkSufficientFunds, allocatePayment, claimPackagesForDelivery, payAllocations, payFeesLYD,
   updateOrderStatuses, createInvoice, invoiceItem, pointsUsdOf, cleanUpInventory,
 } = require('./helperApi');
@@ -54,28 +54,37 @@ async function start(req, customerId, body) {
   if (body.allowPartial === true) throw new ErrorHandler(400, 'Credit delivery is not delivered in batches');
   validatePackages(body.selectedPackages);
   const paymentAmounts = validatePayment(body.payment, { allowZero: true });
+  const points = require('../accounting/services/loyalty').pointsOfPayment(body.points);
   const feeMode = body.feeMode === 'usd' ? 'usd' : 'separate';
-  if (await DeliveryJob.exists({ customer: customerId, status: 'running' })) {
-    throw new ErrorHandler(409, 'هناك تسليم غير مكتمل لهذا العميل. أكمله أو أوقفه أولاً.');
-  }
 
-  // The whole delivery is checked once, as a single delivery would be
-  const { packages, totalCost, totalFeeLYD } = await loadDeliverablePackages(customerId, body.selectedPackages, { feeMode });
-  if (!paymentAmounts.amountUSD && !paymentAmounts.amountLYD && totalCost > 0) {
-    throw new ErrorHandler(400, 'Payment amount cannot be zero');
-  }
-  const payment = withCalculatedRate(paymentAmounts, totalCost);
-  checkSufficientFunds(await getUserWalletMap(customerId), payment, totalCost, totalFeeLYD);
-  const allocations = allocatePayment(packages, payment);
+  // One transaction: the points sent with the delivery are paid once here, over every selected
+  // package, so the batches see the reduced costs; the job is recorded only if all of it passes
+  // (a refused payment gives the points back).
+  const job = await require('../accounting/services/transaction').runInTransaction(async (session) => {
+    if (await DeliveryJob.exists({ customer: customerId, status: 'running' }).session(session)) {
+      throw new ErrorHandler(409, 'هناك تسليم غير مكتمل لهذا العميل. أكمله أو أوقفه أولاً.');
+    }
+    await redeemDeliveryPoints(customerId, body.selectedPackages, points, { session, req });
 
-  const job = await DeliveryJob.create({
-    customer: customerId, createdBy: req.user?._id, feeMode, totalCost,
-    payment: { amountUSD: payment.amountUSD, amountLYD: payment.amountLYD, rate: payment.rate || 0 },
-    batches: Math.ceil(packages.length / BATCH_SIZE),
-    packages: packages.map((pkg, i) => ({
-      id: pkg.id, orderId: pkg.orderId, trackingNumber: pkg.trackingNumber, cost: pkg.cost,
-      usd: allocations[i].usd, lyd: allocations[i].lyd, batch: Math.floor(i / BATCH_SIZE),
-    })),
+    // The whole delivery is checked once, as a single delivery would be
+    const { packages, totalCost, totalFeeLYD } = await loadDeliverablePackages(customerId, body.selectedPackages, { feeMode, session });
+    if (!paymentAmounts.amountUSD && !paymentAmounts.amountLYD && totalCost > 0) {
+      throw new ErrorHandler(400, 'Payment amount cannot be zero');
+    }
+    const payment = withCalculatedRate(paymentAmounts, totalCost);
+    checkSufficientFunds(await getUserWalletMap(customerId, session), payment, totalCost, totalFeeLYD);
+    const allocations = allocatePayment(packages, payment);
+
+    const [created] = await DeliveryJob.create([{
+      customer: customerId, createdBy: req.user?._id, feeMode, totalCost,
+      payment: { amountUSD: payment.amountUSD, amountLYD: payment.amountLYD, rate: payment.rate || 0 },
+      batches: Math.ceil(packages.length / BATCH_SIZE),
+      packages: packages.map((pkg, i) => ({
+        id: pkg.id, orderId: pkg.orderId, trackingNumber: pkg.trackingNumber, cost: pkg.cost,
+        usd: allocations[i].usd, lyd: allocations[i].lyd, batch: Math.floor(i / BATCH_SIZE),
+      })),
+    }], { session });
+    return created;
   });
   return summary(job);
 }

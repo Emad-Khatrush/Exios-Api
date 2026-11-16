@@ -405,6 +405,37 @@ async function redeemOn(userId, points, quoteFor, { session, req } = {}) {
   return { points, usd: points / 100, remainingOwedCents, journalEntryId: entryIds[0], ...(entryIds.length > 1 && { journalEntryIds: entryIds }) };
 }
 
+// ---- Points inside a payment (owner's decision: no separate step) ----
+// The payment forms (a delivery, a wallet or cash payment on an order) send `points` with the
+// payment; the caller redeems them in the payment's own transaction before the money is taken.
+
+// The points a payment carries: 0 when none were sent, else a whole number from 0
+function pointsOfPayment(value) {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) return 0;
+  const points = typeof value === 'number' ? value : (typeof value === 'string' ? Number(value.trim()) : NaN);
+  if (!Number.isInteger(points) || points < 0) throw new ErrorHandler(400, 'عدد النقاط يجب أن يكون رقمًا صحيحًا من 0 فأكثر');
+  return points;
+}
+
+// What is still owed on a payment target, fees included (cents): a payment made only of points is
+// accepted only when nothing is left after them
+async function owedOnTarget(target, session) {
+  const keys = await resolveClaimKeys({ orderId: target.orderId, category: target.category, packageIds: target.packageIds }, session);
+  const open = await openBalances(keys, session);
+  return keys.reduce((sum, key) => sum + Math.max(open.get(key) || 0, 0), 0);
+}
+
+// Pays `points` of an order's payment target (invoice → PUR, receivedGoods → the packages' SHP) in
+// the payment's transaction. `pointsOnly`: no money comes with them, so they must close the target.
+async function redeemInPayment({ userId, target, points, pointsOnly = false }, { session, req } = {}) {
+  if (!['invoice', 'receivedGoods'].includes(target?.category)) throw new ErrorHandler(400, 'النقاط تُستعمل فقط مع دفعة فاتورة الشراء أو الشحن');
+  const result = await redeem({ userId, target, points }, { session, req });
+  if (pointsOnly && await owedOnTarget(target, session) > 0) {
+    throw new ErrorHandler(400, 'النقاط لا تغطي كامل المستحق؛ أدخل مبلغ الدفع للباقي');
+  }
+  return result;
+}
+
 // The dollars points paid on each package's shipping claim SHP:<order>:<package> (net of what came
 // back), by package id: what a delivery no longer asks the customer to pay
 async function pointsPaidOnPackages(pairs, session) {
@@ -794,6 +825,6 @@ async function settleOrders({ now = new Date() } = {}) {
 
 module.exports = {
   awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
-  adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE,
+  pointsOfPayment, redeemInPayment, adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };
