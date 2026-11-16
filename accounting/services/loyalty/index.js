@@ -8,7 +8,7 @@ const mongoose = require('mongoose');
 const Order = require('../../../models/order');
 const LoyaltyPoint = require('../../../models/loyaltyPoint');
 const { JournalEntry } = require('../../models');
-const { postEntry } = require('../ledger');
+const { postEntry, reverseEntry } = require('../ledger');
 const { getConfig } = require('../config');
 const { runInTransaction, assertInTransaction } = require('../transaction');
 const ErrorHandler = require('../../../utils/errorHandler');
@@ -331,4 +331,160 @@ async function redeem({ userId, target, points }, { session, req } = {}) {
   return { points, usd: points / 100, remainingOwedCents, journalEntryId: entry._id };
 }
 
-module.exports = { awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, claimLedger, claimState, earnKey, loyaltyStartDate };
+// ---- Expiry, no-points orders and cancellation (spec "Expiry", "No points", accounting table) ----
+
+const TAKE_BACK = { expire: 'LOYALTY_EXPIRE', revoke: 'LOYALTY_REVOKE' };
+
+// Takes what is left of a lot off the balance: an expire or revoke movement naming the lot, and
+// (accounting live) Dr loyalty_points (the customer) / Cr loyalty_expense (the lot's office).
+// Returns the movement, or null when nothing is left on the lot.
+async function takeBackLot(lotId, kind, session) {
+  const lot = await LoyaltyPoint.findById(lotId).session(session).lean();
+  if (!lot || !(lot.remaining > 0)) return null;
+  const changed = await LoyaltyPoint.updateOne({ _id: lot._id, remaining: lot.remaining }, { $set: { remaining: 0 } }, { session });
+  if (changed.modifiedCount !== 1) throw new Error('Loyalty lot changed concurrently; retry the transaction');
+  const office = lot.office || await officeOf({});
+  const eventKey = `${TAKE_BACK[kind]}:${lot._id}`;
+  const [movement] = await LoyaltyPoint.create([{
+    user: lot.user, kind, points: lot.remaining, arKey: lot.arKey, orderId: lot.orderId, office,
+    sources: [{ lotId: lot._id, points: lot.remaining }], eventKey,
+  }], { session });
+  const { settings } = await getConfig();
+  if (settings?.liveEnabled) {
+    const orderNumber = await orderNumberOf(lot.orderId, session);
+    const entry = await postEntry({
+      eventType: TAKE_BACK[kind],
+      eventKey,
+      description: `${kind === 'expire' ? 'نقاط ولاء منتهية' : 'سحب نقاط ولاء'} (${lot.remaining} نقطة)${orderNumber ? ` - طلب ${orderNumber}` : ''}`,
+      source: { model: 'LoyaltyPoint', id: movement._id },
+      lines: [
+        { role: 'loyalty_points', debit: lot.remaining, partnerId: lot.user, ...(lot.orderId && { orderId: lot.orderId }) },
+        { role: 'loyalty_expense', credit: lot.remaining, office, ...(lot.orderId && { orderId: lot.orderId }) },
+      ],
+    }, { session });
+    await LoyaltyPoint.updateOne({ _id: movement._id }, { $set: { journalEntryId: entry._id } }, { session });
+  }
+  return movement;
+}
+
+// The points an order earned and not spent yet are taken back (order "no points" or cancelled).
+// Returns how many lots were taken back.
+async function revokeOrder(orderId, session) {
+  const lots = await LoyaltyPoint.find({ kind: 'earn', orderId: oid(orderId), remaining: { $gt: 0 } }).select('_id').session(session).lean();
+  let revoked = 0;
+  for (const { _id } of lots) if (await takeBackLot(_id, 'revoke', session)) revoked += 1;
+  return revoked;
+}
+
+const restorePrefix = (redeemId) => `LOYALTY_RESTORE:${redeemId}:`;
+
+// A cancelled order gives back the points paid on it: each redemption's entry is reversed and each
+// lot it used comes back as a restore lot with that lot's expiry. Points from a lot already past
+// its expiry come back and expire at once (so the reversed liability goes to expense, not to the
+// balance). Returns how many redemptions were restored.
+async function restoreOrder(orderId, now, session) {
+  const redemptions = await LoyaltyPoint.find({ kind: 'redeem', orderId: oid(orderId) }).sort({ _id: 1 }).session(session).lean();
+  let restored = 0;
+  for (const redemption of redemptions) {
+    // ObjectId hex needs no escaping
+    if (await LoyaltyPoint.exists({ eventKey: { $regex: `^${restorePrefix(redemption._id)}` } }).session(session)) continue;
+    let reversal = null;
+    if (redemption.journalEntryId) {
+      // One entry may pay several claims (one redeem movement each); it is reversed once
+      const entry = await JournalEntry.findById(redemption.journalEntryId).select('eventKey').session(session).lean();
+      const key = String(entry?.eventKey || `LOYALTY_REDEEM:${redemption._id}`).replace(/^LOYALTY_REDEEM:/, 'LOYALTY_RESTORE:');
+      reversal = await reverseEntry(redemption.journalEntryId, { session, eventKey: key, eventType: 'LOYALTY_RESTORE', reason: 'إلغاء الطلبية: إرجاع النقاط' });
+    }
+    for (const source of redemption.sources || []) {
+      const lot = await LoyaltyPoint.findById(source.lotId).select('expiresAt').session(session).lean();
+      if (!lot?.expiresAt) throw new Error(`Loyalty lot ${source.lotId} not found`);
+      const [back] = await LoyaltyPoint.create([{
+        user: redemption.user, kind: 'restore', points: source.points, remaining: source.points, arKey: redemption.arKey,
+        orderId: redemption.orderId, office: redemption.office, earnedAt: now, expiresAt: lot.expiresAt,
+        eventKey: `${restorePrefix(redemption._id)}${source.lotId}`, ...(reversal && { journalEntryId: reversal._id }),
+      }], { session });
+      if (lot.expiresAt <= now) await takeBackLot(back._id, 'expire', session);
+    }
+    restored += 1;
+  }
+  return restored;
+}
+
+// Staff mark an order "no points" (a reason is required) or switch it back. Marking takes back at
+// once what the order earned and was not spent yet; switching back does not return it.
+async function setNoPoints(orderId, { enabled, reason } = {}, { session, req } = {}) {
+  assertInTransaction(session);
+  const why = String(reason || '').trim();
+  if (enabled && !why) throw new ErrorHandler(400, 'اكتب سبب استثناء الطلبية من النقاط');
+  if (!mongoose.isValidObjectId(orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
+  const order = await Order.findById(orderId).select('user').session(session).lean();
+  if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
+  if (order.user) await lockWalletOwner(order.user, session);
+  await Order.updateOne({ _id: order._id }, { $set: { loyalty: { noPoints: !!enabled, reason: why, by: req?.user?._id, at: new Date() } } }, { session });
+  if (enabled) await revokeOrder(order._id, session);
+}
+
+// The hourly job: every lot past its expiry loses what is left on it, one transaction per lot;
+// a lot that fails is logged and skipped.
+async function expireDue({ now = new Date() } = {}) {
+  let expired = 0;
+  let failed = 0;
+  const lots = await LoyaltyPoint.find({ kind: { $in: LOTS }, remaining: { $gt: 0 }, expiresAt: { $lte: now } }).select('_id user').sort({ expiresAt: 1, _id: 1 }).lean();
+  for (const { _id, user } of lots) {
+    try {
+      const done = await runInTransaction(async (session) => {
+        await lockWalletOwner(user, session);
+        const lot = await LoyaltyPoint.findById(_id).select('expiresAt').session(session).lean();
+        if (!lot || lot.expiresAt > now) return false;
+        return !!(await takeBackLot(_id, 'expire', session));
+      });
+      if (done) expired += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(`[loyalty] expire ${_id}: ${error.message}`);
+    }
+  }
+  return { expired, failed };
+}
+
+// The hourly job: orders marked "no points" or cancelled lose their unspent earned points, and
+// cancelled orders give back the points paid on them. One transaction per order; an order that
+// fails is logged and skipped. Not limited to LOYALTY_START_DATE: it acts on whatever movements exist.
+async function settleOrders({ now = new Date() } = {}) {
+  let revoked = 0;
+  let restored = 0;
+  let failed = 0;
+  const earning = await LoyaltyPoint.distinct('orderId', { kind: 'earn', remaining: { $gt: 0 } });
+  const toRevoke = await Order.find({ _id: { $in: earning }, $or: [{ isCanceled: true }, { 'loyalty.noPoints': true }] }).select('_id').lean();
+  const redeemedOrders = await LoyaltyPoint.distinct('orderId', { kind: 'redeem' });
+  const cancelled = (await Order.find({ _id: { $in: redeemedOrders }, isCanceled: true }).select('_id').lean()).map((o) => o._id);
+  const redemptions = await LoyaltyPoint.find({ kind: 'redeem', orderId: { $in: cancelled } }).select('_id orderId').lean();
+  const restoredIds = new Set((await LoyaltyPoint.find({ kind: 'restore', orderId: { $in: cancelled } }).select('eventKey').lean())
+    .map((lot) => lot.eventKey.split(':')[1]));
+  const toRestore = redemptions.filter((r) => !restoredIds.has(String(r._id))).map((r) => String(r.orderId));
+  const orderIds = [...new Set([...toRevoke.map((o) => String(o._id)), ...toRestore])].sort();
+  for (const id of orderIds) {
+    try {
+      const result = await runInTransaction(async (session) => {
+        const order = await Order.findById(id).select('user isCanceled loyalty').session(session).lean();
+        if (!order) return { revoked: 0, restored: 0 };
+        if (order.user) await lockWalletOwner(order.user, session);
+        const out = { revoked: 0, restored: 0 };
+        if (order.isCanceled || order.loyalty?.noPoints) out.revoked = await revokeOrder(order._id, session);
+        if (order.isCanceled) out.restored = await restoreOrder(order._id, now, session);
+        return out;
+      });
+      revoked += result.revoked;
+      restored += result.restored;
+    } catch (error) {
+      failed += 1;
+      console.error(`[loyalty] order ${id}: ${error.message}`);
+    }
+  }
+  return { revoked, restored, failed };
+}
+
+module.exports = {
+  awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, expireDue, settleOrders, setNoPoints,
+  claimLedger, claimState, earnKey, loyaltyStartDate,
+};
