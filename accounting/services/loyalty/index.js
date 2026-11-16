@@ -158,16 +158,19 @@ async function awardDue({ now = new Date() } = {}) {
   }
   const { settings } = await getConfig();
   if (settings?.liveEnabled) {
-    const unposted = await LoyaltyPoint.find({ kind: 'earn', journalEntryId: { $exists: false } }).select('_id arKey').sort({ _id: 1 }).lean();
-    for (const { _id, arKey } of unposted) {
+    // Movements recorded while accounting was not live, oldest first (an earn before the expiry or
+    // take-back of its lot), each posted with the same builder as the live path
+    const unposted = await LoyaltyPoint.find({ kind: { $in: POSTED_KINDS }, journalEntryId: { $exists: false } })
+      .select('_id arKey eventKey').sort({ createdAt: 1, _id: 1 }).lean();
+    for (const { _id, arKey, eventKey } of unposted) {
       try {
         await runInTransaction(async (session) => {
           const movement = await LoyaltyPoint.findOne({ _id, journalEntryId: { $exists: false } }).session(session).lean();
-          if (movement) await postEarnEntry(movement, await orderNumberOf(movement.orderId, session), session);
+          if (movement) await postMovementEntry(movement, session);
         });
       } catch (error) {
         failed += 1;
-        console.error(`[loyalty] ${arKey}: ${error.message}`);
+        console.error(`[loyalty] ${arKey || eventKey}: ${error.message}`);
       }
     }
   }
@@ -175,7 +178,17 @@ async function awardDue({ now = new Date() } = {}) {
 }
 
 async function orderNumberOf(orderId, session) {
-  return orderId ? (await Order.findById(orderId).select('orderId').session(session).lean())?.orderId : undefined;
+  return orderId ? (await Order.findById(orderId).setOptions({ withDeleted: true }).select('orderId').session(session).lean())?.orderId : undefined;
+}
+
+// The movements that carry an entry, and the builder of each (the live path and the backlog
+// poster use the same ones). A redeem is always posted when made (it needs live accounting).
+const POSTED_KINDS = ['earn', 'expire', 'revoke', 'restore'];
+async function postMovementEntry(movement, session) {
+  if (movement.kind === 'earn') return postEarnEntry(movement, await orderNumberOf(movement.orderId, session), session);
+  if (movement.kind === 'expire' || movement.kind === 'revoke') return postTakeBackEntry(movement, session);
+  if (movement.kind === 'restore') return postRestoreEntry(movement, session);
+  return null;
 }
 
 // Earns one claim if it is still due, read again inside the transaction. True when it earned.
@@ -316,7 +329,7 @@ async function redeem({ userId, target, points }, { session, req } = {}) {
   const partnerId = oid(order.user);
   const entry = await postEntry({
     eventType: 'LOYALTY_REDEEM',
-    eventKey: movements[0].eventKey,
+    eventKey: movements[0].eventKey, // the first movement's id names the entry (and its LOYALTY_RESTORE reversal)
     description: `دفع بنقاط الولاء (${points} نقطة) - طلب ${order.orderId || order._id}`,
     source: { model: 'LoyaltyPoint', id: movements[0]._id },
     lines: [
@@ -350,21 +363,47 @@ async function takeBackLot(lotId, kind, session) {
     sources: [{ lotId: lot._id, points: lot.remaining }], eventKey,
   }], { session });
   const { settings } = await getConfig();
-  if (settings?.liveEnabled) {
-    const orderNumber = await orderNumberOf(lot.orderId, session);
-    const entry = await postEntry({
-      eventType: TAKE_BACK[kind],
-      eventKey,
-      description: `${kind === 'expire' ? 'نقاط ولاء منتهية' : 'سحب نقاط ولاء'} (${lot.remaining} نقطة)${orderNumber ? ` - طلب ${orderNumber}` : ''}`,
-      source: { model: 'LoyaltyPoint', id: movement._id },
-      lines: [
-        { role: 'loyalty_points', debit: lot.remaining, partnerId: lot.user, ...(lot.orderId && { orderId: lot.orderId }) },
-        { role: 'loyalty_expense', credit: lot.remaining, office, ...(lot.orderId && { orderId: lot.orderId }) },
-      ],
-    }, { session });
-    await LoyaltyPoint.updateOne({ _id: movement._id }, { $set: { journalEntryId: entry._id } }, { session });
-  }
+  if (settings?.liveEnabled) await postTakeBackEntry(movement.toObject(), session);
   return movement;
+}
+
+// Dr loyalty_points (the customer) / Cr loyalty_expense (the movement's office), for an expire or
+// revoke movement; the entry has the movement's eventKey
+async function postTakeBackEntry(movement, session) {
+  const orderNumber = await orderNumberOf(movement.orderId, session);
+  const office = movement.office || await officeOf({});
+  const entry = await postEntry({
+    eventType: TAKE_BACK[movement.kind],
+    eventKey: movement.eventKey,
+    description: `${movement.kind === 'expire' ? 'نقاط ولاء منتهية' : 'سحب نقاط ولاء'} (${movement.points} نقطة)${orderNumber ? ` - طلب ${orderNumber}` : ''}`,
+    source: { model: 'LoyaltyPoint', id: movement._id },
+    lines: [
+      { role: 'loyalty_points', debit: movement.points, partnerId: movement.user, ...(movement.orderId && { orderId: movement.orderId }) },
+      { role: 'loyalty_expense', credit: movement.points, office, ...(movement.orderId && { orderId: movement.orderId }) },
+    ],
+  }, { session });
+  await LoyaltyPoint.updateOne({ _id: movement._id }, { $set: { journalEntryId: entry._id } }, { session });
+  return entry;
+}
+
+// The reversal of a redemption's entry, for one of its restore lots (eventKey
+// LOYALTY_RESTORE:<redeemId>:<lotId>). Null when the redemption has no entry.
+async function postRestoreEntry(restoreLot, session) {
+  const redeemId = restoreLot.eventKey.split(':')[1];
+  const redemption = await LoyaltyPoint.findById(redeemId).select('journalEntryId').session(session).lean();
+  if (!redemption?.journalEntryId) return null;
+  const reversal = await reverseRedemption(redemption, session);
+  await LoyaltyPoint.updateOne({ _id: restoreLot._id }, { $set: { journalEntryId: reversal._id } }, { session });
+  return reversal;
+}
+
+// One entry may pay several claims (one redeem movement each), so it is reversed once: its key is
+// LOYALTY_RESTORE:<the id in the entry's own eventKey>, i.e. the first movement's id, for every
+// movement it paid (reverseEntry returns the existing reversal for a key it already posted)
+async function reverseRedemption(redemption, session) {
+  const entry = await JournalEntry.findById(redemption.journalEntryId).select('eventKey').session(session).lean();
+  const key = String(entry?.eventKey || `LOYALTY_REDEEM:${redemption._id}`).replace(/^LOYALTY_REDEEM:/, 'LOYALTY_RESTORE:');
+  return reverseEntry(redemption.journalEntryId, { session, eventKey: key, eventType: 'LOYALTY_RESTORE', reason: 'إلغاء الطلبية: إرجاع النقاط' });
 }
 
 // The points an order earned and not spent yet are taken back (order "no points" or cancelled).
@@ -388,13 +427,8 @@ async function restoreOrder(orderId, now, session) {
   for (const redemption of redemptions) {
     // ObjectId hex needs no escaping
     if (await LoyaltyPoint.exists({ eventKey: { $regex: `^${restorePrefix(redemption._id)}` } }).session(session)) continue;
-    let reversal = null;
-    if (redemption.journalEntryId) {
-      // One entry may pay several claims (one redeem movement each); it is reversed once
-      const entry = await JournalEntry.findById(redemption.journalEntryId).select('eventKey').session(session).lean();
-      const key = String(entry?.eventKey || `LOYALTY_REDEEM:${redemption._id}`).replace(/^LOYALTY_REDEEM:/, 'LOYALTY_RESTORE:');
-      reversal = await reverseEntry(redemption.journalEntryId, { session, eventKey: key, eventType: 'LOYALTY_RESTORE', reason: 'إلغاء الطلبية: إرجاع النقاط' });
-    }
+    // The redemption entry is reversed at once (it was posted live), even if accounting is off now
+    const reversal = redemption.journalEntryId ? await reverseRedemption(redemption, session) : null;
     for (const source of redemption.sources || []) {
       const lot = await LoyaltyPoint.findById(source.lotId).select('expiresAt').session(session).lean();
       if (!lot?.expiresAt) throw new Error(`Loyalty lot ${source.lotId} not found`);
@@ -455,9 +489,12 @@ async function settleOrders({ now = new Date() } = {}) {
   let restored = 0;
   let failed = 0;
   const earning = await LoyaltyPoint.distinct('orderId', { kind: 'earn', remaining: { $gt: 0 } });
-  const toRevoke = await Order.find({ _id: { $in: earning }, $or: [{ isCanceled: true }, { 'loyalty.noPoints': true }] }).select('_id').lean();
+  // A deleted order counts as cancelled (its claims are reversed the same way): withDeleted
+  const toRevoke = await Order.find({ _id: { $in: earning }, $or: [{ isCanceled: true }, { isDeleted: true }, { 'loyalty.noPoints': true }] })
+    .setOptions({ withDeleted: true }).select('_id').lean();
   const redeemedOrders = await LoyaltyPoint.distinct('orderId', { kind: 'redeem' });
-  const cancelled = (await Order.find({ _id: { $in: redeemedOrders }, isCanceled: true }).select('_id').lean()).map((o) => o._id);
+  const cancelled = (await Order.find({ _id: { $in: redeemedOrders }, $or: [{ isCanceled: true }, { isDeleted: true }] })
+    .setOptions({ withDeleted: true }).select('_id').lean()).map((o) => o._id);
   const redemptions = await LoyaltyPoint.find({ kind: 'redeem', orderId: { $in: cancelled } }).select('_id orderId').lean();
   const restoredIds = new Set((await LoyaltyPoint.find({ kind: 'restore', orderId: { $in: cancelled } }).select('eventKey').lean())
     .map((lot) => lot.eventKey.split(':')[1]));
@@ -466,12 +503,13 @@ async function settleOrders({ now = new Date() } = {}) {
   for (const id of orderIds) {
     try {
       const result = await runInTransaction(async (session) => {
-        const order = await Order.findById(id).select('user isCanceled loyalty').session(session).lean();
+        const order = await Order.findById(id).setOptions({ withDeleted: true }).select('user isCanceled isDeleted loyalty').session(session).lean();
         if (!order) return { revoked: 0, restored: 0 };
         if (order.user) await lockWalletOwner(order.user, session);
         const out = { revoked: 0, restored: 0 };
-        if (order.isCanceled || order.loyalty?.noPoints) out.revoked = await revokeOrder(order._id, session);
-        if (order.isCanceled) out.restored = await restoreOrder(order._id, now, session);
+        const cancelled = order.isCanceled || order.isDeleted;
+        if (cancelled || order.loyalty?.noPoints) out.revoked = await revokeOrder(order._id, session);
+        if (cancelled) out.restored = await restoreOrder(order._id, now, session);
         return out;
       });
       revoked += result.revoked;
