@@ -600,16 +600,28 @@ async function customersWithPoints({ search, sort = 'balance', expiringOnly = fa
   };
 }
 
-// A customer's movements, newest first, with the order number and the reason (pages from 1)
+// What each kind of movement does to the balance
+const GAIN_KINDS = ['earn', 'add', 'restore'];
+const signedPoints = (m) => (GAIN_KINDS.includes(m.kind) ? m.points : -m.points);
+
+// A customer's movements, newest first, with the order number, the reason and the balance right
+// after each one (every movement walked oldest first, so it is right on any page; pages from 1)
 async function historyOf(userId, { page, limit } = {}) {
   const paging = pageOf({ page, limit });
   if (!userId || !mongoose.isValidObjectId(userId)) return { rows: [], total: 0 };
   const filter = { user: oid(userId) };
-  const [movements, total] = await Promise.all([
+  const [movements, all] = await Promise.all([
     LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt')
       .sort({ createdAt: -1, _id: -1 }).skip((paging.page - 1) * paging.limit).limit(paging.limit).lean(),
-    LoyaltyPoint.countDocuments(filter),
+    LoyaltyPoint.find(filter).select('kind points').sort({ createdAt: 1, _id: 1 }).lean(),
   ]);
+  const total = all.length;
+  const balanceAfter = new Map();
+  let running = 0;
+  for (const m of all) {
+    running += signedPoints(m);
+    balanceAfter.set(String(m._id), running);
+  }
   const orderIds = [...new Set(movements.filter((m) => m.orderId).map((m) => String(m.orderId)))];
   const numbers = new Map((await Order.find({ _id: { $in: orderIds } }).setOptions({ withDeleted: true }).select('orderId').lean())
     .map((o) => [String(o._id), o.orderId]));
@@ -622,9 +634,29 @@ async function historyOf(userId, { page, limit } = {}) {
       reason: m.reason,
       createdAt: m.createdAt,
       expiresAt: LOTS.includes(m.kind) ? m.expiresAt : undefined,
+      balanceAfter: balanceAfter.get(String(m._id)) ?? 0,
     })),
     total,
   };
+}
+
+// The points of each of a customer's orders, for the orders list: { [orderId]: { earned, pending } }
+// for the orders that earned (earn less revoke) or have points on the way (as in summaryOf)
+async function ordersPointsOf(userId) {
+  if (!userId || !mongoose.isValidObjectId(userId)) return {};
+  const user = oid(userId);
+  const [movements, orders] = await Promise.all([
+    LoyaltyPoint.aggregate([
+      { $match: { user, kind: { $in: ['earn', 'revoke'] }, orderId: { $ne: null } } },
+      { $group: { _id: '$orderId', points: { $sum: { $cond: [{ $eq: ['$kind', 'earn'] }, '$points', { $multiply: ['$points', -1] }] } } } },
+    ]),
+    Order.find({ user, isCanceled: { $ne: true }, 'loyalty.noPoints': { $ne: true } }).select(ORDER_FIELDS).lean(),
+  ]);
+  const result = {};
+  const entry = (id) => (result[id] = result[id] || { earned: 0, pending: 0 });
+  for (const row of movements) if (row.points > 0) entry(String(row._id)).earned = row.points;
+  for (const row of await pendingOf(orders)) entry(String(row.orderId)).pending += row.points;
+  return result;
 }
 
 // The hourly job: every lot past its expiry loses what is left on it, one transaction per lot;
@@ -693,6 +725,6 @@ async function settleOrders({ now = new Date() } = {}) {
 
 module.exports = {
   awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, expireDue, settleOrders, setNoPoints,
-  adjust, customersWithPoints, historyOf, HISTORY_PAGE_SIZE,
+  adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };

@@ -16,6 +16,7 @@ const employeesOnly = (req, res, next) => (req.user?.roles?.isEmployee || req.us
 // Customers: read only, their own points (the app never redeems)
 router.get('/client/loyalty', protect, isClient, loyalty.mine);
 router.get('/client/loyalty/history', protect, isClient, loyalty.myHistory);
+router.get('/client/loyalty/orders', protect, isClient, loyalty.myOrders);
 router.get('/client/order/:id/loyalty', protect, isClient, loyalty.myOrder);
 
 // Staff

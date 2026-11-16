@@ -64,6 +64,8 @@ module.exports.mine = handle((req) => customerPoints(req.user._id));
 
 module.exports.myHistory = handle((req) => loyalty.historyOf(req.user._id, { page: req.query.page, ...HISTORY }));
 
+module.exports.myOrders = handle((req) => loyalty.ordersPointsOf(req.user._id));
+
 module.exports.myOrder = handle(async (req) => {
   const order = await findOrder(req.params.id, { user: req.user._id });
   return orderPoints(order, wholeOrderTarget(order));
