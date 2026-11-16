@@ -243,7 +243,7 @@ async function orderLoyalty(orderId) {
   const sum = (kind) => movements.filter((m) => m.kind === kind).reduce((total, m) => total + m.points, 0);
   const pending = order ? (await pendingOf([order])).reduce((total, row) => total + row.points, 0) : 0;
   return {
-    earned: sum('earn'),
+    earned: Math.max(sum('earn') - sum('revoke'), 0),
     pending,
     redeemed: Math.max(sum('redeem') - sum('restore'), 0),
     noPoints: order?.loyalty?.noPoints ? { reason: order.loyalty.reason || '' } : null,

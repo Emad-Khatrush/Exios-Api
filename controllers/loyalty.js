@@ -101,9 +101,19 @@ const staffTarget = (order, source) => {
   return { orderId: order._id, ...(category && { category }), ...(packageIds && { packageIds }) };
 };
 
+// Staff also see who marked the order "no points" and when
+async function withNoPointsAudit(orderId, result) {
+  if (!result.noPoints) return result;
+  const saved = await Order.findById(orderId).select('loyalty').lean();
+  const byId = saved?.loyalty?.by;
+  const staff = byId ? await User.findById(byId).select('firstName lastName').lean() : null;
+  const name = staff ? [staff.firstName, staff.lastName].filter(Boolean).join(' ') : '';
+  return { ...result, noPoints: { ...result.noPoints, by: name || (byId ? String(byId) : ''), at: saved?.loyalty?.at || null } };
+}
+
 module.exports.order = handle(async (req) => {
   const order = await findOrder(req.params.id);
-  return orderPoints(order, staffTarget(order, req.query));
+  return withNoPointsAudit(order._id, await orderPoints(order, staffTarget(order, req.query)));
 });
 
 module.exports.redeem = handle(async (req) => {
@@ -115,5 +125,5 @@ module.exports.redeem = handle(async (req) => {
 module.exports.noPoints = handle(async (req) => {
   const order = await findOrder(req.params.id);
   await runInTransaction((session) => loyalty.setNoPoints(order._id, { enabled: req.body?.enabled === true || req.body?.enabled === 'true', reason: req.body?.reason }, { session, req }));
-  return loyalty.orderLoyalty(order._id);
+  return withNoPointsAudit(order._id, await loyalty.orderLoyalty(order._id));
 });
