@@ -126,7 +126,7 @@ earn, `earnPoints(billed − redeemed on the claim)`, with what they wait for: "
 ## Accounting (accrual)
 Two new accounts, added at startup to existing databases:
 - `220600` نقاط العملاء (liability, per customer: `partner`), role `loyalty_points`.
-- `531100` مصروف برنامج النقاط (expense, per office: `office`), role `loyalty_expense`.
+- `532000` مصروف برنامج النقاط (expense, per office: `office`), role `loyalty_expense`.
 
 | Event | Debit | Credit |
 |---|---|---|

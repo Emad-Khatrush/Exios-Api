@@ -16,7 +16,7 @@
 - Earn: shipping and non-remittance purchase `floor(cents / 200)`; remittance (`order.isRemittance`) `floor(cents / 400)`.
 - Redeem cap: `floor(billedCents * 0.2)` per set of claims, minus points already redeemed on those claims.
 - Lots expire 365 days after they are earned or added; spending is oldest-first; "expiring soon" = within 30 days.
-- Accounts: `220600` نقاط العملاء (liability, requires `partner`), role `loyalty_points`; `531100` مصروف برنامج النقاط (expense, parent `53`, requires `office`), role `loyalty_expense`.
+- Accounts: `220600` نقاط العملاء (liability, requires `partner`), role `loyalty_points`; `532000` مصروف برنامج النقاط (expense, parent `53`, requires `office`), role `loyalty_expense`.
 - Every journal entry balances (each test file asserts it in `afterEach`; copy that block from `accounting/tests/freeShippingCancel.test.js`).
 - Points never touch wallet accounts.
 - Staff permission key: `loyalty`. Admin UI copy in English; client copy in Arabic; the terms copy is verbatim from the spec.
@@ -49,13 +49,13 @@
 test('adds the two accounts and roles once, keeping an existing mapping', async () => {
   await ensureLoyaltySetup(); await ensureLoyaltySetup();
   expect((await resolveAccount('loyalty_points')).code).toBe('220600');
-  expect((await resolveAccount('loyalty_expense')).code).toBe('531100');
-  expect(await Account.countDocuments({ code: { $in: ['220600', '531100'] } })).toBe(2);
+  expect((await resolveAccount('loyalty_expense')).code).toBe('532000');
+  expect(await Account.countDocuments({ code: { $in: ['220600', '532000'] } })).toBe(2);
 });
 ```
 
 - [ ] **Step 2: Run** `npx jest accounting/tests/loyalty.setup.test.js` → FAIL (module not found)
-- [ ] **Step 3: Implement** add `a('220600', 'نقاط العملاء', 'Customer loyalty points', 'liability', '22', { requires: ['partner'] })`, `a('531100', 'مصروف برنامج النقاط', 'Loyalty programme expense', 'expense', '53', { requires: OFFICE_DIM })`, `loyalty_points: ['220600', ['liability']]`, `loyalty_expense: ['531100', ['expense']]` and Arabic labels. `ensureLoyaltySetup` follows `seed/qaServiceAccounts.js` (create by `seedKey: code` under the parent if missing, fill the role only when absent) without the QA database guard, then `invalidateConfig()`. Add the `loyalty` permission.
+- [ ] **Step 3: Implement** add `a('220600', 'نقاط العملاء', 'Customer loyalty points', 'liability', '22', { requires: ['partner'] })`, `a('532000', 'مصروف برنامج النقاط', 'Loyalty programme expense', 'expense', '53', { requires: OFFICE_DIM })`, `loyalty_points: ['220600', ['liability']]`, `loyalty_expense: ['532000', ['expense']]` and Arabic labels. `ensureLoyaltySetup` follows `seed/qaServiceAccounts.js` (create by `seedKey: code` under the parent if missing, fill the role only when absent) without the QA database guard, then `invalidateConfig()`. Add the `loyalty` permission.
 - [ ] **Step 4: Run** the test → PASS; `npx jest accounting/tests/setup.test.js` → PASS
 - [ ] **Step 5: Commit** `feat(loyalty): points accounts, roles and staff permission`
 
