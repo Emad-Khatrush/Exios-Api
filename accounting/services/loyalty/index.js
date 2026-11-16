@@ -551,6 +551,7 @@ async function customersWithPoints({ search, sort = 'balance', expiringOnly = fa
   ];
   const [totals] = await LoyaltyPoint.aggregate([...perCustomer, { $group: {
     _id: null, points: { $sum: '$points' }, customers: { $sum: { $cond: [{ $gt: ['$points', 0] }, 1, 0] } },
+    soonCustomers: { $sum: { $cond: [{ $gt: ['$soonPoints', 0] }, 1, 0] } }, soonPoints: { $sum: '$soonPoints' },
   } }]);
   const match = {};
   if (expiringOnly === true || expiringOnly === 'true') match.soonPoints = { $gt: 0 };
@@ -585,7 +586,8 @@ async function customersWithPoints({ search, sort = 'balance', expiringOnly = fa
   ]);
   const points = totals?.points || 0;
   return {
-    totals: { points, usd: points / 100, customers: totals?.customers || 0 },
+    totals: { points, usd: points / 100, customers: totals?.customers || 0,
+      expiring: { customers: totals?.soonCustomers || 0, points: totals?.soonPoints || 0 } },
     rows: (result?.rows || []).map((row) => ({
       userId: row._id,
       name: row.customer?.name || '',
