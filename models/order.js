@@ -198,6 +198,13 @@ const orderSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  // Loyalty points (spec 2026-11-16): staff can mark an order "no points" with a reason
+  loyalty: {
+    noPoints: Boolean,
+    reason: String,
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: Date,
+  },
   // Deleted by an admin because it was created by mistake (spec 19.10): hidden from the whole
   // system; accounting still shows it (its claims reversed) with a "deleted" badge
   isDeleted: { type: Boolean, default: false },
