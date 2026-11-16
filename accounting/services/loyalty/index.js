@@ -2,13 +2,15 @@
 // A claim earns once: a shipping claim `SHP:<order>:<package>` or a purchase claim `PUR:<order>`
 // (never the package's transport or customs fees), on an order neither cancelled nor marked
 // "no points", once it is fully paid and (for shipping) its package delivered. It earns on what was
-// billed less what was paid with points, and a later reprice never earns again.
+// billed less what was written off and what was paid with points, and a later reprice never earns
+// again. Only orders placed on or after LOYALTY_START_DATE take part.
 const mongoose = require('mongoose');
 const Order = require('../../../models/order');
 const LoyaltyPoint = require('../../../models/loyaltyPoint');
 const { JournalEntry } = require('../../models');
 const { postEntry } = require('../ledger');
 const { getConfig } = require('../config');
+const { runInTransaction } = require('../transaction');
 const { resolveAccount } = require('../roles');
 const { purchaseKey, shipmentKey, parseKey, CLAIM_EVENTS } = require('../claims/keys');
 const { earnPoints, EXPIRY_DAYS, SOON_DAYS } = require('./rules');
@@ -17,9 +19,20 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const LOTS = ['earn', 'add', 'restore'];
 const earnKey = (arKey) => `LOYALTY_EARN:${arKey}`;
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
-const ORDER_FIELDS = 'orderId user placedAt isRemittance isCanceled loyalty paymentList._id paymentList.status.received';
+const ORDER_FIELDS = 'orderId user placedAt createdAt isRemittance isCanceled loyalty paymentList._id paymentList.status.received';
+const WRITEOFF_EVENTS = ['CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY'];
 
-// Billed (net receivable from claim entries) and still owed, per claim key
+// Orders placed from this day earn points (env LOYALTY_START_DATE, an ISO date). Unset or invalid:
+// nothing earns and nothing is pending, so turning the program on never awards the paid history.
+function loyaltyStartDate() {
+  const raw = String(process.env.LOYALTY_START_DATE || '').trim();
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// Per claim key: billed (net receivable from claim entries), still owed, and written off (a
+// write-off less what a later payment took back, posted and not reversed, as claims/sync.js counts it)
 async function claimLedger(arKeyFilter, session) {
   const receivable = await resolveAccount('customer_receivable');
   const rows = await JournalEntry.aggregate([
@@ -30,9 +43,10 @@ async function claimLedger(arKeyFilter, session) {
       _id: '$lines.arKey',
       open: { $sum: { $subtract: ['$lines.debit', '$lines.credit'] } },
       billed: { $sum: { $cond: [{ $in: ['$eventType', CLAIM_EVENTS] }, { $subtract: ['$lines.debit', '$lines.credit'] }, 0] } },
+      writtenOff: { $sum: { $cond: [{ $and: [{ $in: ['$eventType', WRITEOFF_EVENTS] }, { $ne: ['$status', 'reversed'] }] }, { $subtract: ['$lines.credit', '$lines.debit'] }, 0] } },
     } },
   ]).session(session || null);
-  return new Map(rows.map((row) => [row._id, { billed: row.billed, open: row.open }]));
+  return new Map(rows.map((row) => [row._id, { billed: row.billed, open: row.open, writtenOff: row.writtenOff }]));
 }
 
 // Points paid on each claim (used, less what came back on a cancellation)
@@ -45,10 +59,12 @@ async function redeemedOn(arKeys, session) {
   return new Map(rows.map((row) => [row._id, Math.max(row.points, 0)]));
 }
 
-const isEligibleOrder = (order) => !!order && !order.isCanceled && !order.loyalty?.noPoints;
+const isEligibleOrder = (order, start = loyaltyStartDate()) => !!order && start instanceof Date && !order.isCanceled && !order.loyalty?.noPoints
+  && !!order.createdAt && new Date(order.createdAt) >= start;
 
 // Where a claim stands: null (earns nothing), 'earned', or { points, waitingFor } where
-// waitingFor is 'payment', 'delivery' or null (due now, the next run adds it)
+// waitingFor is 'payment' (still owed), 'delivery' (paid, package not delivered) or 'processing'
+// (paid and delivered: the next hourly run adds it)
 function claimState({ arKey, order, ledger, redeemed, earned }) {
   const parsed = parseKey(arKey);
   if (!['purchase', 'shipment'].includes(parsed.kind) || parsed.domesticFee || parsed.customsFee) return null;
@@ -56,7 +72,8 @@ function claimState({ arKey, order, ledger, redeemed, earned }) {
   const billed = ledger?.billed || 0;
   if (billed <= 0) return null;
   if (earned) return 'earned';
-  const points = earnPoints(billed - (redeemed || 0), parsed.kind === 'purchase' && !!order.isRemittance);
+  const base = billed - Math.max(ledger.writtenOff || 0, 0) - (redeemed || 0);
+  const points = earnPoints(base, parsed.kind === 'purchase' && !!order.isRemittance);
   if (points <= 0) return null;
   if ((ledger.open || 0) > 0) return { points, waitingFor: 'payment' };
   if (parsed.kind === 'shipment') {
@@ -64,14 +81,14 @@ function claimState({ arKey, order, ledger, redeemed, earned }) {
     if (!pkg) return null;
     if (!pkg.status?.received) return { points, waitingFor: 'delivery' };
   }
-  return { points, waitingFor: null };
+  return { points, waitingFor: 'processing' };
 }
 
 const orderKeys = (order) => [purchaseKey(order._id), ...(order.paymentList || []).map((p) => shipmentKey(order._id, p._id))];
 
 // Points on the way for some orders (one row per claim not yet earned)
 async function pendingOf(orders, session) {
-  const eligible = orders.filter(isEligibleOrder);
+  const eligible = orders.filter((order) => isEligibleOrder(order));
   const keys = eligible.flatMap(orderKeys);
   if (!keys.length) return [];
   const [ledger, redeemed, earned] = await Promise.all([
@@ -112,37 +129,66 @@ async function postEarnEntry(movement, orderNumber, session) {
   return entry;
 }
 
-// The hourly job: earns every claim that became due, then (when accounting is live) posts the
-// entries of earned points still without one (recorded while accounting was not live)
-async function awardDue({ session, now = new Date() } = {}) {
-  const { settings } = await getConfig();
-  const ledger = await claimLedger({ $in: [/^PUR:/, /^SHP:/] }, session);
-  const earned = new Set(await LoyaltyPoint.distinct('arKey', { kind: 'earn' }).session(session || null));
-  const candidates = [...ledger].filter(([arKey, row]) => row.billed > 0 && row.open <= 0 && !earned.has(arKey)).map(([arKey]) => arKey);
-  const orderIds = [...new Set(candidates.map((key) => parseKey(key).orderId).filter((id) => mongoose.isValidObjectId(id)))];
-  const orders = new Map((await Order.find({ _id: { $in: orderIds } }).select(ORDER_FIELDS).session(session || null).lean())
-    .map((order) => [String(order._id), order]));
-  const redeemed = await redeemedOn(candidates, session);
+// The hourly job. Each claim that became due earns in its own transaction (with its entry when
+// accounting is live); a claim that fails is logged and skipped, and the others go on. Then the
+// entries of points recorded while accounting was not live are posted, one transaction each.
+async function awardDue({ now = new Date() } = {}) {
   let awarded = 0;
-  for (const arKey of candidates) {
-    const order = orders.get(parseKey(arKey).orderId);
-    const state = claimState({ arKey, order, ledger: ledger.get(arKey), redeemed: redeemed.get(arKey), earned: false });
-    if (!state || state === 'earned' || state.waitingFor) continue;
-    const eventKey = earnKey(arKey);
-    if (await LoyaltyPoint.exists({ eventKey }).session(session || null)) continue;
-    await LoyaltyPoint.create([{
-      user: order.user, kind: 'earn', points: state.points, remaining: state.points, arKey, orderId: order._id,
-      office: await officeOf(order), earnedAt: now, expiresAt: new Date(now.getTime() + EXPIRY_DAYS * DAY_MS), eventKey,
-    }], { session });
-    awarded += 1;
+  let failed = 0;
+  const start = loyaltyStartDate();
+  if (start) {
+    const ledger = await claimLedger({ $in: [/^PUR:/, /^SHP:/] });
+    const earned = new Set(await LoyaltyPoint.distinct('arKey', { kind: 'earn' }));
+    const candidates = [...ledger].filter(([arKey, row]) => row.billed > 0 && row.open <= 0 && !earned.has(arKey)).map(([arKey]) => arKey);
+    const orderIds = [...new Set(candidates.map((key) => parseKey(key).orderId).filter((id) => mongoose.isValidObjectId(id)))];
+    const eligible = new Set((await Order.find({ _id: { $in: orderIds }, createdAt: { $gte: start } }).select('_id').lean()).map((o) => String(o._id)));
+    for (const arKey of candidates.filter((key) => eligible.has(parseKey(key).orderId))) {
+      try {
+        if (await runInTransaction((session) => earnClaim(arKey, now, session))) awarded += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(`[loyalty] ${arKey}: ${error.message}`);
+      }
+    }
   }
+  const { settings } = await getConfig();
   if (settings?.liveEnabled) {
-    const unposted = await LoyaltyPoint.find({ kind: 'earn', journalEntryId: { $exists: false } }).sort({ _id: 1 }).session(session || null).lean();
-    const numbers = new Map((await Order.find({ _id: { $in: unposted.map((m) => m.orderId).filter(Boolean) } }).select('orderId').session(session || null).lean())
-      .map((order) => [String(order._id), order.orderId]));
-    for (const movement of unposted) await postEarnEntry(movement, numbers.get(String(movement.orderId)), session);
+    const unposted = await LoyaltyPoint.find({ kind: 'earn', journalEntryId: { $exists: false } }).select('_id arKey').sort({ _id: 1 }).lean();
+    for (const { _id, arKey } of unposted) {
+      try {
+        await runInTransaction(async (session) => {
+          const movement = await LoyaltyPoint.findOne({ _id, journalEntryId: { $exists: false } }).session(session).lean();
+          if (movement) await postEarnEntry(movement, await orderNumberOf(movement.orderId, session), session);
+        });
+      } catch (error) {
+        failed += 1;
+        console.error(`[loyalty] ${arKey}: ${error.message}`);
+      }
+    }
   }
-  return { awarded };
+  return { awarded, failed };
+}
+
+async function orderNumberOf(orderId, session) {
+  return orderId ? (await Order.findById(orderId).select('orderId').session(session).lean())?.orderId : undefined;
+}
+
+// Earns one claim if it is still due, read again inside the transaction. True when it earned.
+async function earnClaim(arKey, now, session) {
+  const eventKey = earnKey(arKey);
+  if (await LoyaltyPoint.exists({ eventKey }).session(session)) return false;
+  const order = await Order.findById(parseKey(arKey).orderId).select(ORDER_FIELDS).session(session).lean();
+  const ledger = (await claimLedger({ $in: [arKey] }, session)).get(arKey);
+  const redeemed = (await redeemedOn([arKey], session)).get(arKey);
+  const state = claimState({ arKey, order, ledger, redeemed, earned: false });
+  if (!state || state === 'earned' || state.waitingFor !== 'processing') return false;
+  const [movement] = await LoyaltyPoint.create([{
+    user: order.user, kind: 'earn', points: state.points, remaining: state.points, arKey, orderId: order._id,
+    office: await officeOf(order), earnedAt: now, expiresAt: new Date(now.getTime() + EXPIRY_DAYS * DAY_MS), eventKey,
+  }], { session });
+  const { settings } = await getConfig();
+  if (settings?.liveEnabled) await postEarnEntry(movement.toObject(), order.orderId, session);
+  return true;
 }
 
 // A customer's points: balance (unexpired lots), expiring soon, on the way, and totals
@@ -184,4 +230,4 @@ async function orderLoyalty(orderId) {
   };
 }
 
-module.exports = { awardDue, summaryOf, orderLoyalty, claimLedger, claimState, earnKey };
+module.exports = { awardDue, summaryOf, orderLoyalty, claimLedger, claimState, earnKey, loyaltyStartDate };
