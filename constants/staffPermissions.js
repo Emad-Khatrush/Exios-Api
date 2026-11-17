@@ -14,6 +14,8 @@ const PERMISSION_GROUPS = [
       { key: 'invoices_list', label: 'قائمة الفواتير والتقرير اليومي', hint: 'كل الفواتير، والفواتير الصادرة يومياً' },
       { key: 'tracking', label: 'X-Tracking ومتابعة الطلبيات', hint: 'متابعة مراحل الطلبيات والتحكم بها' },
       { key: 'delivery', label: 'تسليم الطرود للعملاء', hint: 'تسليم الطرود وإيقاف شحن طلبية' },
+      // Not in any staff type below: given only to whoever the owner ticks it for (owner, 2026-11-17)
+      { key: 'delivery_on_credit', label: 'التسليم مع دين متبقٍ (دفع جزئي)', hint: 'تسليم الطرود بخصم جزء من المحفظة وتسجيل الباقي دينًا على العميل' },
     ],
   },
   {

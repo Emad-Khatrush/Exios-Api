@@ -9,7 +9,7 @@
   "main": "index.js",
   "scripts": {
     "test": "jest --runInBand",
-    "start": "node app.js",
+    "test:fast": "jest --maxWorkers=6",    "start": "node app.js",
     "app": "nodemon app.js",
     "postinstall": "npx puppeteer browsers install chrome",
     "accounting:setup": "node accounting/scripts/setup.js",
