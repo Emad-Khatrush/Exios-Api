@@ -263,6 +263,30 @@ async function orderLoyalty(orderId) {
   };
 }
 
+// Points paid on each part of an order, net of what came back (cancelled or restored): the
+// invoice (PUR:<order>) and each package's shipping (SHP:<order>:<package>), by package id.
+// Staff use it to take what points paid off what the order still asks for.
+async function redeemedByPart(orderId) {
+  if (!mongoose.isValidObjectId(orderId)) return { invoice: 0, packages: {} };
+  const movements = await LoyaltyPoint.find({ orderId: oid(orderId), kind: { $in: ['redeem', 'restore'] } }).select('kind points arKey').lean();
+  const byKey = new Map();
+  for (const m of movements) {
+    if (!m.arKey) continue;
+    byKey.set(m.arKey, (byKey.get(m.arKey) || 0) + (m.kind === 'redeem' ? m.points : -m.points));
+  }
+  const result = { invoice: 0, packages: {} };
+  for (const [arKey, points] of byKey) {
+    const net = Math.max(points, 0);
+    if (!net) continue;
+    const parsed = parseKey(arKey);
+    if (parsed.kind === 'purchase') result.invoice += net;
+    else if (parsed.kind === 'shipment' && parsed.packageId && !parsed.domesticFee && !parsed.customsFee) {
+      result.packages[String(parsed.packageId)] = (result.packages[String(parsed.packageId)] || 0) + net;
+    }
+  }
+  return result;
+}
+
 // ---- Redeeming (staff only; spec "Redeeming") ----
 
 // The claims a payment target pays that points may pay: a purchase or shipping invoice, never a
@@ -949,7 +973,7 @@ async function settleOrders({ now = new Date() } = {}) {
 }
 
 module.exports = {
-  awardDue, summaryOf, orderLoyalty, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
+  awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };
