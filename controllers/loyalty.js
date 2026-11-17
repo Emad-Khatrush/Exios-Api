@@ -132,6 +132,15 @@ module.exports.order = handle(async (req) => {
   return withRedemptions(order._id, await withNoPointsAudit(order._id, await orderPoints(order, staffTarget(order, req.query))));
 });
 
+// Points already paid on the order (net of cancels), for every staff member who can open it:
+// the order page takes them off each due, so they must not depend on the points permission
+module.exports.paid = handle(async (req) => {
+  const order = await findOrder(req.params.id);
+  const redeemedBy = await loyalty.redeemedByPart(order._id);
+  const points = redeemedBy.invoice + Object.values(redeemedBy.packages).reduce((sum, value) => sum + value, 0);
+  return { redeemedBy, redeemedUsd: points / 100 };
+});
+
 module.exports.cancelRedemption = handle(async (req) => {
   const order = await findOrder(req.params.id);
   return runInTransaction((session) => loyalty.cancelRedemption({ orderId: order._id, redemptionId: req.params.redemptionId, reason: req.body?.reason }, { session, req }));

@@ -1,7 +1,7 @@
 const express = require('express');
 const loyalty = require('../controllers/loyalty');
 const { protect, isClient } = require('../middleware/check-auth');
-const { allow, PERMISSION_DENIED } = require('../middleware/permissions');
+const { allow, anyStaff, PERMISSION_DENIED } = require('../middleware/permissions');
 const ErrorHandler = require('../utils/errorHandler');
 
 const router = express.Router();
@@ -29,6 +29,8 @@ router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers)
 router.get('/user/:id/loyalty', protect, allow(['loyalty', 'clients'], employeesOnly), loyalty.customer);
 router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty']), loyalty.adjust);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
+// Same access as the order page (any staff member who can open it), but a 403 for the rest
+router.get('/order/:id/loyalty/paid', protect, anyStaff(employeesOnly), loyalty.paid);
 router.post('/order/:id/loyalty/redeem', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.redeem);
 router.post('/order/:id/loyalty/redemptions/:redemptionId/cancel', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.cancelRedemption);
 // At a delivery: whoever delivers or takes payments (accountants too), as the delivery routes allow
