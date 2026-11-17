@@ -889,6 +889,57 @@ async function historyOf(userId, { page, limit, type } = {}) {
   };
 }
 
+// The programme at a glance, for the staff page: what moved this month and the month before (Libya
+// time), by what it did, and the latest movements across all customers with who and which order.
+const OVERVIEW_BUCKETS = { earn: 'earned', redeem: 'used', expire: 'expired', revoke: 'expired', add: 'added', deduct: 'deducted', restore: 'returned' };
+const emptyMonth = () => ({ earned: 0, used: 0, expired: 0, added: 0, deducted: 0, returned: 0 });
+async function overview({ now = new Date(), recent = 8 } = {}) {
+  const thisMonth = moment(now).tz(TZ).startOf('month');
+  const lastMonth = thisMonth.clone().subtract(1, 'month');
+  const [byMonth, latest] = await Promise.all([
+    LoyaltyPoint.aggregate([
+      { $match: { createdAt: { $gte: lastMonth.toDate() } } },
+      { $group: { _id: { current: { $gte: ['$createdAt', thisMonth.toDate()] }, kind: '$kind' }, points: { $sum: '$points' } } },
+    ]),
+    LoyaltyPoint.find({}).select('user kind points orderId reason createdAt').sort({ createdAt: -1, _id: -1 })
+      .limit(Math.min(Math.max(Number(recent) || 8, 1), 30)).lean(),
+  ]);
+  const months = { current: emptyMonth(), previous: emptyMonth() };
+  for (const row of byMonth) {
+    const bucket = OVERVIEW_BUCKETS[row._id.kind];
+    if (bucket) months[row._id.current ? 'current' : 'previous'][bucket] += row.points;
+  }
+  const User = mongoose.model('User');
+  const [users, orders] = await Promise.all([
+    User.find({ _id: { $in: [...new Set(latest.map((m) => String(m.user)))] } }).select('firstName lastName customerId').lean(),
+    Order.find({ _id: { $in: [...new Set(latest.filter((m) => m.orderId).map((m) => String(m.orderId)))] } })
+      .setOptions({ withDeleted: true }).select('orderId').lean(),
+  ]);
+  const userById = new Map(users.map((u) => [String(u._id), u]));
+  const orderNumber = new Map(orders.map((o) => [String(o._id), o.orderId]));
+  return {
+    month: thisMonth.format('YYYY-MM'),
+    current: months.current,
+    previous: months.previous,
+    recent: latest.map((m) => {
+      const u = userById.get(String(m.user));
+      return {
+        id: String(m._id),
+        kind: m.kind,
+        points: m.points,
+        delta: signedPoints(m),
+        createdAt: m.createdAt,
+        reason: m.reason,
+        userId: String(m.user),
+        name: u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : '',
+        customerId: u?.customerId,
+        orderId: m.orderId,
+        orderNumber: m.orderId ? orderNumber.get(String(m.orderId)) : undefined,
+      };
+    }),
+  };
+}
+
 // The points of each of a customer's orders, for the orders list: { [orderId]: { earned, pending } }
 // for the orders that earned (earn less revoke) or have points on the way (as in summaryOf)
 async function ordersPointsOf(userId) {
@@ -974,6 +1025,6 @@ async function settleOrders({ now = new Date() } = {}) {
 
 module.exports = {
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
-  pointsOfPayment, redeemInPayment, adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
+  pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };

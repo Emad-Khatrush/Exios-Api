@@ -73,6 +73,9 @@ module.exports.myOrder = handle(async (req) => {
 
 // ---- Staff ----
 
+// The programme at a glance: this month and the last, and the latest movements across customers
+module.exports.overview = handle((req) => loyalty.overview({ recent: req.query.recent }));
+
 module.exports.customers = handle((req) => loyalty.customersWithPoints({
   search: req.query.search,
   sort: req.query.sort,

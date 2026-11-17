@@ -26,6 +26,7 @@ router.get('/client/order/:id/loyalty', protect, isClient, loyalty.myOrder);
 
 // Staff
 router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);
+router.get('/loyalty/overview', protect, allow(['loyalty']), loyalty.overview);
 router.get('/user/:id/loyalty', protect, allow(['loyalty', 'clients'], employeesOnly), loyalty.customer);
 router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty']), loyalty.adjust);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
