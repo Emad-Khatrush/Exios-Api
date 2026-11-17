@@ -9,8 +9,17 @@ const round = value => Math.round(Number(value) * 100) / 100;
 const cents = value => Math.round(Number(value) * 100);
 const fail = message => new ErrorHandler(400, message);
 
+// «التسليم مع دين متبقٍ» in Settings > Permissions (owner 2026-11-17). Admins and owners have it; a
+// staff member nobody configured yet keeps what the role gave (accountants only).
+async function mayDeliverOnCredit(user) {
+  const { hasFullAccess, permissionsOf } = require('../middleware/permissions');
+  if (await hasFullAccess(user)) return true;
+  const permissions = permissionsOf(user);
+  return permissions ? permissions.includes('delivery_on_credit') : !!user.roles?.isAccountant;
+}
+
 async function prepare(input, total, wallet, user, session) {
-  if (!(user.roles?.isAdmin || user.roles?.isAccountant)) throw new ErrorHandler(403, 'التسليم مع دين متبقٍ متاح للأدمن أو المحاسب فقط');
+  if (!await mayDeliverOnCredit(user)) throw new ErrorHandler(403, 'التسليم مع دين متبقٍ يحتاج صلاحية «التسليم مع دين متبقٍ»؛ اطلبها من المدير');
   if (!Number.isFinite(total) || total < 0) throw fail('راجع أسعار الطرود ورسومها قبل التسليم');
   const amountUSD = round(input.amountUSD || 0), amountLYD = round(input.amountLYD || 0);
   if (![amountUSD, amountLYD].every(Number.isFinite) || amountUSD < 0 || amountLYD < 0) throw fail('راجع المبالغ المدفوعة');

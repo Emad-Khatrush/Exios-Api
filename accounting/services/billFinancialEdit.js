@@ -181,6 +181,16 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
     if (payments.some(payment => payment.costDifferenceUsd) && targetView(lines) !== targetView(bill.lines)) throw fail('يوجد فرق تكلفة موزع من دفعة مرتبطة؛ ألغِ تسوية الفرق قبل تغيير جهة تحميل التكلفة');
     if (merged.currency !== bill.currency && (bill.paidBeforeCount || receipts.length || nettings.length)) throw fail('الفاتورة عليها سداد افتتاحي أو استرداد أو مقاصة؛ عالج التسوية المرتبطة قبل تغيير العملة');
   }
+  // A bill paid on the spot (owner 2026-11-17): a typing mistake in its amount or day is a mistake in
+  // its payment too, so the automatic payment is replaced by one at the corrected amount and day.
+  // Only when that payment alone settles the bill from a real cash box or bank, and the currency stays:
+  // a new invoice currency leaves the money actually paid as it was (the payment keeps its currency).
+  const auto = financial && historicalPayment === 'preserve' && !bill.isHistorical && payments.length === 1
+    && merged.currency === bill.currency && payments[0].currency === bill.currency
+    && idOf(payments[0].autoFromBillId) === idOf(bill._id) && !payments[0].isHistorical && !payments[0].fromAdvance
+    && !payments[0].advanceUsd && !payments[0].costDifferenceUsd && !receipts.length && !nettings.length && !notes.length ? payments[0] : null;
+  const autoPayment = auto ? { _id: auto._id, number: auto.number, oldAmount: Number(auto.amount), newAmount: lines.reduce((sum, line) => sum + line.amount, 0),
+    oldDay: auto.day, newDay: day, currency: merged.currency, fromAccountId: auto.fromAccountId, employeeId: auto.employeeId } : undefined;
   const reopening = historicalPayment === 'unpaid' ? await assumedPayment(bill, payments, receipts, notes, nettings, session) : null;
   const restoring = historicalPayment === 'restore' ? await restoringPayment(bill, payments, receipts, notes, nettings, session) : null;
   const settling = historicalPayment === 'settle' ? await assumedPayment(bill, payments, receipts, notes, nettings, session) : null;
@@ -212,11 +222,13 @@ async function prepare(id, input, { session, settings: lockedSettings } = {}) {
     settling.adjustUsd = settlementAdjustmentUsd;
   }
   const fingerprint = hash({ bill, input: merged, entries, payments, receipts, notes, nettings, originItems, newUsd,
-    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, restoring, settling, settlementCorrectionDay });
-  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening, restoring, settling,
+    lockDate: settings?.lockDate, migrationGuardDay: settings?.migrationGuardDay, oldOpen, historicalPayment, reopening, restoring, settling, settlementCorrectionDay, autoPayment });
+  return { bill, merged, financial, entries, payments, originItems, oldOpen, newUsd, fingerprint, reopening, restoring, settling, autoPayment,
     summary: { oldTotal: bill.total, newTotal: total, oldCurrency: bill.currency, newCurrency: merged.currency,
       oldUsd: bill.totalUsd, newUsd, settledUsd: bill.totalUsd - oldOpen, oldOpen,
-      newOpen: oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0) - (restoring?.amount || 0) - settlementAdjustmentUsd, costDelta: newUsd - bill.totalUsd, day,
+      newOpen: autoPayment ? 0 : oldOpen + newUsd - bill.totalUsd + (reopening?.amount || 0) - (restoring?.amount || 0) - settlementAdjustmentUsd, costDelta: newUsd - bill.totalUsd, day,
+      ...(autoPayment && { autoPayment: { number: autoPayment.number, oldAmount: autoPayment.oldAmount, newAmount: autoPayment.newAmount,
+        oldDay: autoPayment.oldDay, newDay: autoPayment.newDay, currency: autoPayment.currency } }),
       historicalPayment, removedSettlementUsd: reopening?.amount || 0, restoredSettlementUsd: restoring?.amount || 0, settlementAdjustmentUsd,
       remainingSettlementUsd: bill.totalUsd - oldOpen - (reopening?.amount || 0) + (restoring?.amount || 0) + settlementAdjustmentUsd,
       settlementCounterpart: settling ? settling.opening.name : reopening?.counterpart.name, settlementCorrectionDay,
@@ -309,12 +321,27 @@ async function apply(id, input, { session, req }) {
       .reduce((sum, line) => sum + line.credit - line.debit, 0);
   }
   const batch = crypto.randomUUID();
+  // The automatic payment goes first, so the bill is reposted unpaid and paid again below
+  if (prepared.autoPayment) {
+    await require('./cancel').cancelDocument('AccountingSupplierPayment', prepared.autoPayment._id, { session, req, cascaded: true,
+      reason: `تصحيح الفاتورة ${current.number}: ${input.reason}` });
+  }
   await reverseSourceEntries('AccountingSupplierBill', current._id, { session, user: req.user, reason: `تعديل ${current.number}: ${input.reason}` });
   Object.assign(current, { day: merged.day, currency: merged.currency, rate: merged.rate, lines: merged.lines });
   await payables.postBill(current, { session, user: req.user, sync: { defer: true }, embeddedPaidUsd,
     correctionKey: `BILL_EDIT:${current._id}:${batch}` });
   // Recalculate both previous and new destinations when a line moves between trips/orders.
   await payables.syncBillTargets({ lines: [...before.lines, ...current.lines] }, { session, user: req.user });
+  if (prepared.autoPayment) {
+    const { fromAccountId, employeeId, number } = prepared.autoPayment;
+    const payment = await payables.createPayment({ vendorId: current.vendorId, day: current.day, fromAccountId, employeeId,
+      amount: current.total, rate: current.rate, allocations: [{ billId: current._id, amountUsd: current.totalUsd }], autoFromBillId: current._id,
+      note: `دفع فوري للفاتورة ${current.number} (مصحح بدل ${number})`, idempotencyKey: `BILL_EDIT_PAY:${current._id}:${batch}` },
+    { session, user: req.user, requireCurrency: current.currency });
+    current.paymentId = payment._id;
+    current.paidImmediatelyFrom = fromAccountId;
+    await current.save({ session });
+  }
   if (prepared.settling) {
     const { payment, adjustUsd, opening } = prepared.settling;
     const ap = { accountId: current.payableAccountId, vendorId: current.vendorId, apKey: payables.billKey(current._id) };

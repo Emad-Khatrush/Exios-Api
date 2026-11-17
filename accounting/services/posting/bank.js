@@ -441,10 +441,26 @@ async function manualMatch(lineId, entryIds, { session, req }) {
 }
 
 // Entries already in the books that could be this very line (same amount, within a week)
+// A typing slip (owner 2026-11-17: 10,654.83 typed for 10,654.81): an entry at most one unit of the
+// currency off the line, the same way and within 3 days, is the same money until said otherwise.
+const NEAR_DAYS = 3;
+const unitOf = async (accountId) => {
+  const { currencies, accountsById } = await getConfig();
+  return 10 ** (currencies.get(currencyOf(accountsById.get(String(accountId)) || {}))?.decimals ?? 2);
+};
+const nearAmount = (m, line, unit) => m.amount !== line.amount && Math.sign(m.amount) === Math.sign(line.amount)
+  && Math.abs(m.amount - line.amount) <= unit && dayDistance(m.day, line.day) <= NEAR_DAYS;
+// The same money: same amount within the duplicate window, or a few cents off within 3 days.
+// `difference` (minor units, books − statement) marks the near ones.
+const twinsOf = (movements, line, unit) => [
+  ...movements.filter((m) => m.amount === line.amount && dayDistance(m.day, line.day) <= DUPLICATE_DAYS),
+  ...movements.filter((m) => nearAmount(m, line, unit)).map((m) => ({ ...m, difference: Math.abs(m.amount - line.amount) })),
+];
+
 async function possibleDuplicates(line, session) {
   const movements = await unmatchedMovements(line.accountId, { from: addDays(line.day, -DUPLICATE_DAYS), to: addDays(line.day, DUPLICATE_DAYS), session });
-  return movements.filter((m) => m.amount === line.amount)
-    .sort((a, b) => dayDistance(a.day, line.day) - dayDistance(b.day, line.day));
+  return twinsOf(movements, line, await unitOf(line.accountId))
+    .sort((a, b) => !!a.difference - !!b.difference || dayDistance(a.day, line.day) - dayDistance(b.day, line.day));
 }
 
 // ---- Linking a website purchase to its order ----
@@ -558,7 +574,7 @@ async function createEntryForLine(lineId, input, { session, req }) {
     const twins = await possibleDuplicates(line, session);
     if (twins.length) {
       const error = new ErrorHandler(409, `قد يكون هذا السطر مسجلاً في الدفاتر: ${twins.slice(0, 3).map((t) => `${t.number} (${t.day})`).join('، ')}. طابقه معه بدل إنشاء قيد جديد، أو أكّد أنه مختلف.`);
-      error.duplicates = twins.slice(0, 5).map((t) => ({ _id: t._id, number: t.number, day: t.day, description: t.description, amount: t.amount }));
+      error.duplicates = twins.slice(0, 5).map((t) => ({ _id: t._id, number: t.number, day: t.day, description: t.description, amount: t.amount, difference: t.difference }));
       throw error;
     }
   }
@@ -1132,6 +1148,7 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
   const tripHints = await require('./bankTripCostHints').hints(lines, await bankAccount(accountId), settings, safetyGuess);
   const wip = await resolveAccount('purchase_cost_wip');
   const movements = await unmatchedMovements(accountId);
+  const unit = await unitOf(accountId);
   const result = {};
   const repeats = await evidence.repeatedReferences(accountId, lines.filter(l => l.duplicateReviewPending));
   const bank = await bankAccount(accountId);
@@ -1153,14 +1170,17 @@ async function suggestions(accountId, { lineIds, matchingSettings } = {}) {
         duplicates: twins.map(t => ({ _id: t._id, number: t.number, day: t.day, description: t.description })) };
       continue;
     }
-    const twins = movements.filter((m) => m.amount === line.amount && dayDistance(m.day, line.day) <= DUPLICATE_DAYS);
+    const twins = twinsOf(movements, line, unit);
     const link = settings.engines.includes('purchases') && !settings.requireIdentity && links[index] && dayDistance(links[index].day, line.day) <= settings.proposalDays ? links[index] : null;
     const billHint = guess(line).semanticTransfer || !settings.engines.includes('purchases') ? null : await existingBillHint(line, bank, guess(line).vendorName, settings, bills);
     result[line._id] = {
       ...(guess(line).semanticTransfer ? guess(line) : billHint || (link ? { account: { _id: wip._id, code: wip.code, name: wip.name }, office: null, source: 'order', keyword: null, link,
         requiresConfirmation: true, reason: 'اقتراح بالمبلغ والعملة وقرب التاريخ فقط؛ راجع هوية المورد والطلبية من قائمة المطابقة قبل الاعتماد.' } : guess(line))),
-      duplicates: twins.map((t) => ({ _id: t._id, number: t.number, day: t.day, description: t.description })),
+      duplicates: twins.map((t) => ({ _id: t._id, number: t.number, day: t.day, description: t.description, amount: t.amount, difference: t.difference })),
     };
+    // A few cents off a recorded entry: a typing slip to correct, not a new cost to post
+    if (twins.some((t) => t.difference)) Object.assign(result[line._id], { requiresConfirmation: true,
+      reason: `قيد مسجل قريب جدًا من هذا السطر (${twins.filter((t) => t.difference).map((t) => t.number).join('، ')}): غالبًا رقم مكتوب خطأ؛ صحّحه ليطابق الكشف ثم طابقه، أو أكّد أنه عملية مختلفة` });
     if (needsRefundReview(line, safetyGuess(line))) Object.assign(result[line._id], {
       ...guess(line), isRefund: true, source: 'refund', requiresConfirmation: true, refundAccount: guess(line).account, account: null, link: null,
       reason: 'مبلغ وارد من مورد مشتريات؛ راجع الفاتورة أو الريفاند الأصلي قبل الاعتماد',
@@ -1376,6 +1396,7 @@ async function classifyRows(accountId, rows, matchingSettings) {
   const tripHints = await require('./bankTripCostHints').hints(docs, account, settings, safetyGuess);
   const wip = await resolveAccount('purchase_cost_wip');
   const { accountsById } = await getConfig();
+  const unit = await unitOf(accountId);
   const taken = new Set();
   const bills = billCache(days);
   return Promise.all(docs.map(async (doc, index) => {
@@ -1399,10 +1420,13 @@ async function classifyRows(accountId, rows, matchingSettings) {
     const hold = require('./importHold').holdReason(account, { ...doc, accountId: account._id }, movements.filter((m) => !taken.has(String(m._id))));
     if (hold) return { status: 'new', account: null, requiresConfirmation: true, holdForMatching: true, source: 'matching', reason: hold.reason,
       combinations: hold.combinations.slice(0, 3).map((option) => option.entries.map((e) => ({ number: e.number, day: e.day, amount: e.amount }))) };
-    const twin = near.find((m) => dayDistance(m.day, doc.day) <= DUPLICATE_DAYS);
+    const exactTwin = near.find((m) => dayDistance(m.day, doc.day) <= DUPLICATE_DAYS);
+    // or a few cents off: a typing slip in the books, never posted again as a new cost
+    const slip = exactTwin ? null : movements.find((m) => !taken.has(String(m._id)) && nearAmount(m, doc, unit));
+    const twin = exactTwin || (slip && { ...slip, difference: Math.abs(slip.amount - doc.amount) });
     if (doc.sourceProvider === 'alipay' && doc.amount > 0 && !identifiedRefund) return {
       status: twin ? 'maybeDuplicate' : 'new', account: null, requiresConfirmation: true, source: 'alipay', reason: 'شراء يوان أو تحويل أو إيداع؛ يُطابق مع قيد العملية ولا يُسجل إيرادًا من الكشف',
-      entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description } : null,
+      entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description, difference: twin.difference } : null,
     };
     const link = settings.engines.includes('purchases') && !settings.requireIdentity && links[index] && dayDistance(links[index].day, doc.day) <= settings.proposalDays ? links[index] : null;
     const billHint = guess(doc).semanticTransfer || !settings.engines.includes('purchases') ? null : await existingBillHint(doc, account, guess(doc).vendorName, settings, bills);
@@ -1439,7 +1463,7 @@ async function classifyRows(accountId, rows, matchingSettings) {
     }
     const reviewTarget = tripHints[index].length ? { ...target, account: null, link: null, source: 'bill', requiresConfirmation: true,
       suggestedBillId: tripHints[index][0].billId, billCandidates: tripHints[index].map(candidate => ({ ...candidate, _id: candidate.billId })) } : target;
-    return { status: twin ? 'maybeDuplicate' : 'new', entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description } : null, ...permittedHint(reviewTarget, settings), vendorName, tripCandidates: tripHints[index], ...refundProposal };
+    return { status: twin ? 'maybeDuplicate' : 'new', entry: twin ? { _id: twin._id, number: twin.number, day: twin.day, description: twin.description, difference: twin.difference } : null, ...permittedHint(reviewTarget, settings), vendorName, tripCandidates: tripHints[index], ...refundProposal };
   }));
 }
 
