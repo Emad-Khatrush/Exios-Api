@@ -167,16 +167,12 @@ async function operationRate(statement, options, session) {
   return undefined;
 }
 
-// Whose office box live cash lands in (spec v8): a clerk's cash is in their own office, whatever
-// the screen says; the owner and the accountant record for any office, so the office written on
-// the operation decides (and changing it on the operation moves the money to that office's box)
+// Whose office box live cash lands in (owner 2026-11-17, replacing spec v8's "a clerk's cash is in
+// their own office"): the office chosen on the operation's screen decides, whoever entered it, and
+// changing it on the operation moves the money to that office's box. Only an operation saved with
+// no office falls back to the office of whoever entered it.
 async function cashOffice(createdBy, recordOffice, session) {
-  if (createdBy && mongoose.isValidObjectId(String(createdBy))) {
-    const user = await User.findById(createdBy).select('roles').session(session || null).lean();
-    const { isOwner } = require('../access');
-    if (recordOffice && (user?.roles?.isAccountant || await isOwner({ _id: createdBy }))) return recordOffice;
-  }
-  return (await officeOfCreator(createdBy, session)) || recordOffice || null;
+  return recordOffice || (await officeOfCreator(createdBy, session)) || null;
 }
 
 // Cash withdrawals must have a valid funding account before the wallet is touched.
