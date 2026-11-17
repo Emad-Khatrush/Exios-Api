@@ -113,9 +113,27 @@ async function withNoPointsAudit(orderId, result) {
   return { ...result, noPoints: { ...result.noPoints, by: name || (byId ? String(byId) : ''), at: saved?.loyalty?.at || null } };
 }
 
+// Staff also see each redemption of the order, who made it and whether it was cancelled (names, not ids)
+async function withRedemptions(orderId, result) {
+  const redemptions = await loyalty.orderRedemptions(orderId);
+  const ids = [...new Set(redemptions.flatMap((r) => [r.by, r.canceled?.by]).filter(Boolean))];
+  const staff = new Map((await User.find({ _id: { $in: ids } }).select('firstName lastName').lean())
+    .map((u) => [String(u._id), [u.firstName, u.lastName].filter(Boolean).join(' ')]));
+  const nameOf = (id) => (id ? staff.get(id) || id : '');
+  return {
+    ...result,
+    redemptions: redemptions.map((r) => ({ ...r, by: nameOf(r.by), canceled: r.canceled && { ...r.canceled, by: nameOf(r.canceled.by) } })),
+  };
+}
+
 module.exports.order = handle(async (req) => {
   const order = await findOrder(req.params.id);
-  return withNoPointsAudit(order._id, await orderPoints(order, staffTarget(order, req.query)));
+  return withRedemptions(order._id, await withNoPointsAudit(order._id, await orderPoints(order, staffTarget(order, req.query))));
+});
+
+module.exports.cancelRedemption = handle(async (req) => {
+  const order = await findOrder(req.params.id);
+  return runInTransaction((session) => loyalty.cancelRedemption({ orderId: order._id, redemptionId: req.params.redemptionId, reason: req.body?.reason }, { session, req }));
 });
 
 module.exports.redeem = handle(async (req) => {

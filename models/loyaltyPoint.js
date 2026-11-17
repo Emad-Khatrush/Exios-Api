@@ -20,6 +20,10 @@ const loyaltyPointSchema = new Schema({
   journalEntryId: { type: Schema.Types.ObjectId },
   reason: String,
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  // A redeem movement staff cancelled (its points came back): when, by whom and why
+  canceledAt: Date,
+  canceledBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  cancelReason: String,
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 loyaltyPointSchema.index({ user: 1, expiresAt: 1 });

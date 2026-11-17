@@ -513,10 +513,16 @@ async function postRestoreEntry(restoreLot, session) {
 // One entry may pay several claims (one redeem movement each), so it is reversed once: its key is
 // LOYALTY_RESTORE:<the id in the entry's own eventKey>, i.e. the first movement's id, for every
 // movement it paid (reverseEntry returns the existing reversal for a key it already posted)
-async function reverseRedemption(redemption, session) {
-  const entry = await JournalEntry.findById(redemption.journalEntryId).select('eventKey').session(session).lean();
-  const key = String(entry?.eventKey || `LOYALTY_REDEEM:${redemption._id}`).replace(/^LOYALTY_REDEEM:/, 'LOYALTY_RESTORE:');
-  return reverseEntry(redemption.journalEntryId, { session, eventKey: key, eventType: 'LOYALTY_RESTORE', reason: 'إلغاء الطلبية: إرجاع النقاط' });
+// A staff cancellation names its reversal LOYALTY_REDEEM_CANCEL:<id> instead; an entry already
+// reversed (either way) gives its existing reversal.
+async function reverseRedemption(redemption, session, { reason = 'إلغاء الطلبية: إرجاع النقاط', prefix = 'LOYALTY_RESTORE', user } = {}) {
+  const entry = await JournalEntry.findById(redemption.journalEntryId).select('eventKey status reversedBy').session(session).lean();
+  if (entry?.status === 'reversed' && entry.reversedBy) {
+    const existing = await JournalEntry.findById(entry.reversedBy).session(session);
+    if (existing) return existing;
+  }
+  const key = String(entry?.eventKey || `LOYALTY_REDEEM:${redemption._id}`).replace(/^LOYALTY_REDEEM:/, `${prefix}:`);
+  return reverseEntry(redemption.journalEntryId, { session, user, eventKey: key, eventType: 'LOYALTY_RESTORE', reason });
 }
 
 // The points an order earned and not spent yet are taken back (order "no points" or cancelled).
@@ -537,24 +543,99 @@ const restorePrefix = (redeemId) => `LOYALTY_RESTORE:${redeemId}:`;
 async function restoreOrder(orderId, now, session) {
   const redemptions = await LoyaltyPoint.find({ kind: 'redeem', orderId: oid(orderId) }).sort({ _id: 1 }).session(session).lean();
   let restored = 0;
-  for (const redemption of redemptions) {
-    // ObjectId hex needs no escaping
-    if (await LoyaltyPoint.exists({ eventKey: { $regex: `^${restorePrefix(redemption._id)}` } }).session(session)) continue;
-    // The redemption entry is reversed at once (it was posted live), even if accounting is off now
-    const reversal = redemption.journalEntryId ? await reverseRedemption(redemption, session) : null;
-    for (const source of redemption.sources || []) {
-      const lot = await LoyaltyPoint.findById(source.lotId).select('expiresAt').session(session).lean();
-      if (!lot?.expiresAt) throw new Error(`Loyalty lot ${source.lotId} not found`);
-      const [back] = await LoyaltyPoint.create([{
-        user: redemption.user, kind: 'restore', points: source.points, remaining: source.points, arKey: redemption.arKey,
-        orderId: redemption.orderId, office: redemption.office, earnedAt: now, expiresAt: lot.expiresAt,
-        eventKey: `${restorePrefix(redemption._id)}${source.lotId}`, ...(reversal && { journalEntryId: reversal._id }),
-      }], { session });
-      if (lot.expiresAt <= now) await takeBackLot(back._id, 'expire', session);
-    }
-    restored += 1;
-  }
+  for (const redemption of redemptions) if (await restoreRedemption(redemption, now, session)) restored += 1;
   return restored;
+}
+
+// Gives back one redeem movement: its entry reversed (once for every movement it paid), each lot it
+// used back as a restore lot with that lot's expiry, expired at once when already past it. False
+// when it was given back before. `reverse` names the reversal and `reason` goes on the restore lots.
+async function restoreRedemption(redemption, now, session, { reason, reverse } = {}) {
+  // ObjectId hex needs no escaping
+  if (await LoyaltyPoint.exists({ eventKey: { $regex: `^${restorePrefix(redemption._id)}` } }).session(session)) return false;
+  // The redemption entry is reversed at once (it was posted live), even if accounting is off now
+  const reversal = redemption.journalEntryId ? await reverseRedemption(redemption, session, reverse) : null;
+  for (const source of redemption.sources || []) {
+    const lot = await LoyaltyPoint.findById(source.lotId).select('expiresAt').session(session).lean();
+    if (!lot?.expiresAt) throw new Error(`Loyalty lot ${source.lotId} not found`);
+    const [back] = await LoyaltyPoint.create([{
+      user: redemption.user, kind: 'restore', points: source.points, remaining: source.points, arKey: redemption.arKey,
+      orderId: redemption.orderId, office: redemption.office, earnedAt: now, expiresAt: lot.expiresAt,
+      eventKey: `${restorePrefix(redemption._id)}${source.lotId}`, ...(reversal && { journalEntryId: reversal._id }), ...(reason && { reason }),
+    }], { session });
+    if (lot.expiresAt <= now) await takeBackLot(back._id, 'expire', session);
+  }
+  return true;
+}
+
+// ---- Staff: cancelling a redemption (points used by mistake) ----
+
+// A redemption is the redeem movements sharing one entry (one per claim it paid), named by its
+// first movement's id: the id in the entry's eventKey LOYALTY_REDEEM:<id>.
+const redemptionGroupKey = (m) => String(m.journalEntryId || m._id);
+
+// The redemptions of an order, newest first: { id, points, usd, createdAt, by (staff id), canceled }
+async function orderRedemptions(orderId) {
+  if (!mongoose.isValidObjectId(orderId)) return [];
+  const movements = await LoyaltyPoint.find({ kind: 'redeem', orderId: oid(orderId) })
+    .select('points journalEntryId createdAt createdBy canceledAt canceledBy cancelReason').sort({ _id: 1 }).lean();
+  const restored = new Set((await LoyaltyPoint.find({ kind: 'restore', orderId: oid(orderId) }).select('eventKey').lean())
+    .map((lot) => lot.eventKey.split(':')[1]));
+  const groups = new Map();
+  for (const m of movements) {
+    const key = redemptionGroupKey(m);
+    if (!groups.has(key)) groups.set(key, { first: m, points: 0, back: false });
+    const group = groups.get(key);
+    group.points += m.points;
+    if (restored.has(String(m._id))) group.back = true;
+  }
+  return [...groups.values()].reverse().map(({ first, points, back }) => ({
+    id: String(first._id),
+    points,
+    usd: points / 100,
+    createdAt: first.createdAt,
+    by: first.createdBy ? String(first.createdBy) : null,
+    // Given back with its cancelled order: no staff and no reason of their own
+    canceled: first.canceledAt
+      ? { at: first.canceledAt, by: first.canceledBy ? String(first.canceledBy) : null, reason: first.cancelReason || '' }
+      : (back ? { at: null, by: null, reason: 'إلغاء الطلبية' } : null),
+  }));
+}
+
+// Staff undo a redemption of an order with a required reason: its whole entry is reversed (every
+// claim it paid is owed again) and the points come back with their lots' original expiry, as when
+// the order is cancelled. Needs live accounting, like redeeming. Returns { restored, usd }.
+async function cancelRedemption({ orderId, redemptionId, reason } = {}, { session, req } = {}) {
+  assertInTransaction(session);
+  if (!mongoose.isValidObjectId(orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
+  const order = await Order.findById(orderId).setOptions({ withDeleted: true }).select('user orderId').session(session).lean();
+  if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
+  // Every movement of the customer's points waits for the one before it
+  if (order.user) await lockWalletOwner(order.user, session);
+  const why = String(reason || '').trim();
+  if (!why) throw new ErrorHandler(400, 'اكتب سبب إلغاء النقاط');
+  if (!(await getConfig()).settings?.liveEnabled) throw new ErrorHandler(400, 'الترحيل المحاسبي الحي غير مفعّل؛ لا يمكن إلغاء النقاط الآن');
+  const notFound = () => new ErrorHandler(404, 'النقاط المستعملة غير موجودة في هذه الطلبية');
+  if (!mongoose.isValidObjectId(redemptionId)) throw notFound();
+  const named = await LoyaltyPoint.findOne({ _id: oid(redemptionId), kind: 'redeem', orderId: order._id }).session(session).lean();
+  if (!named) throw notFound();
+  const movements = named.journalEntryId
+    ? await LoyaltyPoint.find({ kind: 'redeem', orderId: order._id, journalEntryId: named.journalEntryId }).sort({ _id: 1 }).session(session).lean()
+    : [named];
+  const eventKey = `LOYALTY_REDEEM_CANCEL:${movements[0]._id}`;
+  const done = movements.some((m) => m.canceledAt)
+    || await JournalEntry.exists({ eventKey }).session(session)
+    || await LoyaltyPoint.exists({ $or: movements.map((m) => ({ eventKey: { $regex: `^${restorePrefix(m._id)}` } })) }).session(session);
+  if (done) throw new ErrorHandler(400, 'تم إلغاء هذه النقاط من قبل');
+  await lockClaimAllocations(movements.map((m) => m.arKey).filter(Boolean), session);
+  const now = new Date();
+  const reverse = { prefix: 'LOYALTY_REDEEM_CANCEL', reason: `إلغاء استعمال النقاط: ${why}`, user: req?.user };
+  for (const movement of movements) await restoreRedemption(movement, now, session, { reason: why, reverse });
+  await LoyaltyPoint.updateMany({ _id: { $in: movements.map((m) => m._id) } },
+    { $set: { canceledAt: now, cancelReason: why, ...(req?.user?._id && { canceledBy: req.user._id }) } }, { session });
+  await syncOrder(order._id, { session, user: req?.user });
+  const points = movements.reduce((sum, m) => sum + m.points, 0);
+  return { restored: points, usd: points / 100 };
 }
 
 // Staff mark an order "no points" (a reason is required) or switch it back. Marking takes back at
@@ -868,7 +949,7 @@ async function settleOrders({ now = new Date() } = {}) {
 }
 
 module.exports = {
-  awardDue, summaryOf, orderLoyalty, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
+  awardDue, summaryOf, orderLoyalty, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
   claimLedger, claimState, earnKey, loyaltyStartDate,
 };

@@ -43,6 +43,11 @@ earn, `earnPoints(billed − redeemed on the claim)`, with what they wait for: "
   that can be used, and after choosing: total, points discount, remaining to pay.
 - Points are a payment method, not a discount: the invoice and its revenue stay the same.
   Points never go into the wallet (the wallet is real, reconciled money).
+- Staff can cancel a use of points on an order (used by mistake, the customer asked, the invoice
+  changed) with a required reason (`loyalty` or `invoices_payments`): the whole redemption is
+  undone (every claim it paid is owed again), the points come back with their original expiry
+  (already expired: back and expired at once), and the order's payments show who used and who
+  cancelled them. Any money paid alongside stays as it is. Once only.
 
 ## Expiry
 - Each batch of points expires 365 days after it was earned (or added) and is not given back.
@@ -133,4 +138,4 @@ Two new accounts, added at startup to existing databases:
 | Earn, or staff add | loyalty_expense (office of the order, or of the customer for an adjustment) | loyalty_points (customer) |
 | Redeem | loyalty_points (customer) | customer_receivable (the claims paid, `arKey` lines) |
 | Expire, staff deduct, or taken back (no points / cancel) | loyalty_points (customer) | loyalty_expense |
-| Cancelled order after redeeming | the redemption entry is reversed; the points come back with their original expiry |
+| Cancelled order after redeeming, or staff cancel a redemption | the redemption entry is reversed (`LOYALTY_RESTORE:<id>`, or `LOYALTY_REDEEM_CANCEL:<id>` for staff); the points come back with their original expiry |

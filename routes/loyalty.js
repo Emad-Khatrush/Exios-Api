@@ -30,6 +30,7 @@ router.get('/user/:id/loyalty', protect, allow(['loyalty', 'clients'], employees
 router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty']), loyalty.adjust);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
 router.post('/order/:id/loyalty/redeem', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.redeem);
+router.post('/order/:id/loyalty/redemptions/:redemptionId/cancel', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.cancelRedemption);
 // At a delivery: whoever delivers or takes payments (accountants too), as the delivery routes allow
 router.get('/user/:id/loyalty/delivery-quote', protect, allow(['loyalty', 'delivery', 'invoices_payments'], deliveryStaffOnly), loyalty.deliveryQuote);
 router.post('/user/:id/loyalty/redeem-packages', protect, allow(['loyalty', 'delivery', 'invoices_payments'], deliveryStaffOnly), loyalty.redeemPackages);
