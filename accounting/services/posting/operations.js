@@ -249,6 +249,11 @@ async function postStatement(statementId, options = {}) {
     return { reversed: reversals.length };
   }
   if (await JournalEntry.exists({ eventKey }).session(session)) return { skipped: 'already posted' };
+  // Given back to the wallet before it ever reached the books (its posting had failed, owner
+  // 2026-11-17): the give-back reversed nothing, so posting it now would never be taken back
+  const givenBack = await AccountingEvent.exists({ type: 'statement', status: 'done',
+    'payload.reverses': { $in: [String(statement._id), statement._id] } }).session(session);
+  if (givenBack && !options.isHistorical) return { skipped: 'canceled before it was posted' };
 
   const { settings, offices } = await getConfig();
   const currency = CURRENCY_ALIASES[statement.currency] || statement.currency;
@@ -272,13 +277,16 @@ async function postStatement(statementId, options = {}) {
   const lines = [];
   let affectedKeys = [];
 
+  // The books are in dollar cents: an amount worth less than half a cent (0.01 LYD at 10.4, owner
+  // 2026-11-17) is carried at one cent, as for bank lines, instead of an entry with nothing to post
+  const atLeastCent = (usd) => (usd === 0 && minor > 0 ? 1 : usd);
   const walletIn = async () => {
-    const usd = await rates.toUsd(minor, currency, day, docRate);
+    const usd = atLeastCent(await rates.toUsd(minor, currency, day, docRate));
     lines.push(moneyLine(wallet, 'credit', minor, usd, { partnerId, label: statement.description }));
     return usd;
   };
   const walletOut = async () => {
-    const usd = await valueOut(wallet, minor, { day, docRate: docRate, rates, partnerId });
+    const usd = atLeastCent(await valueOut(wallet, minor, { day, docRate: docRate, rates, partnerId }));
     lines.push(moneyLine(wallet, 'debit', minor, usd, { partnerId, label: statement.description }));
     return usd;
   };
@@ -352,13 +360,13 @@ async function postStatement(statementId, options = {}) {
     }
     const cashUsd = cash.currency === currency
       ? await valueOut(cash, minor, { day, docRate: docRate, rates, ...(fromCustody && { employeeId }) })
-      : await rates.toUsd(minor, currency, day, docRate);
+      : atLeastCent(await rates.toUsd(minor, currency, day, docRate));
     lines.push(moneyLine(cash, 'credit', minor, cashUsd, { office, label: statement.description, ...(fromCustody && { employeeId: oid(employeeId) }) }));
   } else {
     const recoveryBalance = target.balanceId && await Balance.findById(target.balanceId).select('status sourceBalance').session(session).lean();
     if (recoveryBalance?.status === 'lost' && recoveryBalance.sourceBalance) {
       await walletOut();
-      const recoveredUsd = await rates.toUsd(minor, currency, day, docRate);
+      const recoveredUsd = atLeastCent(await rates.toUsd(minor, currency, day, docRate));
       const originalDebt = await Balance.findById(recoveryBalance.sourceBalance).select('accountingKind').session(session).lean();
       const serviceRecovery = originalDebt?.accountingKind === 'service_sale';
       const recoveryAccount = await resolveAccount(serviceRecovery ? 'revenue_services' : 'bad_debt_expense');
@@ -368,7 +376,7 @@ async function postStatement(statementId, options = {}) {
     // WALLET_PAYMENT: the claims are paid at the operation's rate; the wallet gives up the
     // dinars at its average rate; the difference is an exchange gain/loss (spec 2.4, E8)
     await walletOut();
-    const atRate = await rates.toUsd(minor, currency, day, docRate);
+    const atRate = atLeastCent(await rates.toUsd(minor, currency, day, docRate));
     const keys = await resolveClaimKeys(options.target, session);
     if (keys.length) {
       await lockClaimAllocations(keys, session);
