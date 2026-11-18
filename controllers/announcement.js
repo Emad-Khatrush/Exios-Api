@@ -18,6 +18,8 @@ module.exports.createAnnouncements = async (req, res, next) => {
       description
     })
     res.status(200).json(announcement);
+    // To every customer's phone with notifications on, after the answer (it never fails the request)
+    require('../utils/customerPush').announcement(description);
   } catch (error) {
     return next(new ErrorHandler(404, error.message));
   }

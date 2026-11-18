@@ -45,11 +45,21 @@ const DEAD = ['messaging/registration-token-not-registered', 'messaging/invalid-
  *   url: the page of the client app the tap opens; tag: a newer notification with the same tag
  *   replaces the older one on the phone instead of stacking.
  */
-async function sendToUsers(userIds, { title, body, url = '/home', tag = '' }) {
+async function sendToUsers(userIds, message) {
+  if (!getMessaging() || !userIds?.length) return { sent: 0 };
+  return sendTo({ user: { $in: userIds } }, message);
+}
+
+// Every device that turned notifications on (an announcement from the office). Never throws.
+async function sendToAll(message) {
+  if (!getMessaging()) return { sent: 0 };
+  return sendTo({}, message);
+}
+
+async function sendTo(filter, { title, body, url = '/home', tag = '' }) {
   const fcm = getMessaging();
-  if (!fcm || !userIds?.length) return { sent: 0 };
   try {
-    const rows = await PushToken.find({ user: { $in: userIds } }).select('token').lean();
+    const rows = await PushToken.find(filter).select('token').lean();
     const tokens = [...new Set(rows.map((r) => r.token))];
     if (!tokens.length) return { sent: 0 };
 
@@ -75,4 +85,4 @@ async function sendToUsers(userIds, { title, body, url = '/home', tag = '' }) {
   }
 }
 
-module.exports = { sendToUsers, isPushOn };
+module.exports = { sendToUsers, sendToAll, isPushOn };

@@ -11,11 +11,14 @@ exports.update = async (req, res, next) => {
     const reason = String(req.body.reason || '').trim();
     if (req.body.blocked && !reason) throw new ErrorHandler(400, 'Enter a reason before blocking shipping.');
     if (reason.length > 500) throw new ErrorHandler(400, 'The reason must be 500 characters or fewer.');
+    // Whether shipping was stopped or let go by this request (not a reason edited on a stopped order)
+    let switched = false;
     const outcome = await runInTransaction(async session => {
       const order = await Order.findOne({ _id: req.params.id, isDeleted: { $ne: true }, isCanceled: { $ne: true } }).session(session);
       if (!order) throw new ErrorHandler(404, 'Order not found or no longer active.');
       const nextReason = req.body.blocked ? reason : '';
       if (!!order.shippingBlocked === req.body.blocked && (order.shippingBlockReason || '') === nextReason) return order;
+      switched = !!order.shippingBlocked !== req.body.blocked;
       // The same order row is locked when packages enter a trip. A simultaneous
       // block/add operation cannot commit from a stale snapshot.
       const updated = await Order.findByIdAndUpdate(order._id, {
@@ -33,5 +36,11 @@ exports.update = async (req, res, next) => {
       return updated;
     });
     res.json({ shippingBlocked: !!outcome.shippingBlocked, shippingBlockReason: outcome.shippingBlockReason || '' });
+    // The customer's phone, after the answer (it never fails the request)
+    if (switched) {
+      const customerPush = require('../utils/customerPush');
+      if (outcome.shippingBlocked) customerPush.shippingBlocked(outcome, outcome.shippingBlockReason);
+      else customerPush.shippingResumed(outcome);
+    }
   } catch (error) { next(error); }
 };

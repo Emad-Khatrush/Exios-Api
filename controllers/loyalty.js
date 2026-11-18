@@ -146,7 +146,10 @@ module.exports.customerLevel = handle(async (req) => {
 
 module.exports.setLevel = handle(async (req) => {
   const user = await findCustomer(req.params.id);
-  await runInTransaction((session) => levels.setLevel({ userId: user._id, level: String(req.body?.level || ''), reason: req.body?.reason }, { session, req }));
+  const change = await runInTransaction((session) => levels.setLevel({ userId: user._id, level: String(req.body?.level || ''), reason: req.body?.reason }, { session, req }));
+  // Raised by staff: the customer hears of it (a lowered level is not announced)
+  const { rankOf } = require('../accounting/services/loyalty/tiers');
+  if (change && rankOf(change.to) > rankOf(change.from)) await require('../utils/customerPush').levelUp(user._id, change.to);
   return staffLevel(user._id);
 });
 

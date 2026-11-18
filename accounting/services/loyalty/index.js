@@ -182,6 +182,8 @@ async function postEarnEntry(movement, orderNumber, session) {
 async function awardDue({ now = new Date() } = {}) {
   let awarded = 0;
   let failed = 0;
+  // What each customer earned in this run, told on their phone once the run is done
+  const earnedBy = new Map(); // userId -> { points, level }
   const start = loyaltyStartDate();
   if (start) {
     const ledger = await claimLedger({ $in: [/^PUR:/, /^SHP:/] });
@@ -191,12 +193,26 @@ async function awardDue({ now = new Date() } = {}) {
     const eligible = new Set((await Order.find({ _id: { $in: orderIds }, createdAt: { $gte: start } }).select('_id').lean()).map((o) => String(o._id)));
     for (const arKey of candidates.filter((key) => eligible.has(parseKey(key).orderId))) {
       try {
-        if (await runInTransaction((session) => earnClaim(arKey, now, session))) awarded += 1;
+        const earned = await runInTransaction((session) => earnClaim(arKey, now, session));
+        if (earned) {
+          awarded += 1;
+          const mine = earnedBy.get(earned.userId) || { points: 0, level: null };
+          mine.points += earned.points;
+          if (earned.movedTo) mine.level = earned.movedTo;
+          earnedBy.set(earned.userId, mine);
+        }
       } catch (error) {
         failed += 1;
         console.error(`[loyalty] ${arKey}: ${error.message}`);
       }
     }
+  }
+  // After every earn has committed: one notification per customer for the points, and one for a
+  // new level reached on the way
+  const customerPush = require('../../../utils/customerPush');
+  for (const [userId, { points, level }] of earnedBy) {
+    await customerPush.pointsEarned(userId, points);
+    if (level) await customerPush.levelUp(userId, level);
   }
   const { settings } = await getConfig();
   if (settings?.liveEnabled) {
@@ -234,7 +250,8 @@ async function postMovementEntry(movement, session) {
   return null;
 }
 
-// Earns one claim if it is still due, read again inside the transaction. True when it earned.
+// Earns one claim if it is still due, read again inside the transaction. When it earned:
+// { userId, points, movedTo } (movedTo: the new level when the customer moved up), else false.
 async function earnClaim(arKey, now, session) {
   const eventKey = earnKey(arKey);
   if (await LoyaltyPoint.exists({ eventKey }).session(session)) return false;
@@ -259,8 +276,8 @@ async function earnClaim(arKey, now, session) {
   const { settings } = await getConfig();
   if (settings?.liveEnabled) await postEarnEntry(movement.toObject(), order.orderId, session);
   // Reaching the next level happens at once, in the same transaction
-  await require('./levels').refreshLevel(order.user, { now, session });
-  return true;
+  const moved = await require('./levels').refreshLevel(order.user, { now, session });
+  return { userId: String(order.user), points, movedTo: moved?.to || null };
 }
 
 // A customer's points: balance (unexpired lots), expiring soon, on the way, and totals
