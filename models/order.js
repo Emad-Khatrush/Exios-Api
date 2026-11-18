@@ -157,6 +157,8 @@ const orderSchema = new Schema({
   orderStatusChangedAt: Date,
   // The last orderStatus the customer got a phone notification for (utils/orderPush.js)
   pushedStatus: Number,
+  // The highest stage ever announced for it (utils/orderPush.js): each stage is announced once
+  pushedRank: Number,
   isFinished: {
     type: Boolean,
     default: false

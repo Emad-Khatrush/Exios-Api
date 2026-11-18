@@ -4,9 +4,10 @@
 // Every screen that moves an order sets orderStatus, and the order model stamps
 // orderStatusChangedAt whichever way it was written (save, updateOne, updateMany, pipelines). So
 // instead of a call in each of those screens, this watches that stamp once a minute: an order whose
-// status differs from the last one notified (pushedStatus) gets one notification, after its
-// transaction has committed. Claiming pushedStatus with a conditional update means two servers, or
-// two ticks, never notify the same change twice.
+// status differs from the last one seen (pushedStatus) gets one notification, after its transaction
+// has committed, when it reached a stage higher than any announced before (pushedRank): each stage
+// of an order is announced once ever, however often staff move it back and forth. Claiming
+// pushedStatus with a conditional update means two servers, or two ticks, never notify twice.
 const Order = require('../models/order');
 const { sendToUsers, isPushOn } = require('./push');
 const { officeList } = require('./offices');
@@ -77,25 +78,26 @@ async function tick() {
     orderStatusChangedAt: { $gte: since },
     $expr: { $ne: ['$orderStatus', { $ifNull: ['$pushedStatus', -1] }] },
   })
-    .select('_id orderId user orderStatus pushedStatus isPayment isCanceled unsureOrder isFinished shippingBlocked placedAt shipment.method shipment.fromWhere')
+    .select('_id orderId user orderStatus pushedStatus pushedRank isPayment isCanceled unsureOrder isFinished shippingBlocked placedAt shipment.method shipment.fromWhere')
     .limit(BATCH)
     .lean();
 
   const groups = new Map(); // `${user}|${stage}` -> orders
   for (const order of orders) {
+    const stage = stageOf(order);
+    // The highest stage ever announced for this order (pushedRank; older orders only had the last
+    // status announced). A stage is news once: moving back and forward again sends nothing.
+    const before = order.pushedRank ?? (order.pushedStatus == null ? -1 : STAGE_RANK[stageOf({ ...order, orderStatus: order.pushedStatus })]);
+    const quiet = !order.user || order.isCanceled || order.unsureOrder || order.isFinished || order.shippingBlocked;
+    const announce = !quiet && stage !== 'waiting' && STAGE_RANK[stage] > before;
+
     // Claim the change first: whoever sets pushedStatus is the one who announces it
     const claim = await Order.updateOne(
       { _id: order._id, orderStatus: order.orderStatus, pushedStatus: order.pushedStatus ?? { $exists: false } },
-      { $set: { pushedStatus: order.orderStatus } },
+      { $set: { pushedStatus: order.orderStatus, pushedRank: announce ? STAGE_RANK[stage] : before } },
       { timestamps: false },
     );
-    if (!claim.modifiedCount) continue;
-
-    const stage = stageOf(order);
-    const before = order.pushedStatus == null ? -1 : STAGE_RANK[stageOf({ ...order, orderStatus: order.pushedStatus })];
-    const quiet = !order.user || order.isCanceled || order.unsureOrder || order.isFinished || order.shippingBlocked;
-    // Only forward moves are news; a status put back by staff is recorded silently
-    if (quiet || stage === 'waiting' || STAGE_RANK[stage] <= before) continue;
+    if (!claim.modifiedCount || !announce) continue;
 
     const key = `${order.user}|${stage}`;
     if (!groups.has(key)) groups.set(key, []);
