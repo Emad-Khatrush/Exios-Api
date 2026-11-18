@@ -280,6 +280,15 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         throw new ErrorHandler(400, errorMessages.BALANCE_RATE_ZERO);
       }
 
+      // Dinars on a dollar debt are counted no lower than the accountant's rate minus the tolerance,
+      // as order wallet payments are (nothing is enforced while no dinar rate has been entered)
+      if (currency === 'LYD' && existingBalance.currency === 'USD') {
+        const limits = await require('../accounting/services/walletRate').lydRateLimits(createdAt);
+        if (limits && rateValue < limits.minimum - 1e-9) {
+          throw new ErrorHandler(400, `سعر الصرف ${rateValue} أقل من المسموح. سعر المحاسب ${limits.rate}، وأقل سعر مسموح ${limits.minimum}`);
+        }
+      }
+
       const wallet = await Wallets.findOne({
         user: existingBalance.owner._id,
         currency,
