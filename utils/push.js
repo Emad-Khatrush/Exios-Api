@@ -2,7 +2,9 @@
 //
 // Needs the service account of the Firebase project the client app uses ("exios-client"):
 //   FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY (\n escaped, like GOOGLE_SECRET_KEY)
-// Without them, or on QA, nothing is sent and nothing fails: the callers carry on as before.
+// Without them nothing is sent and nothing fails: the callers carry on as before.
+// QA sends only when PUSH_ON_QA=1 as well: its tokens are the testers' own devices (they turned
+// notifications on in the QA client app), never real customers'.
 const PushToken = require('../models/pushToken');
 const { isQa } = require('./qaEnvironment');
 
@@ -10,9 +12,13 @@ let messaging; // undefined: not tried yet, null: push is off
 const getMessaging = () => {
   if (messaging !== undefined) return messaging;
   const { FIREBASE_PROJECT_ID: projectId, FIREBASE_CLIENT_EMAIL: clientEmail, FIREBASE_PRIVATE_KEY: key } = process.env;
-  if (isQa || !projectId || !clientEmail || !key) {
+  if (isQa && process.env.PUSH_ON_QA !== '1') {
     messaging = null;
-    if (!isQa) console.log('[push] off: FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY are not set');
+    return messaging;
+  }
+  if (!projectId || !clientEmail || !key) {
+    messaging = null;
+    console.log('[push] off: FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY are not set');
     return messaging;
   }
   try {
