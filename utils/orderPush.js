@@ -36,9 +36,11 @@ const officeName = async (code) => {
 // "طلبيتك" / "3 طلبيات" / "11 طلبية": how many, the plain way customers say it
 const countText = (n) => (n === 1 ? 'طلبيتك' : n <= 10 ? `${n} طلبيات` : `${n} طلبية`);
 
-// Which order: its number only (the owner, 2026-11-18: the goods' name isn't needed)
+// Which order: its number (the goods' name isn't needed). Two orders: both numbers. More than two:
+// none, the title already says how many (the owner, 2026-11-18)
 const whichText = (orders) => {
-  if (orders.length > 1) return `أرقام: ${orders.map((o) => o.orderId).slice(0, 3).join('، ')}${orders.length > 3 ? '…' : ''}`;
+  if (orders.length > 2) return '';
+  if (orders.length === 2) return `أرقام: ${orders.map((o) => o.orderId).join('، ')}`;
   return `رقم الطلبية: ${orders[0].orderId}`;
 };
 
@@ -48,19 +50,21 @@ const messageFor = async (stage, orders) => {
   const n = orders.length;
   const many = n > 1;
   const which = whichText(orders);
+  // The numbers line (when there is one), then what happens next
+  const body = (next) => (which ? `${which}\n${next}` : next);
   const from = orders[0].shipment?.fromWhere;
   const sea = orders.every((o) => o.shipment?.method === 'sea');
   switch (stage) {
     case 'bought':
-      return { title: `🛍️ ${many ? `اشترينا ${countText(n)}` : 'اشترينا طلبيتك'}`, body: `${which}\nنبلغك عندما تصل إلى مخزننا.` };
+      return { title: `🛍️ ${many ? `اشترينا ${countText(n)}` : 'اشترينا طلبيتك'}`, body: body('نبلغك عندما تصل إلى مخزننا.') };
     case 'warehouse':
-      return { title: `📦 ${countText(n)} وصلت مخزننا${from ? ` في ${from}` : ''}`, body: `${which}\nستُشحن إلى ليبيا مع أقرب رحلة.` };
+      return { title: `📦 ${countText(n)} وصلت مخزننا${from ? ` في ${from}` : ''}`, body: body('ستُشحن إلى ليبيا مع أقرب رحلة.') };
     case 'onTheWay':
-      return { title: `${sea ? '🚢' : '✈️'} ${countText(n)} في الطريق إلى ليبيا`, body: `${which}\nنبلغك عندما تصبح جاهزة للاستلام.` };
+      return { title: `${sea ? '🚢' : '✈️'} ${countText(n)} في الطريق إلى ليبيا`, body: body('نبلغك عندما تصبح جاهزة للاستلام.') };
     case 'ready': {
       const offices = [...new Set(orders.map((o) => o.placedAt))];
       const where = offices.length === 1 ? await officeName(offices[0]) : 'المكتب';
-      return { title: `✅ ${countText(n)} جاهزة للاستلام`, body: `${which}\nتقدر تستلمها الآن من ${where}.` };
+      return { title: `✅ ${countText(n)} جاهزة للاستلام`, body: body(`تقدر تستلمها الآن من ${where}.`) };
     }
     default:
       return null;
