@@ -37,6 +37,11 @@ const siteVisitSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    // Seen in the installed app (opened from the home screen), not in a browser tab
+    app: {
+      type: Boolean,
+      default: false,
+    },
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

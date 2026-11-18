@@ -36,6 +36,7 @@ const getUserIdFromRequest = (req) => {
 module.exports.recordVisit = async (req, res) => {
   try {
     const { sessionId, path, referrer } = req.body;
+    const app = req.body.app === true;
     if (!sessionId || !path) {
       return res.status(400).json({ message: 'sessionId and path are required' });
     }
@@ -52,6 +53,7 @@ module.exports.recordVisit = async (req, res) => {
       browser: parseBrowser(userAgent),
       ip,
       user: getUserIdFromRequest(req),
+      app,
     });
 
     res.status(201).json({ ok: true });
