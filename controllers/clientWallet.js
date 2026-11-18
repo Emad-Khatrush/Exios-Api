@@ -42,8 +42,9 @@ function kindOf(row) {
 // from the balance before its first movement ever recorded, the same way the admin's statement does
 // (exios-admin utils/methods recalculateStatementTotals), so its figures match.
 const DEBT_LINE_STATUSES = ['open', 'overdue', 'closed', 'waitingApproval'];
-// Said as what it is to the customer: the part of an order's value not paid yet
-const DEBT_NAMES = { invoice: 'متبقي من قيمة الشراء', receivedGoods: 'متبقي من قيمة الشحن', general: 'مبلغ متبقي' };
+// A purchase or shipping invoice left on credit is called a debt, plainly (owner's request
+// 2026-11-19), and so are its payments and its closing
+const DEBT_NAMES = { invoice: 'دين فاتورة شراء', receivedGoods: 'دين فاتورة شحن', general: 'دين' };
 
 async function debtLinesOf(userId, currency) {
   const debts = await Balance.find({ owner: userId, balanceType: 'debt', currency, status: { $in: DEBT_LINE_STATUSES } })
@@ -61,12 +62,12 @@ async function debtLinesOf(userId, currency) {
         ? (rate > 0 ? Number(payment.amount || 0) / rate : 0)
         : Number(payment.amount || 0);
       if (!(inDebtCurrency > 0)) return;
-      lines.push({ id: `P${payment._id || `${debt._id}-${i}`}`, at: payment.createdAt || debt.createdAt, description: `سداد المتبقي${order}`,
+      lines.push({ id: `P${payment._id || `${debt._id}-${i}`}`, at: payment.createdAt || debt.createdAt, description: `سداد دين${order}`,
         amount: round2(inDebtCurrency), direction: 'in', kind: 'debtPayment' });
     });
     const writtenOff = Number(debt.manualClosure?.writtenOffAmount || 0);
     if (writtenOff > 0) {
-      lines.push({ id: `W${debt._id}`, at: debt.manualClosure.closedAt || debt.createdAt, description: `تسوية المتبقي${order}`,
+      lines.push({ id: `W${debt._id}`, at: debt.manualClosure.closedAt || debt.createdAt, description: `تسوية دين${order}`,
         amount: round2(writtenOff), direction: 'in', kind: 'writeOff' });
     }
   }
