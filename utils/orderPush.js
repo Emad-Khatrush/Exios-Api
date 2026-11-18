@@ -36,15 +36,14 @@ const officeName = async (code) => {
 // "طلبيتك" / "3 طلبيات" / "11 طلبية": how many, the plain way customers say it
 const countText = (n) => (n === 1 ? 'طلبيتك' : n <= 10 ? `${n} طلبيات` : `${n} طلبية`);
 
-// Which order: what the customer calls it (the product), then its number
+// Which order: its number only (the owner, 2026-11-18: the goods' name isn't needed)
 const whichText = (orders) => {
-  if (orders.length > 1) return orders.map((o) => o.productName || o.orderId).slice(0, 3).join('، ') + (orders.length > 3 ? '…' : '');
-  const o = orders[0];
-  return o.productName ? `${o.productName} (${o.orderId})` : `رقم ${o.orderId}`;
+  if (orders.length > 1) return `أرقام: ${orders.map((o) => o.orderId).slice(0, 3).join('، ')}${orders.length > 3 ? '…' : ''}`;
+  return `رقم الطلبية: ${orders[0].orderId}`;
 };
 
 // One notification per customer and stage: several orders that moved together become one message.
-// Title: what happened, in a few words. Body: which order, then what happens next or what to do.
+// Title: what happened, in a few words. Body: the order's number, then what happens next or what to do.
 const messageFor = async (stage, orders) => {
   const n = orders.length;
   const many = n > 1;
@@ -74,7 +73,7 @@ async function tick() {
     orderStatusChangedAt: { $gte: since },
     $expr: { $ne: ['$orderStatus', { $ifNull: ['$pushedStatus', -1] }] },
   })
-    .select('_id orderId productName user orderStatus pushedStatus isPayment isCanceled unsureOrder isFinished shippingBlocked placedAt shipment.method shipment.fromWhere')
+    .select('_id orderId user orderStatus pushedStatus isPayment isCanceled unsureOrder isFinished shippingBlocked placedAt shipment.method shipment.fromWhere')
     .limit(BATCH)
     .lean();
 
