@@ -7,6 +7,8 @@
 const { sendToUsers, sendToAll } = require('./push');
 
 const pointsText = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');
+// An order number inside Arabic text, isolated left-to-right so "1853-5650" is not flipped
+const ltr = (text) => `⁦${text}⁩`;
 const usdText = (points) => `${((Number(points) || 0) / 100).toFixed(2)} $`;
 
 const safely = async (what, send) => {
@@ -65,7 +67,7 @@ async function shippingBlocked(order, reason) {
   if (!order?.user) return { sent: 0 };
   return safely('shipping blocked', () => sendToUsers([order.user], {
     title: '⚠️ أوقفنا شحن طلبيتك',
-    body: `رقم الطلبية: ${order.orderId}\n${reason ? `السبب: ${reason}\n` : ''}تواصل مع المكتب لمعرفة التفاصيل.`,
+    body: `رقم الطلبية: ${ltr(order.orderId)}\n${reason ? `السبب: ${reason}\n` : ''}تواصل مع المكتب لمعرفة التفاصيل.`,
     url: `/order/${order._id}`,
     tag: `order-${order._id}`,
   }));
@@ -75,7 +77,7 @@ async function shippingResumed(order) {
   if (!order?.user) return { sent: 0 };
   return safely('shipping resumed', () => sendToUsers([order.user], {
     title: '✅ رجع شحن طلبيتك',
-    body: `رقم الطلبية: ${order.orderId}\nتُشحن الآن مع أقرب رحلة.`,
+    body: `رقم الطلبية: ${ltr(order.orderId)}\nتُشحن الآن مع أقرب رحلة.`,
     url: `/order/${order._id}`,
     tag: `order-${order._id}`,
   }));

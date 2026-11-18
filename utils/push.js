@@ -6,6 +6,7 @@
 // QA sends only when PUSH_ON_QA=1 as well: its tokens are the testers' own devices (they turned
 // notifications on in the QA client app), never real customers'.
 const PushToken = require('../models/pushToken');
+const inbox = require('./inbox');
 const { isQa } = require('./qaEnvironment');
 
 let messaging; // undefined: not tried yet, null: push is off
@@ -40,18 +41,22 @@ const DEAD = ['messaging/registration-token-not-registered', 'messaging/invalid-
 
 /**
  * Sends one notification to every device of these customers. Never throws.
+ * Saved first to their notifications page in the app (utils/inbox.js), whether or not push is on.
  * @param {Array} userIds
  * @param {{ title: string, body: string, url?: string, tag?: string }} message
  *   url: the page of the client app the tap opens; tag: a newer notification with the same tag
  *   replaces the older one on the phone instead of stacking.
  */
 async function sendToUsers(userIds, message) {
+  await inbox.saveForUsers(userIds, message);
   if (!getMessaging() || !userIds?.length) return { sent: 0 };
   return sendTo({ user: { $in: userIds } }, message);
 }
 
 // Every device that turned notifications on (an announcement from the office). Never throws.
+// Saved once for every customer's notifications page first.
 async function sendToAll(message) {
+  await inbox.saveForAll(message);
   if (!getMessaging()) return { sent: 0 };
   return sendTo({}, message);
 }

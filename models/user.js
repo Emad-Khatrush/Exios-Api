@@ -109,6 +109,8 @@ const userSchema = new Schema({
   // Loyalty points switched off for this customer (partners on a special price): set by staff with a
   // reason; absent = on. accounting/services/loyalty/index.js (isOff / setOff)
   loyaltyOff: { at: Date, by: { type: Schema.Types.ObjectId, ref: 'User' }, reason: String },
+  // The client app's notifications page was last opened then: what came after it is unread
+  notificationsSeenAt: Date,
   loyaltyTier: {
     level: String,
     since: Date,

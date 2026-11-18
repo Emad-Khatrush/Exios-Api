@@ -37,12 +37,16 @@ const officeName = async (code) => {
 // "طلبيتك" / "3 طلبيات" / "11 طلبية": how many, the plain way customers say it
 const countText = (n) => (n === 1 ? 'طلبيتك' : n <= 10 ? `${n} طلبيات` : `${n} طلبية`);
 
+// An order number inside Arabic text, isolated left-to-right (LRI … PDI) so "1853-5650" is not shown
+// as "5650-1853" on the phone or on the app's notifications page
+const ltr = (text) => `⁦${text}⁩`;
+
 // Which order: its number (the goods' name isn't needed). Two orders: both numbers. More than two:
 // none, the title already says how many (the owner, 2026-11-18)
 const whichText = (orders) => {
   if (orders.length > 2) return '';
-  if (orders.length === 2) return `أرقام: ${orders.map((o) => o.orderId).join('، ')}`;
-  return `رقم الطلبية: ${orders[0].orderId}`;
+  if (orders.length === 2) return `أرقام: ${orders.map((o) => ltr(o.orderId)).join('، ')}`;
+  return `رقم الطلبية: ${ltr(orders[0].orderId)}`;
 };
 
 // One notification per customer and stage: several orders that moved together become one message.
@@ -116,8 +120,10 @@ async function tick() {
 
 let timer = null;
 let running = false;
+// Runs whether or not phone notifications are on: every stage also goes to the customer's
+// notifications page in the app (utils/push.js saves it there first)
 function startOrderPush() {
-  if (timer || !isPushOn()) return;
+  if (timer) return;
   timer = setInterval(async () => {
     if (running) return;
     running = true;
@@ -130,7 +136,7 @@ function startOrderPush() {
     }
   }, TICK_MS);
   if (timer.unref) timer.unref();
-  console.log('[push] order notifications on');
+  console.log(`[push] order notifications on (phones: ${isPushOn() ? 'on' : 'off'})`);
 }
 
 module.exports = { startOrderPush, tick, stageOf, messageFor };

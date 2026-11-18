@@ -456,7 +456,7 @@ db.once("open", () => {
   console.log('MongoDB connected');
   initAccounting();
   require('./controllers/goals').prepareGoals();
-  // Phone notifications when a shipment moves on (only when Firebase credentials are set)
+  // When a shipment moves on: to the customer's notifications page, and their phone when Firebase is set
   require('./utils/orderPush').startOrderPush();
   initializeWhatsAppClient();
 });
@@ -509,6 +509,7 @@ app.use('/api', staffAccess);
 app.use('/api', feedback);
 app.use('/api', loyalty);
 app.use('/api', require('./routes/push'));
+app.use('/api', require('./routes/clientNotifications'));
 
 // Whoever scans this QR links their phone as the company's sending number: staff only
 app.get('/api/get-qr-code', protect, staffOnly, (req, res) => {
