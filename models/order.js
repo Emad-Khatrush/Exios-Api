@@ -155,6 +155,8 @@ const orderSchema = new Schema({
   },
   // Separate from edited notes and payments: they must not restart the stage's age.
   orderStatusChangedAt: Date,
+  // The last orderStatus the customer got a phone notification for (utils/orderPush.js)
+  pushedStatus: Number,
   isFinished: {
     type: Boolean,
     default: false
@@ -506,6 +508,8 @@ orderSchema.index({ shippingBlocked: 1, isFinished: 1, createdAt: -1 }, { partia
 // Date ranges read by the sales goals dashboard (sales by invoice date, packages by arrival date)
 orderSchema.index({ createdAt: 1 });
 orderSchema.index({ user: 1, createdAt: -1 });
+// The push watcher's "what moved in the last hours", once a minute
+orderSchema.index({ orderStatusChangedAt: 1 });
 orderSchema.index({ 'paymentList.deliveredPackages.arrivedAt': 1 });
 
 module.exports = mongoose.model("Order", orderSchema);
