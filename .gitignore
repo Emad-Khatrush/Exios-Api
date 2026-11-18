@@ -37,3 +37,6 @@ backups/
 /tests/
 *.test.js
 *.spec.js
+
+# Firebase Admin key for push notifications (never commit)
+firebase-service-account.json
