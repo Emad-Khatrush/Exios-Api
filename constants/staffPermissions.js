@@ -49,7 +49,12 @@ const PERMISSION_GROUPS = [
       { key: 'marketing', label: 'التسويق والحملات', hint: 'العملاء غير النشطين وإرسال حملات واتساب' },
       { key: 'goals', label: 'إدارة أهداف المبيعات', hint: 'تحديد أهداف المكاتب ومكافآتها' },
       { key: 'analytics', label: 'إحصاءات الزيارات', hint: 'زيارات الموقع والتطبيق' },
-      { key: 'loyalty', label: 'نقاط الولاء', hint: 'برنامج نقاط العملاء وإعداداته وسجل النقاط' },
+      // The Loyalty page and the customer's Points tab are separate, and so are the two operations on
+      // a customer's points (owner, 2026-11-18)
+      { key: 'loyalty', label: 'صفحة Loyalty', hint: 'صفحة الولاء: العملاء ونقاطهم، المستويات وتقاريرها، واستثناء طلبية من النقاط' },
+      { key: 'loyalty_customer', label: 'تبويب Points في ملف العميل', hint: 'رصيد العميل ومستواه ونقاطه في الطريق وسجل نقاطه' },
+      { key: 'loyalty_adjust', label: 'إضافة وخصم نقاط العميل', hint: 'إضافة نقاط لعميل أو خصمها منه، مع كتابة السبب' },
+      { key: 'loyalty_level', label: 'تغيير مستوى العميل', hint: 'ترقية العميل أو تنزيل مستواه يدوياً، مع كتابة السبب' },
       { key: 'ratings', label: 'تقييمات العملاء', hint: 'تقييمات العملاء للطلبيات' },
     ],
   },

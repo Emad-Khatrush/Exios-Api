@@ -8,6 +8,10 @@ const loyaltyPointSchema = new Schema({
   user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   kind: { type: String, enum: ['earn', 'add', 'restore', 'redeem', 'deduct', 'expire', 'revoke'], required: true },
   points: { type: Number, required: true, min: 1, validate: { validator: Number.isInteger, message: 'points must be a whole number' } },
+  // An earn only: the points before the level's multiplier (what counts toward the level) and the
+  // level the customer had when it was earned
+  basePoints: Number,
+  tier: String,
   arKey: String,
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   office: String,

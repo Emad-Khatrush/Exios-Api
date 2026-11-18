@@ -83,7 +83,8 @@ async function runMonthlySchedules() {
 async function runLoyaltyJobs() {
   const loyalty = require('./services/loyalty');
   const results = {};
-  for (const [name, job] of [['award', loyalty.awardDue], ['expire', loyalty.expireDue], ['settle', loyalty.settleOrders]]) {
+  const levels = require('./services/loyalty/levels');
+  for (const [name, job] of [['award', loyalty.awardDue], ['expire', loyalty.expireDue], ['settle', loyalty.settleOrders], ['levels', levels.reviewDue]]) {
     try {
       results[name] = await job();
       const counts = Object.entries(results[name]).filter(([, value]) => value);

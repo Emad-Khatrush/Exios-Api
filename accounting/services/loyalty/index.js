@@ -22,6 +22,7 @@ const { openBalances, resolveClaimKeys, splitOverClaims, claimLines } = require(
 const { resolveAccount } = require('../roles');
 const { purchaseKey, shipmentKey, parseKey, CLAIM_EVENTS } = require('../claims/keys');
 const { earnPoints, redeemCap, takeOldest, EXPIRY_DAYS, SOON_DAYS } = require('./rules');
+const tiers = require('./tiers');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LOTS = ['earn', 'add', 'restore'];
@@ -67,6 +68,41 @@ async function redeemedOn(arKeys, session) {
   return new Map(rows.map((row) => [row._id, Math.max(row.points, 0)]));
 }
 
+// The loyalty level of each customer (no level saved: the first level), by user id
+async function levelsOf(userIds, session) {
+  const ids = [...new Set(userIds.filter(Boolean).map(String))].filter((id) => mongoose.isValidObjectId(id));
+  if (!ids.length) return new Map();
+  const users = await mongoose.connection.collection('users')
+    .find({ _id: { $in: ids.map(oid) } }, { projection: { 'loyaltyTier.level': 1 }, session }).toArray();
+  return new Map(users.map((u) => [String(u._id), u.loyaltyTier?.level || tiers.TIERS[0].key]));
+}
+
+// Points switched off for a customer (owner, 2026-11-18: partners on a special price, for whom the
+// points would be a loss). While off: nothing earns (an order that becomes due is marked "no points"
+// with OFF_REASON, so switching back on never earns for it), nothing is redeemed, and the client app
+// hides the points. The balance stays as it was (and still expires) and returns when switched on.
+const OFF_REASON = 'نقاط العميل موقوفة';
+async function isOff(userId, session) {
+  if (!userId || !mongoose.isValidObjectId(String(userId))) return false;
+  const user = await mongoose.connection.collection('users').findOne({ _id: oid(userId) }, { projection: { 'loyaltyOff.at': 1 }, session });
+  return !!user?.loyaltyOff?.at;
+}
+
+// Staff switch a customer's points off (a reason is required) or back on
+async function setOff({ userId, off, reason } = {}, { session, req } = {}) {
+  assertInTransaction(session);
+  if (!mongoose.isValidObjectId(userId)) throw new ErrorHandler(400, 'حدد العميل');
+  const why = String(reason || '').trim();
+  if (off && !why) throw new ErrorHandler(400, 'اكتب سبب إيقاف النقاط');
+  const users = mongoose.connection.collection('users');
+  const user = await users.findOne({ _id: oid(userId) }, { projection: { _id: 1 }, session });
+  if (!user) throw new ErrorHandler(404, 'العميل غير موجود');
+  await lockWalletOwner(user._id, session);
+  if (off) await users.updateOne({ _id: user._id }, { $set: { loyaltyOff: { at: new Date(), by: req?.user?._id || null, reason: why } } }, { session });
+  else await users.updateOne({ _id: user._id }, { $unset: { loyaltyOff: 1 } }, { session });
+  return { off: !!off };
+}
+
 const isEligibleOrder = (order, start = loyaltyStartDate()) => !!order && start instanceof Date && !order.isCanceled && !order.loyalty?.noPoints
   && !!order.createdAt && new Date(order.createdAt) >= start;
 
@@ -105,12 +141,15 @@ async function pendingOf(orders, session) {
     LoyaltyPoint.distinct('arKey', { kind: 'earn', arKey: { $in: keys } }).session(session || null),
   ]);
   const earnedSet = new Set(earned);
+  // Shown with the customer's level today (what they would earn if it were paid now)
+  const levels = await levelsOf(eligible.map((order) => order.user), session);
   const rows = [];
   for (const order of eligible) {
     for (const arKey of orderKeys(order)) {
       const state = claimState({ arKey, order, ledger: ledger.get(arKey), redeemed: redeemed.get(arKey), earned: earnedSet.has(arKey) });
       if (!state || state === 'earned') continue;
-      rows.push({ orderId: order._id, orderNumber: order.orderId, arKey, points: state.points, waitingFor: state.waitingFor });
+      const points = tiers.multiplied(state.points, levels.get(String(order.user)));
+      rows.push({ orderId: order._id, orderNumber: order.orderId, arKey, points, waitingFor: state.waitingFor });
     }
   }
   return rows;
@@ -204,12 +243,23 @@ async function earnClaim(arKey, now, session) {
   const redeemed = (await redeemedOn([arKey], session)).get(arKey);
   const state = claimState({ arKey, order, ledger, redeemed, earned: false });
   if (!state || state === 'earned' || state.waitingFor !== 'processing') return false;
+  if (await isOff(order.user, session)) {
+    await Order.updateOne({ _id: order._id, 'loyalty.noPoints': { $ne: true } }, { $set: { loyalty: { noPoints: true, reason: OFF_REASON, at: now } } }, { session });
+    return false;
+  }
+  // The customer's level multiplies the points and sets how long they last; the level counts the
+  // points before the multiplier (basePoints)
+  const level = (await levelsOf([order.user], session)).get(String(order.user));
+  const tier = tiers.tierOf(level);
+  const points = tiers.multiplied(state.points, level);
   const [movement] = await LoyaltyPoint.create([{
-    user: order.user, kind: 'earn', points: state.points, remaining: state.points, arKey, orderId: order._id,
-    office: await officeOf(order), earnedAt: now, expiresAt: new Date(now.getTime() + EXPIRY_DAYS * DAY_MS), eventKey,
+    user: order.user, kind: 'earn', points, remaining: points, basePoints: state.points, tier: tier.key, arKey, orderId: order._id,
+    office: await officeOf(order), earnedAt: now, expiresAt: new Date(now.getTime() + tier.expiryDays * DAY_MS), eventKey,
   }], { session });
   const { settings } = await getConfig();
   if (settings?.liveEnabled) await postEarnEntry(movement.toObject(), order.orderId, session);
+  // Reaching the next level happens at once, in the same transaction
+  await require('./levels').refreshLevel(order.user, { now, session });
   return true;
 }
 
@@ -228,11 +278,13 @@ async function summaryOf(userId) {
     { $match: { user } }, { $group: { _id: '$kind', points: { $sum: '$points' } } },
   ])).map((row) => [row._id, row.points]));
   const orders = await Order.find({ user, isCanceled: { $ne: true }, 'loyalty.noPoints': { $ne: true } }).select(ORDER_FIELDS).sort({ _id: 1 }).lean();
+  const off = await isOff(userId);
   return {
+    off,
     points,
     usd: points / 100,
     expiringSoon,
-    pending: await pendingOf(orders),
+    pending: off ? [] : await pendingOf(orders),
     earnedTotal: (totals.get('earn') || 0) + (totals.get('add') || 0),
     redeemedTotal: Math.max((totals.get('redeem') || 0) - (totals.get('restore') || 0), 0),
   };
@@ -314,8 +366,9 @@ async function quoteKeys(user, keys, session, now) {
   const owedCents = keys.reduce((sum, key) => sum + Math.max(ledger.get(key)?.open || 0, 0), 0);
   const usedOnTarget = keys.reduce((sum, key) => sum + (redeemed.get(key) || 0), 0);
   const balance = lots.reduce((sum, lot) => sum + lot.remaining, 0);
-  const maxPoints = Math.max(Math.min(balance, owedCents, redeemCap(billedCents, usedOnTarget)), 0);
-  return { lots, quote: { balance, maxPoints, owedCents, billedCents, usedOnTarget } };
+  const off = await isOff(user, session);
+  const maxPoints = off ? 0 : Math.max(Math.min(balance, owedCents, redeemCap(billedCents, usedOnTarget)), 0);
+  return { lots, quote: { balance, maxPoints, owedCents, billedCents, usedOnTarget, ...(off && { off: true }) } };
 }
 
 async function quoteOf({ userId, target }, session, now = new Date()) {
@@ -383,6 +436,7 @@ async function redeemOn(userId, points, quoteFor, { session, req } = {}) {
   if (userId) await lockWalletOwner(userId, session);
   const now = new Date();
   const { orders, keys, lots, quote } = await quoteFor(now);
+  if (quote.off) throw new ErrorHandler(400, 'نقاط هذا العميل موقوفة، لا يمكن الدفع بها');
   if (points > quote.balance) throw new ErrorHandler(400, 'رصيد النقاط لا يكفي');
   if (points > quote.owedCents) throw new ErrorHandler(400, 'النقاط المطلوبة أكثر من المبلغ المستحق على هذه الفاتورة');
   if (points > quote.maxPoints) throw new ErrorHandler(400, 'النقاط المطلوبة أكثر من المسموح على هذه الفاتورة');
@@ -598,22 +652,62 @@ async function restoreRedemption(redemption, now, session, { reason, reverse } =
 // first movement's id: the id in the entry's eventKey LOYALTY_REDEEM:<id>.
 const redemptionGroupKey = (m) => String(m.journalEntryId || m._id);
 
-// The redemptions of an order, newest first: { id, points, usd, createdAt, by (staff id), canceled }
+// The delivery invoice (not cancelled) holding a package of the order, as { id, referenceId }, by
+// package id. Points on a package handed over are given back only by cancelling that invoice from
+// the customer's invoices (owner's decision 2026-11-17): the invoice was priced net of them.
+async function deliveryInvoicesOf(order, movements, session) {
+  const packageIds = [...new Set(movements.map((m) => parseKey(m.arKey)).filter((key) => key.kind === 'shipment' && !key.domesticFee && !key.customsFee)
+    .map((key) => key.packageId))];
+  const received = new Set((order?.paymentList || []).filter((item) => item.status?.received).map((item) => String(item._id)));
+  const held = packageIds.filter((id) => received.has(id));
+  const found = new Map();
+  if (!held.length) return found;
+  const Invoices = require('../../../models/invoice');
+  const ids = held.flatMap((id) => (mongoose.isValidObjectId(id) ? [id, oid(id)] : [id]));
+  const invoices = await Invoices.find({ isCanceled: { $ne: true }, list: { $elemMatch: { orderId: order.orderId, packageId: { $in: ids }, canceledAt: { $exists: false } } } })
+    .select('referenceId list').sort({ _id: -1 }).session(session || null).lean();
+  for (const invoice of invoices) {
+    for (const pkg of invoice.list || []) {
+      const id = String(pkg.packageId || '');
+      if (pkg.orderId === order.orderId && !pkg.canceledAt && held.includes(id) && !found.has(id)) {
+        found.set(id, { id: String(invoice._id), referenceId: invoice.referenceId });
+      }
+    }
+  }
+  return found;
+}
+
+// The delivery invoice a redemption's packages were handed over in, or null
+function invoiceOfMovements(movements, invoices) {
+  for (const m of movements) {
+    const key = parseKey(m.arKey);
+    if (key.kind === 'shipment' && invoices.has(key.packageId)) return invoices.get(key.packageId);
+  }
+  return null;
+}
+
+// The redemptions of an order, newest first: { id, points, usd, createdAt, by (staff id), canceled,
+// invoice } — invoice: the delivery invoice it was handed over in (cancelled from there only)
 async function orderRedemptions(orderId) {
   if (!mongoose.isValidObjectId(orderId)) return [];
   const movements = await LoyaltyPoint.find({ kind: 'redeem', orderId: oid(orderId) })
-    .select('points journalEntryId createdAt createdBy canceledAt canceledBy cancelReason').sort({ _id: 1 }).lean();
+    .select('points arKey journalEntryId createdAt createdBy canceledAt canceledBy cancelReason').sort({ _id: 1 }).lean();
+  const order = movements.length
+    ? await Order.findById(orderId).setOptions({ withDeleted: true }).select('orderId paymentList._id paymentList.status.received').lean()
+    : null;
+  const invoices = await deliveryInvoicesOf(order, movements);
   const restored = new Set((await LoyaltyPoint.find({ kind: 'restore', orderId: oid(orderId) }).select('eventKey').lean())
     .map((lot) => lot.eventKey.split(':')[1]));
   const groups = new Map();
   for (const m of movements) {
     const key = redemptionGroupKey(m);
-    if (!groups.has(key)) groups.set(key, { first: m, points: 0, back: false });
+    if (!groups.has(key)) groups.set(key, { first: m, points: 0, back: false, movements: [] });
     const group = groups.get(key);
     group.points += m.points;
+    group.movements.push(m);
     if (restored.has(String(m._id))) group.back = true;
   }
-  return [...groups.values()].reverse().map(({ first, points, back }) => ({
+  return [...groups.values()].reverse().map(({ first, points, back, movements: own }) => ({
     id: String(first._id),
     points,
     usd: points / 100,
@@ -623,6 +717,7 @@ async function orderRedemptions(orderId) {
     canceled: first.canceledAt
       ? { at: first.canceledAt, by: first.canceledBy ? String(first.canceledBy) : null, reason: first.cancelReason || '' }
       : (back ? { at: null, by: null, reason: 'إلغاء الطلبية' } : null),
+    invoice: first.canceledAt || back ? null : invoiceOfMovements(own, invoices),
   }));
 }
 
@@ -632,7 +727,7 @@ async function orderRedemptions(orderId) {
 async function cancelRedemption({ orderId, redemptionId, reason } = {}, { session, req } = {}) {
   assertInTransaction(session);
   if (!mongoose.isValidObjectId(orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
-  const order = await Order.findById(orderId).setOptions({ withDeleted: true }).select('user orderId').session(session).lean();
+  const order = await Order.findById(orderId).setOptions({ withDeleted: true }).select('user orderId paymentList._id paymentList.status.received').session(session).lean();
   if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
   // Every movement of the customer's points waits for the one before it
   if (order.user) await lockWalletOwner(order.user, session);
@@ -651,6 +746,10 @@ async function cancelRedemption({ orderId, redemptionId, reason } = {}, { sessio
     || await JournalEntry.exists({ eventKey }).session(session)
     || await LoyaltyPoint.exists({ $or: movements.map((m) => ({ eventKey: { $regex: `^${restorePrefix(m._id)}` } })) }).session(session);
   if (done) throw new ErrorHandler(400, 'تم إلغاء هذه النقاط من قبل');
+  const invoice = invoiceOfMovements(movements, await deliveryInvoicesOf(order, movements, session));
+  if (invoice) {
+    throw new ErrorHandler(400, `هذه النقاط مستعملة في فاتورة التسليم رقم #0${invoice.referenceId}؛ تُلغى من فواتير العميل (Created Invoices) بإلغاء الفاتورة أو الشحنة`);
+  }
   await lockClaimAllocations(movements.map((m) => m.arKey).filter(Boolean), session);
   const now = new Date();
   const reverse = { prefix: 'LOYALTY_REDEEM_CANCEL', reason: `إلغاء استعمال النقاط: ${why}`, user: req?.user };
@@ -748,6 +847,25 @@ async function adjust({ userId, points, reason } = {}, { session, req } = {}) {
   if ((await getConfig()).settings?.liveEnabled) await postAdjustEntry(created.toObject(), session, req?.user);
 }
 
+// Points the system gives (a level's upgrade gift): an add lot like a staff addition,
+// once per eventKey, lasting as long as the customer's level keeps points. Returns the lot or null.
+async function grantGift({ userId, points, reason, eventKey, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  if (!(points > 0) || !eventKey) return null;
+  if (await LoyaltyPoint.exists({ eventKey }).session(session)) return null;
+  const customer = await mongoose.connection.collection('users').findOne({ _id: oid(userId) }, { projection: { city: 1, 'loyaltyTier.level': 1 }, session });
+  if (!customer) return null;
+  await lockWalletOwner(customer._id, session);
+  const office = await customerOffice(customer.city, session);
+  const days = tiers.tierOf(customer.loyaltyTier?.level).expiryDays;
+  const [created] = await LoyaltyPoint.create([{
+    user: customer._id, kind: 'add', points, remaining: points, office, reason, eventKey,
+    earnedAt: now, expiresAt: new Date(now.getTime() + days * DAY_MS),
+  }], { session });
+  if ((await getConfig()).settings?.liveEnabled) await postAdjustEntry(created.toObject(), session);
+  return created;
+}
+
 // Every customer with a balance or a history: their balance (unexpired lots), what expires within
 // 30 days and their last movement. Totals cover every customer (the liability), whatever the filter.
 async function customersWithPoints({ search, sort = 'balance', expiringOnly = false, page, limit } = {}) {
@@ -786,7 +904,7 @@ async function customersWithPoints({ search, sort = 'balance', expiringOnly = fa
   const [result] = await LoyaltyPoint.aggregate([
     ...perCustomer,
     { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'customer',
-      pipeline: [{ $project: { customerId: 1, phone: 1, firstName: 1, lastName: 1 } }] } },
+      pipeline: [{ $project: { customerId: 1, phone: 1, firstName: 1, lastName: 1, 'loyaltyTier.level': 1 } }] } },
     { $unwind: { path: '$customer', preserveNullAndEmptyArrays: true } },
     { $set: {
       'customer.name': { $trim: { input: { $concat: [{ $ifNull: ['$customer.firstName', ''] }, ' ', { $ifNull: ['$customer.lastName', ''] }] } } },
@@ -813,6 +931,7 @@ async function customersWithPoints({ search, sort = 'balance', expiringOnly = fa
       usd: row.points / 100,
       expiringSoon: row.soonPoints > 0 ? { points: row.soonPoints, at: row.soonAt } : null,
       lastMovementAt: row.lastMovementAt,
+      level: row.customer?.loyaltyTier?.level || tiers.TIERS[0].key,
     })),
     total: result?.count?.[0]?.total || 0,
   };
@@ -943,7 +1062,7 @@ async function overview({ now = new Date(), recent = 8 } = {}) {
 // The points of each of a customer's orders, for the orders list: { [orderId]: { earned, pending } }
 // for the orders that earned (earn less revoke) or have points on the way (as in summaryOf)
 async function ordersPointsOf(userId) {
-  if (!userId || !mongoose.isValidObjectId(userId)) return {};
+  if (!userId || !mongoose.isValidObjectId(userId) || await isOff(userId)) return {};
   const user = oid(userId);
   const [movements, orders] = await Promise.all([
     LoyaltyPoint.aggregate([
@@ -1026,5 +1145,5 @@ async function settleOrders({ now = new Date() } = {}) {
 module.exports = {
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };

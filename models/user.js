@@ -103,6 +103,28 @@ const userSchema = new Schema({
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   walletExchangeVersion: { type: Number, default: 0 },
+  // Loyalty level (accounting/services/loyalty/tiers.js). No level saved = the first level.
+  // `reviewAt`: when the level is checked again (a year after it was reached or kept).
+  // `seen`: the last level the app celebrated. `history`: every change, newest last.
+  // Loyalty points switched off for this customer (partners on a special price): set by staff with a
+  // reason; absent = on. accounting/services/loyalty/index.js (isOff / setOff)
+  loyaltyOff: { at: Date, by: { type: Schema.Types.ObjectId, ref: 'User' }, reason: String },
+  loyaltyTier: {
+    level: String,
+    since: Date,
+    reviewAt: Date,
+    seen: String,
+    manual: { reason: String, by: { type: Schema.Types.ObjectId, ref: 'User' }, at: Date },
+    history: [{
+      _id: false,
+      from: String,
+      to: String,
+      at: Date,
+      why: { type: String, enum: ['upgrade', 'review', 'manual'] },
+      reason: String,
+      by: { type: Schema.Types.ObjectId, ref: 'User' },
+    }],
+  },
   // What a staff member who is not an admin may open (constants/staffPermissions.js), set by an admin
   // or an owner in Settings > Permissions. `kind` is the type of work (data entry, cashier...). No kind
   // yet: the person keeps the access their role gave before permissions existed
@@ -114,6 +136,15 @@ const userSchema = new Schema({
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
 }, { timestamps: true });
+
+// Sent as JSON (the account in the apps), a switched-off points flag keeps only its date: why and by
+// whom are staff notes (staff read them from GET user/:id/loyalty → offInfo)
+userSchema.set('toJSON', {
+  transform(doc, ret) {
+    if (ret.loyaltyOff) ret.loyaltyOff = ret.loyaltyOff.at ? { at: ret.loyaltyOff.at } : undefined;
+    return ret;
+  },
+});
 
 userSchema.methods.matchPassword = async function(password) {
   return await bcrypt.compare(password, this.password);

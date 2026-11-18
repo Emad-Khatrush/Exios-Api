@@ -6,6 +6,8 @@ const Order = require('../models/order');
 const User = require('../models/user');
 const ErrorHandler = require('../utils/errorHandler');
 const loyalty = require('../accounting/services/loyalty');
+const levels = require('../accounting/services/loyalty/levels');
+const tiers = require('../accounting/services/loyalty/tiers');
 const { runInTransaction } = require('../accounting/services/transaction');
 
 const HISTORY = { limit: loyalty.HISTORY_PAGE_SIZE };
@@ -18,10 +20,10 @@ const asList = (value) => {
 };
 const asPoints = (value) => (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '') ? Number(value) : NaN);
 
-// A customer's summary with the first page of their history
+// A customer's summary with the first page of their history and their level
 async function customerPoints(userId) {
-  const [summary, history] = await Promise.all([loyalty.summaryOf(userId), loyalty.historyOf(userId, { page: 1, ...HISTORY })]);
-  return { ...summary, history };
+  const [summary, history, level] = await Promise.all([loyalty.summaryOf(userId), loyalty.historyOf(userId, { page: 1, ...HISTORY }), levels.levelOf(userId)]);
+  return { ...summary, history, level };
 }
 
 // The claims the app shows a quote for: the invoice of a purchase order, every package of a shipment
@@ -60,14 +62,24 @@ const handle = (fn) => async (req, res, next) => {
 
 // ---- Customers (their own data only) ----
 
-module.exports.mine = handle((req) => customerPoints(req.user._id));
+// A customer whose points are switched off gets nothing but { off: true }: the app hides the points
+module.exports.mine = handle(async (req) => (await loyalty.isOff(req.user._id) ? { off: true } : customerPoints(req.user._id)));
 
-module.exports.myHistory = handle((req) => loyalty.historyOf(req.user._id, { page: req.query.page, type: req.query.type, ...HISTORY }));
+module.exports.myHistory = handle(async (req) => (await loyalty.isOff(req.user._id)
+  ? { rows: [], total: 0 }
+  : loyalty.historyOf(req.user._id, { page: req.query.page, type: req.query.type, ...HISTORY })));
 
 module.exports.myOrders = handle((req) => loyalty.ordersPointsOf(req.user._id));
 
+// Every level with its perks (customers and staff)
+module.exports.tiers = handle(async () => ({ tiers: tiers.publicTiers() }));
+
+// The app showed the celebration of the customer's new level
+module.exports.levelSeen = handle((req) => levels.markSeen(req.user._id));
+
 module.exports.myOrder = handle(async (req) => {
   const order = await findOrder(req.params.id, { user: req.user._id });
+  if (await loyalty.isOff(req.user._id)) return { off: true };
   return orderPoints(order, wholeOrderTarget(order));
 });
 
@@ -84,14 +96,61 @@ module.exports.customers = handle((req) => loyalty.customersWithPoints({
   limit: req.query.limit,
 }));
 
+// Staff see the level's history with the names of who changed it by hand
+async function staffLevel(userId) {
+  const level = await levels.levelOf(userId, { withHistory: true });
+  const ids = [...new Set([level.manual?.by, ...(level.history || []).map((h) => h.by && String(h.by))].filter(Boolean))];
+  const staff = new Map((await User.find({ _id: { $in: ids } }).select('firstName lastName').lean())
+    .map((u) => [String(u._id), [u.firstName, u.lastName].filter(Boolean).join(' ')]));
+  return {
+    ...level,
+    manual: level.manual && { ...level.manual, by: staff.get(level.manual.by) || level.manual.by || '' },
+    history: (level.history || []).map((h) => ({ ...h, by: h.by ? staff.get(String(h.by)) || String(h.by) : '' })),
+  };
+}
+
 module.exports.customer = handle(async (req) => {
   const user = await findCustomer(req.params.id);
-  const [summary, history] = await Promise.all([
+  const [summary, history, level] = await Promise.all([
     loyalty.summaryOf(user._id),
     loyalty.historyOf(user._id, { page: req.query.page, limit: req.query.limit || HISTORY.limit, type: req.query.type }),
+    staffLevel(user._id),
   ]);
-  return { ...summary, history };
+  return { ...summary, history, level, offInfo: summary.off ? await offInfo(user._id) : null };
 });
+
+// Who switched the customer's points off, when and why (staff only)
+async function offInfo(userId) {
+  const user = await User.findById(userId).select('loyaltyOff').lean();
+  const off = user?.loyaltyOff;
+  if (!off?.at) return null;
+  const staff = off.by ? await User.findById(off.by).select('firstName lastName').lean() : null;
+  return { at: off.at, reason: off.reason || '', by: staff ? [staff.firstName, staff.lastName].filter(Boolean).join(' ') : null };
+}
+
+// Switch a customer's points off (with a reason) or back on
+module.exports.setOff = handle(async (req) => {
+  const user = await findCustomer(req.params.id);
+  await runInTransaction((session) => loyalty.setOff({ userId: user._id, off: req.body?.off === true, reason: req.body?.reason }, { session, req }));
+  const [summary, history, level] = await Promise.all([
+    loyalty.summaryOf(user._id), loyalty.historyOf(user._id, { page: 1, ...HISTORY }), staffLevel(user._id),
+  ]);
+  return { ...summary, history, level, offInfo: summary.off ? await offInfo(user._id) : null };
+});
+
+// Just the level (badges on the customer and delivery screens)
+module.exports.customerLevel = handle(async (req) => {
+  const user = await findCustomer(req.params.id);
+  return levels.levelOf(user._id);
+});
+
+module.exports.setLevel = handle(async (req) => {
+  const user = await findCustomer(req.params.id);
+  await runInTransaction((session) => levels.setLevel({ userId: user._id, level: String(req.body?.level || ''), reason: req.body?.reason }, { session, req }));
+  return staffLevel(user._id);
+});
+
+module.exports.levelsReport = handle(() => levels.report());
 
 module.exports.adjust = handle(async (req) => {
   const user = await findCustomer(req.params.id);

@@ -23,12 +23,20 @@ router.get('/client/loyalty', protect, isClient, loyalty.mine);
 router.get('/client/loyalty/history', protect, isClient, loyalty.myHistory);
 router.get('/client/loyalty/orders', protect, isClient, loyalty.myOrders);
 router.get('/client/order/:id/loyalty', protect, isClient, loyalty.myOrder);
+router.get('/client/loyalty/tiers', protect, isClient, loyalty.tiers);
+router.post('/client/loyalty/level/seen', protect, isClient, loyalty.levelSeen);
 
 // Staff
 router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);
 router.get('/loyalty/overview', protect, allow(['loyalty']), loyalty.overview);
-router.get('/user/:id/loyalty', protect, allow(['loyalty', 'clients'], employeesOnly), loyalty.customer);
-router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty']), loyalty.adjust);
+// Loyalty levels: the list for every staff screen, and the report for the points staff
+router.get('/loyalty/tiers', protect, anyStaff(employeesOnly), loyalty.tiers);
+router.get('/loyalty/levels/report', protect, allow(['loyalty']), loyalty.levelsReport);
+router.get('/user/:id/loyalty/level', protect, anyStaff(employeesOnly), loyalty.customerLevel);
+router.put('/user/:id/loyalty/level', protect, allow(['loyalty_level']), loyalty.setLevel);
+router.get('/user/:id/loyalty', protect, allow(['loyalty_customer', 'loyalty_adjust', 'loyalty_level', 'clients'], employeesOnly), loyalty.customer);
+router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty_adjust']), loyalty.adjust);
+router.put('/user/:id/loyalty/off', protect, allow(['loyalty_adjust']), loyalty.setOff);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
 // Same access as the order page (any staff member who can open it), but a 403 for the rest
 router.get('/order/:id/loyalty/paid', protect, anyStaff(employeesOnly), loyalty.paid);

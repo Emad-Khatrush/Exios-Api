@@ -1,7 +1,8 @@
 const express = require('express');
 const wallet = require('../controllers/wallet');
 const walletExchange = require('../controllers/walletExchange');
-const { protect, allowAdminsAndEmployee, allowAdminsAndAccountants, isAdmin, canManageStatements } = require('../middleware/check-auth');
+const { protect, allowAdminsAndEmployee, allowAdminsAndAccountants, isAdmin, canManageStatements, isClient } = require('../middleware/check-auth');
+const clientWallet = require('../controllers/clientWallet');
 const { allow, anyStaff } = require('../middleware/permissions');
 
 const router  = express.Router();
@@ -55,4 +56,8 @@ router.route('/statements/latest')
 router.route('/statements/deleted')
       .get(protect, isAdmin, wallet.getDeletedStatements)
       
+// The customer's own wallet in the client app: balances, debts, what is coming, and the movements
+router.get('/client/wallet', protect, isClient, clientWallet.summary);
+router.get('/client/wallet/statement', protect, isClient, clientWallet.statement);
+
 module.exports = router;
