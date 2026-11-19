@@ -69,4 +69,20 @@ function dayRange(fromDay, toDay) {
   };
 }
 
-module.exports = { countryKey, claimScope, matches, bestPromotion, promotionsAround, dayRange };
+// The higher of the level's multiplier and the offer's, never both (owner, 2026-11-19). The offer
+// is named only when it is what decided the multiplier.
+function multiplierFor(levelKey, promo) {
+  const levelPct = require('./tiers').tierOf(levelKey).multiplierPct;
+  if (promo && promo.multiplierPct > levelPct) {
+    return { pct: promo.multiplierPct, promotion: { id: promo._id, name: promo.name, multiplierPct: promo.multiplierPct } };
+  }
+  return { pct: levelPct, promotion: null };
+}
+
+// Points of a claim of `order`: its base points under the best offer the claim gets, or the level
+const pointsWith = (basePoints, levelKey, arKey, order, promotions) => {
+  const { pct, promotion } = multiplierFor(levelKey, bestPromotion(promotions, claimScope(arKey, order), order?.createdAt));
+  return { points: Math.floor((basePoints * pct) / 100), promotion };
+};
+
+module.exports = { countryKey, claimScope, matches, bestPromotion, promotionsAround, dayRange, multiplierFor, pointsWith };

@@ -12,6 +12,8 @@ const loyaltyPointSchema = new Schema({
   // level the customer had when it was earned
   basePoints: Number,
   tier: String,
+  // An earn only: the points offer that decided the multiplier (spec 2026-11-19), when one did
+  promotion: { _id: false, id: { type: Schema.Types.ObjectId, ref: 'LoyaltyPromotion' }, name: String, multiplierPct: Number },
   arKey: String,
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   office: String,

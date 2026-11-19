@@ -23,12 +23,14 @@ const { resolveAccount } = require('../roles');
 const { purchaseKey, shipmentKey, parseKey, CLAIM_EVENTS } = require('../claims/keys');
 const { earnPoints, redeemCap, takeOldest, EXPIRY_DAYS, SOON_DAYS } = require('./rules');
 const tiers = require('./tiers');
+const promotions = require('./promotions');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LOTS = ['earn', 'add', 'restore'];
 const earnKey = (arKey) => `LOYALTY_EARN:${arKey}`;
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
-const ORDER_FIELDS = 'orderId user placedAt createdAt isRemittance isCanceled loyalty paymentList._id paymentList.status.received';
+// shipment and package method: which points offer a claim gets (promotions.js)
+const ORDER_FIELDS = 'orderId user placedAt createdAt isRemittance isCanceled loyalty paymentList._id paymentList.status.received shipment.method shipment.fromWhere paymentList.deliveredPackages.shipmentMethod';
 const WRITEOFF_EVENTS = ['CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY'];
 
 // Orders placed from this day earn points (env LOYALTY_START_DATE, an ISO date). Unset or invalid:
@@ -141,15 +143,17 @@ async function pendingOf(orders, session) {
     LoyaltyPoint.distinct('arKey', { kind: 'earn', arKey: { $in: keys } }).session(session || null),
   ]);
   const earnedSet = new Set(earned);
-  // Shown with the customer's level today (what they would earn if it were paid now)
+  // Shown with the customer's level today (what they would earn if it were paid now), or the
+  // points offer the order was created in when that is higher
   const levels = await levelsOf(eligible.map((order) => order.user), session);
+  const offers = await promotions.promotionsAround(eligible.map((order) => order.createdAt), session);
   const rows = [];
   for (const order of eligible) {
     for (const arKey of orderKeys(order)) {
       const state = claimState({ arKey, order, ledger: ledger.get(arKey), redeemed: redeemed.get(arKey), earned: earnedSet.has(arKey) });
       if (!state || state === 'earned') continue;
-      const points = tiers.multiplied(state.points, levels.get(String(order.user)));
-      rows.push({ orderId: order._id, orderNumber: order.orderId, arKey, points, waitingFor: state.waitingFor });
+      const { points, promotion } = promotions.pointsWith(state.points, levels.get(String(order.user)), arKey, order, offers);
+      rows.push({ orderId: order._id, orderNumber: order.orderId, arKey, points, waitingFor: state.waitingFor, ...(promotion && { promotion }) });
     }
   }
   return rows;
@@ -268,9 +272,11 @@ async function earnClaim(arKey, now, session) {
   // points before the multiplier (basePoints)
   const level = (await levelsOf([order.user], session)).get(String(order.user));
   const tier = tiers.tierOf(level);
-  const points = tiers.multiplied(state.points, level);
+  // A points offer the order was created in multiplies instead, when it is higher (spec 2026-11-19)
+  const offers = await promotions.promotionsAround([order.createdAt], session);
+  const { points, promotion } = promotions.pointsWith(state.points, level, arKey, order, offers);
   const [movement] = await LoyaltyPoint.create([{
-    user: order.user, kind: 'earn', points, remaining: points, basePoints: state.points, tier: tier.key, arKey, orderId: order._id,
+    user: order.user, kind: 'earn', points, remaining: points, basePoints: state.points, tier: tier.key, ...(promotion && { promotion }), arKey, orderId: order._id,
     office: await officeOf(order), earnedAt: now, expiresAt: new Date(now.getTime() + tier.expiryDays * DAY_MS), eventKey,
   }], { session });
   const { settings } = await getConfig();
@@ -310,10 +316,11 @@ async function summaryOf(userId) {
 // One order's points: earned, on the way, paid with points, or why it earns none
 async function orderLoyalty(orderId) {
   const order = await Order.findById(orderId).select(ORDER_FIELDS).lean();
-  const movements = await LoyaltyPoint.find({ orderId: oid(orderId) }).select('kind points arKey').lean();
+  const movements = await LoyaltyPoint.find({ orderId: oid(orderId) }).select('kind points arKey promotion').lean();
   const sum = (kind) => movements.filter((m) => m.kind === kind).reduce((total, m) => total + m.points, 0);
   const pendingRows = order ? await pendingOf([order]) : [];
   const pending = pendingRows.reduce((total, row) => total + row.points, 0);
+  const offer = movements.find((m) => m.kind === 'earn' && m.promotion?.id)?.promotion || pendingRows.find((r) => r.promotion)?.promotion;
   // Per package (shipment claims only): earned = earn less revoke on its key, pending as in pendingOf
   const packages = {};
   for (const pkg of order?.paymentList || []) {
@@ -329,6 +336,8 @@ async function orderLoyalty(orderId) {
     pending,
     redeemed: Math.max(sum('redeem') - sum('restore'), 0),
     noPoints: order?.loyalty?.noPoints ? { reason: order.loyalty.reason || '' } : null,
+    // The points offer of this order, from what it earned or what is on the way (absent when none)
+    ...(offer && { promotion: offer }),
   };
 }
 
@@ -983,7 +992,7 @@ async function historyOf(userId, { page, limit, type } = {}) {
   const user = oid(userId);
   const filter = kinds ? { user, kind: { $in: kinds } } : { user };
   const [movements, total, all] = await Promise.all([
-    LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt')
+    LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt promotion')
       .sort({ createdAt: -1, _id: -1 }).skip((paging.page - 1) * paging.limit).limit(paging.limit).lean(),
     LoyaltyPoint.countDocuments(filter),
     LoyaltyPoint.find({ user }).select('kind points createdAt').sort({ createdAt: 1, _id: 1 }).lean(),
@@ -1019,6 +1028,7 @@ async function historyOf(userId, { page, limit, type } = {}) {
       month: monthKey(m.createdAt),
       expiresAt: LOTS.includes(m.kind) ? m.expiresAt : undefined,
       balanceAfter: balanceAfter.get(String(m._id)) ?? 0,
+      ...(m.promotion?.id && { promotion: m.promotion }),
     })),
     total,
     months: pageMonths.map((month) => totals.get(month)),
