@@ -51,6 +51,9 @@ router.route('/account/update')
 router.route('/account/me')
       .get(protect, isClient, users.getMyAccount);
 
+router.route('/account/terms/accept')
+      .post(protect, isClient, users.acceptTerms);
+
 router.route('/account/passport/upload')
       .post(protect, isClient, upload.single('passportImage'), users.uploadPassport);
 

@@ -11,6 +11,9 @@ exports.errorMessages = {
   USER_ROLE_INVALID: 'user-role-invalid',
   PASSPORT_IMAGE_REQUIRED: 'passport-image-required',
   PASSPORT_UPLOAD_FAILED: 'passport-upload-failed',
+  // sign-up without agreeing to the terms, or agreeing to a version that is no longer the current one
+  TERMS_NOT_ACCEPTED: 'terms-not-accepted',
+  TERMS_VERSION_OUTDATED: 'terms-version-outdated',
   // too many wrong passwords: sign-in to this account is paused for a while
   ACCOUNT_LOCKED: 'account-locked',
   TOO_MANY_REQUESTS: 'too-many-requests',

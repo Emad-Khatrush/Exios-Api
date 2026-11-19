@@ -11,6 +11,7 @@ const Office = require('../models/office');
 const { generateString } = require('../middleware/helper');
 const UserStatement = require('../models/userStatement');
 const { uploadToGoogleCloud } = require('../utils/googleClould');
+const { TERMS_VERSION, acceptanceRecord, termsStatus } = require('../utils/termsAcceptance');
 
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -31,6 +32,7 @@ module.exports.createUser = async (req, res, next) => {
     if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
     if (!email || !password || !firstName || !lastName || !phone) return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     if (repeatedPassword !== password) return next(new ErrorHandler(400, errorMessages.PASSWORD_NOT_MATCH));
+    if (!isAgreeToTermsOfCompany) return next(new ErrorHandler(400, errorMessages.TERMS_NOT_ACCEPTED));
     const customerId = generateString(1, characters) + generateString(3, numbers);
     // Login matches the email in any letter case, so the same email in other case counts as taken
     const userFound = await User.findOne({ $or: [ { customerId }, { username: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } } ] });
@@ -49,6 +51,7 @@ module.exports.createUser = async (req, res, next) => {
       phone,
       city,
       isAgreeToTermsOfCompany,
+      termsAcceptance: [acceptanceRecord(req.body.termsVersion, 'signup', req)],
       username: email,
       password: hashedPassword,
       customerId,
@@ -185,12 +188,36 @@ module.exports.getApprovedPassportVerifications = async (req, res, next) => {
   }
 }
 
+// The account, with where it stands on the terms: the app asks again when the current version was
+// not agreed to yet
+const withTerms = (user) => ({ ...user.toObject(), terms: termsStatus(user) });
+
 module.exports.getMyAccount = async (req, res, next) => {
   try {
-    res.status(200).json(req.user);
+    res.status(200).json(withTerms(req.user));
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));
+  }
+}
+
+// The customer agrees to the current terms (asked after they changed). The version they were shown must
+// be the current one, so an app left open on older terms cannot record agreement to the new ones.
+// Agreeing again to the same version records nothing new.
+module.exports.acceptTerms = async (req, res, next) => {
+  try {
+    if (req.body?.version !== TERMS_VERSION) return next(new ErrorHandler(409, errorMessages.TERMS_VERSION_OUTDATED));
+    let user = req.user;
+    if (termsStatus(user).needsAcceptance) {
+      user = await User.findByIdAndUpdate(user._id, {
+        $set: { isAgreeToTermsOfCompany: true },
+        $push: { termsAcceptance: acceptanceRecord(TERMS_VERSION, 'prompt', req) },
+      }, { new: true, projection: { password: 0 } });
+    }
+    res.status(200).json(withTerms(user));
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
   }
 }
 

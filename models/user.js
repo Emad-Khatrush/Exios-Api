@@ -57,6 +57,17 @@ const userSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  // Every time the customer agreed to the company's terms: which version, how ('signup' or 'prompt'
+  // when asked again after a change), when, and from where. Kept so the agreement can be shown later;
+  // added to, never edited. See utils/termsAcceptance.
+  termsAcceptance: [{
+    _id: false,
+    version: String,
+    via: { type: String, enum: ['signup', 'prompt'] },
+    acceptedAt: Date,
+    ip: String,
+    userAgent: String,
+  }],
   roles: {
     isAdmin: {
       type: Boolean,
