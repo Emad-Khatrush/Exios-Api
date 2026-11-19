@@ -8,6 +8,7 @@ const { saveToGoogleCloud } = require('../utils/googleClould');
 const { KINDS, STATUSES, PRIORITIES, TOPICS } = Feedback;
 
 const MAX_IMAGES = 5;
+const MAX_ORDERS = 10;
 const text = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -69,7 +70,7 @@ async function nextNumber() {
 
 const fail = (next, error) => next(error instanceof ErrorHandler ? error : new ErrorHandler(500, error.message));
 
-// POST /client/feedback (multipart: kind, topic, subject, message, order | orderRef, images[])
+// POST /client/feedback (multipart: kind, topic, subject, message, orders[] | order | orderRef, images[])
 module.exports.create = async (req, res, next) => {
   try {
     const kind = KINDS.includes(req.body.kind) ? req.body.kind : null;
@@ -85,11 +86,21 @@ module.exports.create = async (req, res, next) => {
 
     let orderRef = kind === 'complaint' ? text(req.body.orderRef, 40) : '';
     let order = null;
+    let orders = [];
     if (kind === 'complaint') {
-      // Picked from the customer's list: kept only when the order is theirs
-      if (req.body.order && /^[a-f\d]{24}$/i.test(String(req.body.order))) {
-        const picked = await Order.findOne({ _id: req.body.order, user: req.user._id }, { orderId: 1 }).lean();
-        if (picked) { order = picked._id; orderRef = picked.orderId; }
+      // Picked from the customer's list (one or several): kept only when the order is theirs, in the
+      // order picked; order is the first and orderRef their numbers, so older screens still read it
+      const ids = [...new Set([].concat(req.body.orders || [], req.body.order || []).map(String))]
+        .filter((id) => /^[a-f\d]{24}$/i.test(id)).slice(0, MAX_ORDERS);
+      if (ids.length) {
+        const found = await Order.find({ _id: { $in: ids }, user: req.user._id }, { orderId: 1 }).lean();
+        const byId = new Map(found.map((o) => [String(o._id), o]));
+        const picked = ids.map((id) => byId.get(id)).filter(Boolean);
+        if (picked.length) {
+          orders = picked.map((o) => o._id);
+          order = orders[0];
+          orderRef = picked.map((o) => o.orderId).join('، ');
+        }
       }
       if (!order && orderRef) {
         const found = await Order.findOne({ user: req.user._id, orderId: new RegExp(`^${escapeRegex(orderRef)}$`, 'i') }, { _id: 1 }).lean();
@@ -112,6 +123,7 @@ module.exports.create = async (req, res, next) => {
           images,
           orderRef,
           order,
+          orders,
           priority: kind === 'complaint' ? 'normal' : 'low',
           history: [{ action: 'created', value: 'new', by: req.user._id }],
         });
@@ -174,12 +186,13 @@ module.exports.myOrders = async (req, res, next) => {
   try {
     const orders = await Order.find(
       { user: req.user._id, isCanceled: { $ne: true } },
-      { orderId: 1, productName: 1, createdAt: 1, isShipment: 1, isPayment: 1, isRemittance: 1, isFinished: 1, 'shipment.method': 1, 'shipment.fromWhere': 1 },
+      { orderId: 1, createdAt: 1, isShipment: 1, isPayment: 1, isRemittance: 1, isFinished: 1, 'shipment.method': 1, 'shipment.fromWhere': 1, 'paymentList.deliveredPackages.trackingNumber': 1 },
     ).sort({ createdAt: -1 }).limit(40).lean();
     res.json(orders.map((o) => ({
       _id: o._id,
       orderId: o.orderId,
-      productName: o.productName || '',
+      // The tracking numbers of its packages: how customers know their orders (not the goods' name)
+      trackingNumbers: (o.paymentList || []).map((p) => String(p?.deliveredPackages?.trackingNumber || '').trim()).filter(Boolean),
       createdAt: o.createdAt,
       kind: o.isRemittance ? 'remittance' : o.isPayment ? 'purchase' : 'shipping',
       method: o.shipment?.method || '',
@@ -204,6 +217,7 @@ module.exports.seen = async (req, res, next) => {
 const STAFF_POPULATE = [
   { path: 'user', select: 'firstName lastName customerId phone' },
   { path: 'order', select: 'orderId' },
+  { path: 'orders', select: 'orderId' },
   { path: 'assignedTo', select: 'firstName lastName' },
   { path: 'messages.by', select: 'firstName lastName' },
   { path: 'notes.by', select: 'firstName lastName' },

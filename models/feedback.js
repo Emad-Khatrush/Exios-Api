@@ -37,6 +37,8 @@ const feedbackSchema = new Schema({
   // The order number the customer typed or picked, and the order when it is theirs
   orderRef: { type: String, trim: true, default: '' },
   order: { type: Schema.Types.ObjectId, ref: 'Order', default: null },
+  // Every order the complaint is about, as picked (order is the first; orderRef their numbers)
+  orders: [{ type: Schema.Types.ObjectId, ref: 'Order' }],
   status: { type: String, enum: STATUSES, default: 'new', index: true },
   priority: { type: String, enum: PRIORITIES, default: 'normal' },
   assignedTo: { type: Schema.Types.ObjectId, ref: 'User', default: null },
