@@ -2272,7 +2272,10 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
       if (points > 0) {
         const packageIds = category === 'receivedGoods' ? (newList || []).map((p) => String(p?._id || p?.id || '')).filter(Boolean) : [];
         const target = { orderId: order._id, category, ...(packageIds.length && { packageIds }) };
-        await require('../accounting/services/loyalty').redeemInPayment({ userId: order.user, target, points, pointsOnly }, { session, req });
+        const loyaltyService = require('../accounting/services/loyalty');
+        // The cash of this payment first: points only for what it leaves (never an overpayment)
+        const moneyUsdCents = pointsOnly ? 0 : loyaltyService.moneyUsdCents(receivedAmount, currency, rate);
+        await loyaltyService.redeemInPayment({ userId: order.user, target, points, pointsOnly, moneyUsdCents }, { session, req });
         if (pointsOnly) return { points };
       }
       await Orders.updateOne({ _id: order._id }, { $inc: { accountingMutationVersion: 1 } }, { session });

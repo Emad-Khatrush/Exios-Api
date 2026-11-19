@@ -1036,7 +1036,10 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const userStatement = await runInTransaction(async (session) => {
     if (points > 0) {
       const target = await orderPointsTarget(id, orderId, category, list, session);
-      await require('../accounting/services/loyalty').redeemInPayment({ userId: id, target, points, pointsOnly }, { session, req });
+      const loyaltyService = require('../accounting/services/loyalty');
+      // The wallet money of this payment first: points only for what it leaves (never an overpayment)
+      const moneyUsdCents = pointsOnly ? 0 : loyaltyService.moneyUsdCents(amountValue, currency, rate);
+      await loyaltyService.redeemInPayment({ userId: id, target, points, pointsOnly, moneyUsdCents }, { session, req });
       if (pointsOnly) return null;
     }
     const withdrawalSettings = actionType === 'withdrawal' ? await require('../accounting/services/periodLock').lockPeriod(session) : null;

@@ -544,8 +544,19 @@ async function owedOnTarget(target, session) {
 
 // Pays `points` of an order's payment target (invoice → PUR, receivedGoods → the packages' SHP) in
 // the payment's transaction. `pointsOnly`: no money comes with them, so they must close the target.
-async function redeemInPayment({ userId, target, points, pointsOnly = false }, { session, req } = {}) {
+// `moneyUsdCents`: the money paid with the points, in US cents (owner's rule 2026-11-19): points only
+// cover what that money leaves, so a payment never pays more than is owed. Unknown (another
+// currency without a usable rate): not checked here.
+async function redeemInPayment({ userId, target, points, pointsOnly = false, moneyUsdCents }, { session, req } = {}) {
   if (!['invoice', 'receivedGoods'].includes(target?.category)) throw new ErrorHandler(400, 'النقاط تُستعمل فقط مع دفعة فاتورة الشراء أو الشحن');
+  if (Number.isFinite(moneyUsdCents) && moneyUsdCents > 0) {
+    const room = Math.max(0, (await owedOnTarget(target, session)) - Math.round(moneyUsdCents));
+    if (points > room) {
+      throw new ErrorHandler(400, room > 0
+        ? `النقاط تُستعمل فقط لتغطية المتبقي بعد الدفعة: حتى ${room} نقطة.`
+        : 'هذه الدفعة تغطي كامل المستحق، فلا تُستعمل معها نقاط. النقاط تُستعمل فقط لتغطية المتبقي.');
+    }
+  }
   const result = await redeem({ userId, target, points }, { session, req });
   if (pointsOnly && await owedOnTarget(target, session) > 0) {
     throw new ErrorHandler(400, 'النقاط لا تغطي كامل المستحق؛ أدخل مبلغ الدفع للباقي');
@@ -1169,7 +1180,18 @@ async function settleOrders({ now = new Date() } = {}) {
   return { revoked, restored, failed };
 }
 
+// The money of a payment in US cents: dollars as they are, dinars at their rate (dinars ÷ rate, as the
+// postings count them); undefined for anything else
+const moneyUsdCents = (amount, currency, rate) => {
+  const value = Number(amount);
+  if (!(value > 0)) return 0;
+  if (currency === 'USD') return Math.round(value * 100);
+  if (currency === 'LYD' && Number(rate) > 0) return Math.round((value * 100) / Number(rate));
+  return undefined;
+};
+
 module.exports = {
+  moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
   claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
