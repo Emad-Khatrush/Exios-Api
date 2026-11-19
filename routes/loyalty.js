@@ -1,6 +1,7 @@
 const express = require('express');
 const loyalty = require('../controllers/loyalty');
 const promotions = require('../controllers/loyaltyPromotions');
+const ratingRewards = require('../controllers/ratingRewards');
 const { protect, isClient } = require('../middleware/check-auth');
 const { allow, anyStaff, PERMISSION_DENIED } = require('../middleware/permissions');
 const ErrorHandler = require('../utils/errorHandler');
@@ -27,6 +28,9 @@ router.get('/client/order/:id/loyalty', protect, isClient, loyalty.myOrder);
 router.get('/client/loyalty/tiers', protect, isClient, loyalty.tiers);
 router.post('/client/loyalty/level/seen', protect, isClient, loyalty.levelSeen);
 router.get('/client/loyalty/promotions', protect, isClient, promotions.mine);
+// Rating rewards (spec 2026-11-19): what awaits rating, and one rating for many orders (3 points each)
+router.get('/client/ratings/pending', protect, isClient, ratingRewards.pending);
+router.post('/client/ratings', protect, isClient, ratingRewards.rate);
 
 // Staff
 router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);

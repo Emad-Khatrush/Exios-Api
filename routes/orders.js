@@ -153,7 +153,8 @@ router.route('/client/unsureOrder/:id/delete')
       
 router.route('/client/order/:id/rating')
       .get(protect, isClient, orders.getOrderRating)
-      .post(protect, isClient, orders.createRatingForOrder)
+      // Through the rating rewards service: the customer's own order only, 3 points when it earns
+      .post(protect, isClient, require('../controllers/ratingRewards').rateOne)
 
 router.route('/client/order/:id/customization')
       .put(protect, isClient, orders.updateOrderCustomization)
