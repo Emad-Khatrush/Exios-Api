@@ -1,5 +1,6 @@
 const express = require('express');
 const loyalty = require('../controllers/loyalty');
+const promotions = require('../controllers/loyaltyPromotions');
 const { protect, isClient } = require('../middleware/check-auth');
 const { allow, anyStaff, PERMISSION_DENIED } = require('../middleware/permissions');
 const ErrorHandler = require('../utils/errorHandler');
@@ -25,6 +26,7 @@ router.get('/client/loyalty/orders', protect, isClient, loyalty.myOrders);
 router.get('/client/order/:id/loyalty', protect, isClient, loyalty.myOrder);
 router.get('/client/loyalty/tiers', protect, isClient, loyalty.tiers);
 router.post('/client/loyalty/level/seen', protect, isClient, loyalty.levelSeen);
+router.get('/client/loyalty/promotions', protect, isClient, promotions.mine);
 
 // Staff
 router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);
@@ -46,5 +48,12 @@ router.post('/order/:id/loyalty/redemptions/:redemptionId/cancel', protect, allo
 router.get('/user/:id/loyalty/delivery-quote', protect, allow(['loyalty', 'delivery', 'invoices_payments'], deliveryStaffOnly), loyalty.deliveryQuote);
 router.post('/user/:id/loyalty/redeem-packages', protect, allow(['loyalty', 'delivery', 'invoices_payments'], deliveryStaffOnly), loyalty.redeemPackages);
 router.put('/order/:id/loyalty/no-points', protect, allow(['loyalty']), loyalty.noPoints);
+
+// Points offers (spec 2026-11-19): the points staff manage them
+router.get('/loyalty/promotions', protect, allow(['loyalty']), promotions.list);
+router.post('/loyalty/promotions', protect, allow(['loyalty']), promotions.create);
+router.put('/loyalty/promotions/:id', protect, allow(['loyalty']), promotions.update);
+router.post('/loyalty/promotions/:id/end', protect, allow(['loyalty']), promotions.end);
+router.delete('/loyalty/promotions/:id', protect, allow(['loyalty']), promotions.remove);
 
 module.exports = router;

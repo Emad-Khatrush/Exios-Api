@@ -85,4 +85,113 @@ const pointsWith = (basePoints, levelKey, arKey, order, promotions) => {
   return { points: Math.floor((basePoints * pct) / 100), promotion };
 };
 
-module.exports = { countryKey, claimScope, matches, bestPromotion, promotionsAround, dayRange, multiplierFor, pointsWith };
+
+// ---- Staff: create, change, end, delete; and the lists ----
+const ErrorHandler = require('../../../utils/errorHandler');
+const { isDay } = require('../dates');
+const KINDS = ['shipping', 'purchase', 'remittance'];
+const COUNTRIES = ['china', 'uae', 'turkey', 'usa', 'uk'];
+const bad = (message) => new ErrorHandler(400, message);
+
+const stateOf = (p, now) => (now < new Date(p.startsAt) ? 'upcoming' : now < new Date(p.endsAt) ? 'active' : 'ended');
+
+// The offer a staff form describes, checked (Arabic messages for the admin)
+function fromBody(body = {}) {
+  const name = String(body.name || '').trim();
+  if (!name) throw bad('اكتب اسم العرض.');
+  if (name.length > 60) throw bad('اسم العرض 60 حرفاً على الأكثر.');
+  const multiplierPct = Number(body.multiplierPct);
+  if (!Number.isInteger(multiplierPct) || multiplierPct < 110 || multiplierPct > 500 || multiplierPct % 10) throw bad('المضاعفة من ×1.1 إلى ×5، بخطوة 0.1.');
+  if (!isDay(body.fromDay) || !isDay(body.toDay)) throw bad('حدد تاريخ بداية العرض ونهايته.');
+  if (body.toDay < body.fromDay) throw bad('تاريخ نهاية العرض قبل بدايته.');
+  const list = (value, allowed, what) => {
+    const items = [...new Set((Array.isArray(value) ? value : []).map(String))];
+    if (items.some((item) => !allowed.includes(item))) throw bad(`${what} غير معروفة.`);
+    return items;
+  };
+  const kinds = list(body.kinds, KINDS, 'أنواع الطلبيات');
+  if (!kinds.length) throw bad('اختر نوعاً واحداً على الأقل: الشحن، فواتير الشراء أو الحوالات.');
+  return {
+    name, multiplierPct, ...dayRange(body.fromDay, body.toDay), kinds,
+    methods: list(body.methods, METHODS, 'طرق الشحن'), countries: list(body.countries, COUNTRIES, 'الدول'),
+    notify: body.notify !== false,
+  };
+}
+
+async function findOr404(id, session) {
+  const p = require('mongoose').isValidObjectId(id) ? await LoyaltyPromotion.findById(id).session(session || null) : null;
+  if (!p) throw new ErrorHandler(404, 'العرض غير موجود');
+  return p;
+}
+
+async function create(body, { user, now = new Date(), session } = {}) {
+  const data = fromBody(body);
+  if (data.endsAt <= now) throw bad('تاريخ نهاية العرض مضى.');
+  const [p] = await LoyaltyPromotion.create([{ ...data, createdBy: user?._id || user }], { session });
+  return p.toObject();
+}
+
+// Before it starts anything changes; once started only the name and notify (points already promised
+// to orders created in it must not move); after it ended nothing
+async function update(id, body, { now = new Date(), session } = {}) {
+  const p = await findOr404(id, session);
+  const state = stateOf(p, now);
+  if (state === 'ended') throw bad('انتهى هذا العرض ولا يمكن تعديله.');
+  const data = fromBody(body);
+  if (state === 'active') {
+    const same = (a, b) => JSON.stringify([...(a || [])].sort()) === JSON.stringify([...(b || [])].sort());
+    const locked = data.multiplierPct !== p.multiplierPct || +data.startsAt !== +p.startsAt || +data.endsAt !== +p.endsAt
+      || !same(data.kinds, p.kinds) || !same(data.methods, p.methods) || !same(data.countries, p.countries);
+    if (locked) throw bad('لا يمكن تعديل عرض بدأ إلا اسمه وإبلاغ العملاء. لإيقافه استعمل «إنهاء العرض الآن».');
+    Object.assign(p, { name: data.name, notify: data.notify });
+  } else {
+    if (data.endsAt <= now) throw bad('تاريخ نهاية العرض مضى.');
+    Object.assign(p, data);
+  }
+  await p.save({ session });
+  return p.toObject();
+}
+
+async function endNow(id, { now = new Date(), session } = {}) {
+  const p = await findOr404(id, session);
+  if (stateOf(p, now) !== 'active') throw bad('يمكن إنهاء عرض جارٍ فقط.');
+  Object.assign(p, { endsAt: now, endedEarlyAt: now });
+  await p.save({ session });
+  return p.toObject();
+}
+
+async function remove(id, { now = new Date(), session } = {}) {
+  const p = await findOr404(id, session);
+  if (stateOf(p, now) !== 'upcoming') throw bad('لا يمكن حذف عرض بدأ. يمكنك إنهاؤه.');
+  await LoyaltyPromotion.deleteOne({ _id: p._id }).session(session || null);
+}
+
+// Every offer for the staff page, newest first, with what each brought: orders and the points it
+// added above what the level alone would have given
+async function listForStaff({ now = new Date() } = {}) {
+  const LoyaltyPoint = require('../../../models/loyaltyPoint');
+  const tiers = require('./tiers');
+  const list = await LoyaltyPromotion.find().sort({ startsAt: -1, _id: -1 }).lean();
+  const earns = await LoyaltyPoint.find({ kind: 'earn', 'promotion.id': { $in: list.map((p) => p._id) } }).select('points basePoints tier promotion.id').lean();
+  return list.map((p) => {
+    const mine = earns.filter((e) => String(e.promotion.id) === String(p._id));
+    return {
+      ...p, state: stateOf(p, now), orders: mine.length,
+      bonusPoints: mine.reduce((sum, e) => sum + e.points - tiers.multiplied(e.basePoints, e.tier), 0),
+    };
+  });
+}
+
+// Running and upcoming offers, for the client app
+async function activeForCustomers({ now = new Date() } = {}) {
+  const list = await LoyaltyPromotion.find({ endsAt: { $gt: now } }).sort({ startsAt: 1, _id: 1 }).lean();
+  return list.map((p) => ({
+    id: String(p._id), name: p.name, multiplierPct: p.multiplierPct, startsAt: p.startsAt, endsAt: p.endsAt,
+    kinds: p.kinds, methods: p.methods, countries: p.countries, state: stateOf(p, now),
+  }));
+}
+
+module.exports = {
+  countryKey, claimScope, matches, bestPromotion, promotionsAround, dayRange, multiplierFor, pointsWith,
+  stateOf, create, update, endNow, remove, listForStaff, activeForCustomers,
+};
