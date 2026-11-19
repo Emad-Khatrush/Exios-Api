@@ -80,7 +80,7 @@ Staff (permission `loyalty`, admins all):
 
 Customer:
 
-- `GET client/loyalty/promotions` → active and upcoming offers (name, multiplier, startsAt, endsAt, kinds, methods, countries); `{ off: true }` when the customer's points are switched off.
+- `GET client/loyalty/promotions` → active and upcoming offers (name, multiplierPct, startsAt, endsAt, kinds, methods, countries); `{ off: true }` when the customer's points are switched off.
 
 ## Admin (exios-admin)
 
