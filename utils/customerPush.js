@@ -121,6 +121,21 @@ function promotionAnnouncedText(p) {
     body: `على ${promotionWhat(p)} لكل طلبية تُنشئها من ${libyaDay(new Date(p.startsAt))} حتى ${lastDayOf(p)}.`,
   };
 }
+// Orders received and not rated yet: rate them all at once for 3 points each
+const ordersCount = (n) => (n === 1 ? 'طلبية' : n === 2 ? 'طلبيتين' : n <= 10 ? `${n} طلبيات` : `${n} طلبية`);
+const pointsWord = (n) => (n >= 3 && n <= 10 ? 'نقاط' : 'نقطة');
+function ratingReminderText(count) {
+  const points = count * 3;
+  return {
+    title: `⭐ قيّم خدمتنا واكسب ${points} ${pointsWord(points)}`,
+    body: count === 1 ? 'استلمت طلبية. قيّمها في أقل من دقيقة.'
+      : `استلمت ${ordersCount(count)}. ${count === 2 ? 'قيّمهما' : 'قيّمها'} مرة واحدة في أقل من دقيقة.`,
+  };
+}
+async function ratingReminder(userId, count) {
+  return safely('rating', () => sendToUsers([userId], { ...ratingReminderText(count), url: '/rate', tag: 'rating' }));
+}
+
 async function promotionAnnounced(p) {
   return safely('promotion', () => sendToAll({ ...promotionAnnouncedText(p), url: '/points', tag: 'promotion' }));
 }
@@ -128,4 +143,4 @@ async function promotionStarted(p) {
   return safely('promotion', () => sendToAll({ ...promotionText(p), url: '/points', tag: 'promotion' }));
 }
 
-module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted, promotionAnnouncedText, promotionAnnounced };
+module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted, promotionAnnouncedText, promotionAnnounced, ratingReminderText, ratingReminder };

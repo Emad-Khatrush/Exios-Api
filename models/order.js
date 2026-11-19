@@ -159,6 +159,8 @@ const orderSchema = new Schema({
   pushedStatus: Number,
   // The highest stage ever announced for it (utils/orderPush.js): each stage is announced once
   pushedRank: Number,
+  // When the customer was reminded to rate it (rating rewards, spec 2026-11-19): once per order
+  ratingRemindedAt: Date,
   isFinished: {
     type: Boolean,
     default: false

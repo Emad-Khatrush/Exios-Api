@@ -92,4 +92,38 @@ async function rate({ userId, orderIds, questions }, { now = new Date(), session
   return { rated: rows.length, points };
 }
 
-module.exports = { POINTS_EACH, DAYS, REASON, deliveredAt, pendingFor, rate };
+// Customers who received orders they can rate for points, told once per order: each order is claimed
+// atomically (ratingRemindedAt), then one push per customer with how many it was. The hourly job.
+async function remindDue({ now = new Date() } = {}) {
+  const start = require('./index').loyaltyStartDate();
+  if (!start) return { reminded: 0 };
+  const since = new Date(now.getTime() - DAYS * DAY_MS);
+  const candidates = await Order.find({
+    isCanceled: { $ne: true }, createdAt: { $gte: start }, ratingRemindedAt: { $exists: false },
+    $or: [{ 'paymentList.status.received': true }, { isFinished: true }, { isPayment: true, isShipment: { $ne: true }, orderStatus: { $gte: 1 } }],
+  }).select(FIELDS).lean();
+  const rated = new Set((await OrderRating.distinct('order', { order: { $in: candidates.map((o) => o._id) } })).map(String));
+  const loyalty = require('./index');
+  const byUser = new Map();
+  for (const o of candidates) {
+    const at = deliveredAt(o);
+    if (!at || at < since || rated.has(String(o._id))) continue;
+    const key = String(o.user);
+    byUser.set(key, [...(byUser.get(key) || []), o]);
+  }
+  let reminded = 0;
+  for (const [userId, orders] of byUser) {
+    if (await loyalty.isOff(userId)) continue;
+    let claimed = 0;
+    for (const o of orders) {
+      const res = await Order.updateOne({ _id: o._id, ratingRemindedAt: { $exists: false } }, { $set: { ratingRemindedAt: now } });
+      if (res.modifiedCount) claimed += 1;
+    }
+    if (!claimed) continue;
+    reminded += 1;
+    await require('../../../utils/customerPush').ratingReminder(userId, claimed);
+  }
+  return { reminded };
+}
+
+module.exports = { POINTS_EACH, DAYS, REASON, deliveredAt, pendingFor, rate, remindDue };

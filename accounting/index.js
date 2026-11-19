@@ -86,7 +86,7 @@ async function runLoyaltyJobs() {
   const levels = require('./services/loyalty/levels');
   // A points offer that started is announced to customers (spec 2026-11-19)
   const promotions = require('./services/loyalty/promotions');
-  for (const [name, job] of [['award', loyalty.awardDue], ['expire', loyalty.expireDue], ['settle', loyalty.settleOrders], ['levels', levels.reviewDue], ['promotions', promotions.announceStarted]]) {
+  for (const [name, job] of [['award', loyalty.awardDue], ['expire', loyalty.expireDue], ['settle', loyalty.settleOrders], ['levels', levels.reviewDue], ['promotions', promotions.announceStarted], ['ratings', require('./services/loyalty/ratings').remindDue]]) {
     try {
       results[name] = await job();
       const counts = Object.entries(results[name]).filter(([, value]) => value);
