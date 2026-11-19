@@ -83,4 +83,31 @@ async function shippingResumed(order) {
   }));
 }
 
-module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed };
+// A points offer that just started (spec 2026-11-19), to everyone: what it covers and its last day
+const PROMO_COUNTRIES = { china: 'الصين', uae: 'الإمارات', turkey: 'تركيا', usa: 'أمريكا', uk: 'بريطانيا' };
+const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+function promotionText(p) {
+  const moment = require('moment-timezone');
+  const parts = [];
+  if ((p.kinds || []).includes('shipping')) {
+    const methods = p.methods || [];
+    const method = methods.length === 1 ? (methods[0] === 'air' ? ' الجوي' : ' البحري') : '';
+    const countries = (p.countries || []).map((c) => PROMO_COUNTRIES[c] || c);
+    parts.push(`الشحن${method}${countries.length ? ` من ${countries.join(' و')}` : ''}`);
+  }
+  if ((p.kinds || []).includes('purchase')) parts.push('فواتير الشراء');
+  if ((p.kinds || []).includes('remittance')) parts.push('الحوالات');
+  // The last day the offer covers, in Libya (endsAt is the midnight after it)
+  const last = moment.tz(new Date(p.endsAt).getTime() - 1, 'Africa/Tripoli');
+  const times = Number(((p.multiplierPct || 100) / 100).toFixed(2));
+  return {
+    title: `🔥 ${p.name}: نقاطك ×${times}`,
+    body: `على ${parts.join(' و')} لكل طلبية تُنشئها حتى ${DAYS[last.day()]} ${last.date()} ${MONTHS[last.month()]}.`,
+  };
+}
+async function promotionStarted(p) {
+  return safely('promotion', () => sendToAll({ ...promotionText(p), url: '/points', tag: 'promotion' }));
+}
+
+module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted };

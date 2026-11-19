@@ -191,7 +191,22 @@ async function activeForCustomers({ now = new Date() } = {}) {
   }));
 }
 
+// Offers that have started and should be told to customers: each claimed atomically (notifiedAt), so
+// the hourly job and a staff change running together send it once
+async function announceStarted({ now = new Date() } = {}) {
+  const due = await LoyaltyPromotion.find({ notify: true, notifiedAt: { $exists: false }, startsAt: { $lte: now }, endsAt: { $gt: now } }).select('_id').lean();
+  let announced = 0;
+  for (const { _id } of due) {
+    const p = await LoyaltyPromotion.findOneAndUpdate({ _id, notifiedAt: { $exists: false } }, { $set: { notifiedAt: now } }, { new: true }).lean();
+    if (!p) continue;
+    announced += 1;
+    await require('../../../utils/customerPush').promotionStarted(p);
+  }
+  return { announced };
+}
+
 module.exports = {
+  announceStarted,
   countryKey, claimScope, matches, bestPromotion, promotionsAround, dayRange, multiplierFor, pointsWith,
   stateOf, create, update, endNow, remove, listForStaff, activeForCustomers,
 };
