@@ -1,12 +1,12 @@
 // Rating rewards (spec 2026-11-19-rating-rewards-design.md): every order a customer rates within 30
-// days of receiving it earns 3 points, and one rating covers every order they received and have not
+// days of receiving it earns 2 points (owner, 2026-11-19; only orders from the programme's start), and one rating covers every order they received and have not
 // rated yet. A shipment is received once a package was handed over; a purchase once it was bought.
 const mongoose = require('mongoose');
 const Order = require('../../../models/order');
 const OrderRating = require('../../../models/orderRating');
 const ErrorHandler = require('../../../utils/errorHandler');
 
-const POINTS_EACH = 3;
+const POINTS_EACH = 2;
 const DAYS = 30;
 const REASON = 'مكافأة تقييم الخدمة';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -74,7 +74,7 @@ function checkQuestions(questions) {
 }
 
 // One rating for these orders: each of the customer's own delivered, unrated ones gets the rating, and
-// 3 points when it earns (once ever: the gift's eventKey). Runs inside the caller's transaction.
+// 2 points when it earns (once ever: the gift's eventKey). Runs inside the caller's transaction.
 async function rate({ userId, orderIds, questions }, { now = new Date(), session } = {}) {
   const answers = checkQuestions(questions);
   const ids = [...new Set((orderIds || []).map(String))].filter((id) => mongoose.isValidObjectId(id)).slice(0, MAX_ORDERS);
@@ -94,7 +94,15 @@ async function rate({ userId, orderIds, questions }, { now = new Date(), session
 
 // Customers who received orders they can rate for points, told once per order: each order is claimed
 // atomically (ratingRemindedAt), then one push per customer with how many it was. The hourly job.
-async function remindDue({ now = new Date() } = {}) {
+// One run at a time: two at once could each claim a different order of one customer and both push
+let reminding = null;
+function remindDue(options) {
+  if (reminding) return reminding.then(() => ({ reminded: 0 }));
+  reminding = remindOnce(options).finally(() => { reminding = null; });
+  return reminding;
+}
+
+async function remindOnce({ now = new Date() } = {}) {
   const start = require('./index').loyaltyStartDate();
   if (!start) return { reminded: 0 };
   const since = new Date(now.getTime() - DAYS * DAY_MS);

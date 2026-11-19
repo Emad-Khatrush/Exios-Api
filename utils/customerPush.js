@@ -121,13 +121,13 @@ function promotionAnnouncedText(p) {
     body: `على ${promotionWhat(p)} لكل طلبية تُنشئها من ${libyaDay(new Date(p.startsAt))} حتى ${lastDayOf(p)}.`,
   };
 }
-// Orders received and not rated yet: rate them all at once for 3 points each
+// Orders received and not rated yet: rate them all at once for 2 points each
 const ordersCount = (n) => (n === 1 ? 'طلبية' : n === 2 ? 'طلبيتين' : n <= 10 ? `${n} طلبيات` : `${n} طلبية`);
-const pointsWord = (n) => (n >= 3 && n <= 10 ? 'نقاط' : 'نقطة');
+const pointsPhrase = (n) => (n === 2 ? 'نقطتين' : `${n} ${n >= 3 && n <= 10 ? 'نقاط' : 'نقطة'}`);
 function ratingReminderText(count) {
-  const points = count * 3;
+  const points = count * require('../accounting/services/loyalty/ratings').POINTS_EACH;
   return {
-    title: `⭐ قيّم خدمتنا واكسب ${points} ${pointsWord(points)}`,
+    title: `⭐ قيّم خدمتنا واكسب ${pointsPhrase(points)}`,
     body: count === 1 ? 'استلمت طلبية. قيّمها في أقل من دقيقة.'
       : `استلمت ${ordersCount(count)}. ${count === 2 ? 'قيّمهما' : 'قيّمها'} مرة واحدة في أقل من دقيقة.`,
   };
