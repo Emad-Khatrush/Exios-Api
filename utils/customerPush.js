@@ -87,8 +87,8 @@ async function shippingResumed(order) {
 const PROMO_COUNTRIES = { china: 'الصين', uae: 'الإمارات', turkey: 'تركيا', usa: 'أمريكا', uk: 'بريطانيا' };
 const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
-function promotionText(p) {
-  const moment = require('moment-timezone');
+// What an offer covers, and a Libya day as "الجمعة 27 نوفمبر"
+function promotionWhat(p) {
   const parts = [];
   if ((p.kinds || []).includes('shipping')) {
     const methods = p.methods || [];
@@ -98,16 +98,34 @@ function promotionText(p) {
   }
   if ((p.kinds || []).includes('purchase')) parts.push('فواتير الشراء');
   if ((p.kinds || []).includes('remittance')) parts.push('الحوالات');
-  // The last day the offer covers, in Libya (endsAt is the midnight after it)
-  const last = moment.tz(new Date(p.endsAt).getTime() - 1, 'Africa/Tripoli');
-  const times = Number(((p.multiplierPct || 100) / 100).toFixed(2));
+  return parts.join(' و');
+}
+const libyaDay = (time) => {
+  const day = require('moment-timezone').tz(time, 'Africa/Tripoli');
+  return `${DAYS[day.day()]} ${day.date()} ${MONTHS[day.month()]}`;
+};
+const timesOf = (p) => Number(((p.multiplierPct || 100) / 100).toFixed(2));
+// The last day the offer covers, in Libya (endsAt is the midnight after it)
+const lastDayOf = (p) => libyaDay(new Date(p.endsAt).getTime() - 1);
+
+function promotionText(p) {
   return {
-    title: `🔥 ${p.name}: نقاطك ×${times}`,
-    body: `على ${parts.join(' و')} لكل طلبية تُنشئها حتى ${DAYS[last.day()]} ${last.date()} ${MONTHS[last.month()]}.`,
+    title: `🔥 ${p.name}: نقاطك ×${timesOf(p)}`,
+    body: `على ${promotionWhat(p)} لكل طلبية تُنشئها حتى ${lastDayOf(p)}.`,
   };
+}
+// Announced before it starts: what is coming and from when
+function promotionAnnouncedText(p) {
+  return {
+    title: `⏳ قريباً: ${p.name}، نقاطك ×${timesOf(p)}`,
+    body: `على ${promotionWhat(p)} لكل طلبية تُنشئها من ${libyaDay(new Date(p.startsAt))} حتى ${lastDayOf(p)}.`,
+  };
+}
+async function promotionAnnounced(p) {
+  return safely('promotion', () => sendToAll({ ...promotionAnnouncedText(p), url: '/points', tag: 'promotion' }));
 }
 async function promotionStarted(p) {
   return safely('promotion', () => sendToAll({ ...promotionText(p), url: '/points', tag: 'promotion' }));
 }
 
-module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted };
+module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted, promotionAnnouncedText, promotionAnnounced };

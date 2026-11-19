@@ -13,8 +13,12 @@ const loyaltyPromotionSchema = new Schema({
   // Shipping claims only; empty = every method / every country
   methods: [{ type: String, enum: ['air', 'sea'] }],
   countries: [String],
+  // From this Libya midnight customers see it coming (a countdown to its start); none = seen from the start
+  announceAt: Date,
   notify: { type: Boolean, default: true },
   notifiedAt: Date,
+  // When customers were told it is coming (the announcement); notifiedAt is the start
+  announcedAt: Date,
   endedEarlyAt: Date,
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });

@@ -109,10 +109,15 @@ function fromBody(body = {}) {
     if (items.some((item) => !allowed.includes(item))) throw bad(`${what} غير معروفة.`);
     return items;
   };
+  // The announcement day: optional, on or before the first day
+  const announceDay = String(body.announceDay || '').trim();
+  if (announceDay && !isDay(announceDay)) throw bad('تاريخ الإعلان غير صحيح.');
+  if (announceDay && announceDay > body.fromDay) throw bad('تاريخ الإعلان يجب أن يكون قبل بداية العرض أو في يومها.');
   const kinds = list(body.kinds, KINDS, 'أنواع الطلبيات');
   if (!kinds.length) throw bad('اختر نوعاً واحداً على الأقل: الشحن، فواتير الشراء أو الحوالات.');
   return {
     name, multiplierPct, ...dayRange(body.fromDay, body.toDay), kinds,
+    announceAt: announceDay ? dayRange(announceDay, announceDay).startsAt : undefined,
     methods: list(body.methods, METHODS, 'طرق الشحن'), countries: list(body.countries, COUNTRIES, 'الدول'),
     notify: body.notify !== false,
   };
@@ -127,6 +132,7 @@ async function findOr404(id, session) {
 async function create(body, { user, now = new Date(), session } = {}) {
   const data = fromBody(body);
   if (data.endsAt <= now) throw bad('تاريخ نهاية العرض مضى.');
+  if (!data.announceAt) delete data.announceAt;
   const [p] = await LoyaltyPromotion.create([{ ...data, createdBy: user?._id || user }], { session });
   return p.toObject();
 }
@@ -182,18 +188,28 @@ async function listForStaff({ now = new Date() } = {}) {
   });
 }
 
-// Running and upcoming offers, for the client app
+// Running offers, and the coming ones whose announcement day has come, for the client app
 async function activeForCustomers({ now = new Date() } = {}) {
-  const list = await LoyaltyPromotion.find({ endsAt: { $gt: now } }).sort({ startsAt: 1, _id: 1 }).lean();
+  const list = await LoyaltyPromotion.find({ endsAt: { $gt: now }, $or: [{ startsAt: { $lte: now } }, { announceAt: { $lte: now } }] })
+    .sort({ startsAt: 1, _id: 1 }).lean();
   return list.map((p) => ({
-    id: String(p._id), name: p.name, multiplierPct: p.multiplierPct, startsAt: p.startsAt, endsAt: p.endsAt,
+    id: String(p._id), name: p.name, multiplierPct: p.multiplierPct, startsAt: p.startsAt, endsAt: p.endsAt, announceAt: p.announceAt || null,
     kinds: p.kinds, methods: p.methods, countries: p.countries, state: stateOf(p, now),
   }));
 }
 
-// Offers that have started and should be told to customers: each claimed atomically (notifiedAt), so
-// the hourly job and a staff change running together send it once
+// Offers to tell customers about: one whose announcement day came (before it starts), and one that
+// started. Each claimed atomically (announcedAt / notifiedAt), so the hourly job and a staff change
+// running together send it once.
 async function announceStarted({ now = new Date() } = {}) {
+  const coming = await LoyaltyPromotion.find({ notify: true, announcedAt: { $exists: false }, announceAt: { $lte: now }, startsAt: { $gt: now } }).select('_id').lean();
+  let teased = 0;
+  for (const { _id } of coming) {
+    const p = await LoyaltyPromotion.findOneAndUpdate({ _id, announcedAt: { $exists: false } }, { $set: { announcedAt: now } }, { new: true }).lean();
+    if (!p) continue;
+    teased += 1;
+    await require('../../../utils/customerPush').promotionAnnounced(p);
+  }
   const due = await LoyaltyPromotion.find({ notify: true, notifiedAt: { $exists: false }, startsAt: { $lte: now }, endsAt: { $gt: now } }).select('_id').lean();
   let announced = 0;
   for (const { _id } of due) {
@@ -202,7 +218,7 @@ async function announceStarted({ now = new Date() } = {}) {
     announced += 1;
     await require('../../../utils/customerPush').promotionStarted(p);
   }
-  return { announced };
+  return { announced, teased };
 }
 
 module.exports = {
