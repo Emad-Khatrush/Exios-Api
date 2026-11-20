@@ -136,6 +136,54 @@ async function ratingReminder(userId, count) {
   return safely('rating', () => sendToUsers([userId], { ...ratingReminderText(count), url: '/rate', tag: 'rating' }));
 }
 
+// Invite a friend (spec 2026-11-20). A friend signed up with the customer's code
+function referralJoinedText(friendName) {
+  const { FIRST_POINTS, QUALIFY_BASE_POINTS } = require('../accounting/services/loyalty/referrals');
+  return {
+    title: `🎉 ${friendName} سجّل بدعوتك`,
+    body: `عندما يدفع ${QUALIFY_BASE_POINTS * 2}$ من شحناته تكسب ${pointsText(FIRST_POINTS)} نقطة، ثم تكسب من كل شحنة له لمدة سنة.`,
+  };
+}
+async function referralJoined(inviterId, friendName) {
+  return safely('referral', () => sendToUsers([inviterId], { ...referralJoinedText(friendName), url: '/invite', tag: 'referral' }));
+}
+// The new customer's welcome gift
+function referralWelcomeText(inviterName, points) {
+  return {
+    title: `🎁 هدية ${pointsText(points)} نقطة من ${inviterName}`,
+    body: `أضفناها لرصيدك (${usdText(points)}). تُخصم من فاتورة شحنك عند الدفع في المكتب.`,
+  };
+}
+async function referralWelcome(friendId, inviterName, points) {
+  if (!(points > 0)) return { sent: 0 };
+  return safely('referral', () => sendToUsers([friendId], { ...referralWelcomeText(inviterName, points), url: '/points', tag: 'referral' }));
+}
+// What an inviter got from their friends in one run: big rewards, steps, the share, together
+function referralRewardsText({ firsts = [], share = 0, steps = [] } = {}) {
+  const { FIRST_POINTS } = require('../accounting/services/loyalty/referrals');
+  const total = firsts.length * FIRST_POINTS + share + steps.reduce((sum, s) => sum + s.points, 0);
+  if (!(total > 0)) return null;
+  const top = steps[steps.length - 1];
+  if (top) {
+    return {
+      title: `🏆 ${top.friends} أصدقاء! كسبت ${pointsText(total)} نقطة`,
+      body: top.title ? `صرت «${top.title}». شكراً لأنك تنشر Exios.` : 'شكراً لأنك تنشر Exios. استمر وادعُ المزيد.',
+    };
+  }
+  if (firsts.length) {
+    const who = firsts.length === 1 ? `صديقك ${firsts[0]} دفع أول طلبياته` : `${firsts.length} من أصدقائك دفعوا أول طلبياتهم`;
+    return { title: `💰 كسبت ${pointsText(total)} نقطة`, body: `${who}، وستكسب من كل شحنة لهم لمدة سنة.` };
+  }
+  return { title: `⭐ كسبت ${pointsText(total)} نقطة من شحن أصدقائك`, body: 'حصتك من شحنات من دعوتهم. ادعُ المزيد واكسب أكثر.' };
+}
+async function referralRewards(inviterId, got) {
+  const text = referralRewardsText(got);
+  if (!text) return { sent: 0 };
+  const sent = await safely('referral', () => sendToUsers([inviterId], { ...text, url: '/invite', tag: 'referral' }));
+  if (got.level) await levelUp(inviterId, got.level);
+  return sent;
+}
+
 async function promotionAnnounced(p) {
   return safely('promotion', () => sendToAll({ ...promotionAnnouncedText(p), url: '/points', tag: 'promotion' }));
 }
@@ -143,4 +191,5 @@ async function promotionStarted(p) {
   return safely('promotion', () => sendToAll({ ...promotionText(p), url: '/points', tag: 'promotion' }));
 }
 
-module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted, promotionAnnouncedText, promotionAnnounced, ratingReminderText, ratingReminder };
+module.exports = { pointsEarned, levelUp, announcement, shippingBlocked, shippingResumed, promotionText, promotionStarted, promotionAnnouncedText, promotionAnnounced, ratingReminderText, ratingReminder,
+  referralJoinedText, referralJoined, referralWelcomeText, referralWelcome, referralRewardsText, referralRewards };

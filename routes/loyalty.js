@@ -2,6 +2,7 @@ const express = require('express');
 const loyalty = require('../controllers/loyalty');
 const promotions = require('../controllers/loyaltyPromotions');
 const ratingRewards = require('../controllers/ratingRewards');
+const referrals = require('../controllers/referrals');
 const { protect, isClient } = require('../middleware/check-auth');
 const { allow, anyStaff, PERMISSION_DENIED } = require('../middleware/permissions');
 const ErrorHandler = require('../utils/errorHandler');
@@ -31,6 +32,20 @@ router.get('/client/loyalty/promotions', protect, isClient, promotions.mine);
 // Rating rewards (spec 2026-11-19): what awaits rating, and one rating for many orders (3 points each)
 router.get('/client/ratings/pending', protect, isClient, ratingRewards.pending);
 router.post('/client/ratings', protect, isClient, ratingRewards.rate);
+// Invite a friend (spec 2026-11-20): the invite page, and the sign-up page's check of a code (public,
+// limited per address so codes cannot be scanned)
+router.get('/client/referrals', protect, isClient, referrals.mine);
+const checkHits = new Map();
+const limitCodeCheck = (req, res, next) => {
+  const now = Date.now();
+  const hits = (checkHits.get(req.ip) || []).filter((t) => now - t < 10 * 60 * 1000);
+  if (hits.length >= 30) return res.status(429).json({ success: false, message: 'too-many-requests' });
+  hits.push(now);
+  checkHits.set(req.ip, hits);
+  if (checkHits.size > 5000) checkHits.clear();
+  next();
+};
+router.get('/referrals/check/:code', limitCodeCheck, referrals.check);
 
 // Staff
 router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);
@@ -43,6 +58,9 @@ router.put('/user/:id/loyalty/level', protect, allow(['loyalty_level']), loyalty
 router.get('/user/:id/loyalty', protect, allow(['loyalty_customer', 'loyalty_adjust', 'loyalty_level', 'clients'], employeesOnly), loyalty.customer);
 router.post('/user/:id/loyalty/adjust', protect, allow(['loyalty_adjust']), loyalty.adjust);
 router.put('/user/:id/loyalty/off', protect, allow(['loyalty_adjust']), loyalty.setOff);
+router.get('/user/:id/referral', protect, allow(['loyalty_customer', 'loyalty_adjust', 'loyalty_level', 'clients'], employeesOnly), referrals.staffInfo);
+router.put('/user/:id/referral', protect, allow(['loyalty_adjust']), referrals.staffSet);
+router.delete('/user/:id/referral', protect, allow(['loyalty_adjust']), referrals.staffCancel);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
 // Same access as the order page (any staff member who can open it), but a 403 for the rest
 router.get('/order/:id/loyalty/paid', protect, anyStaff(employeesOnly), loyalty.paid);

@@ -14,6 +14,9 @@ const loyaltyPointSchema = new Schema({
   tier: String,
   // An earn only: the points offer that decided the multiplier (spec 2026-11-19), when one did
   promotion: { _id: false, id: { type: Schema.Types.ObjectId, ref: 'LoyaltyPromotion' }, name: String, multiplierPct: Number },
+  // An add only: the points that count toward the level, like an earn's basePoints (invite-a-friend
+  // rewards, spec 2026-11-20). Other adds (gifts, staff additions) never count.
+  levelPoints: Number,
   arKey: String,
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   office: String,

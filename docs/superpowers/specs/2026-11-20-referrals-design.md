@@ -21,7 +21,7 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 | Inviter's share, 12 months from that moment | half of what the friend earns before the friend's own multiplier (5 points per $20) | 0.25% |
 | Ladder: 3 / 5 / 10 friends who reached the big reward | +1,000 / +2,000 (and the title «سفير Exios») / +5,000 | $10 / $20 / $50 |
 
-**Open for the owner:** referral points do **not** count toward the level, like every other gift today (levels stay about a customer's own shipping, so nobody reaches credit delivery or a special price without shipping). If the owner wants them to count, it is one change in `levels.js`.
+4. **The inviter's rewards count toward their level** (owner, 2026-11-20): the big reward, the share and the steps are adds carrying `levelPoints` (= their points), and `levelPointsOf` counts them within the same 365-day window as earns. The friend's welcome gift and every other gift still do not count. Effect: one qualified friend (1,000) reaches the second level.
 
 ## Rules
 
@@ -63,9 +63,9 @@ Index on `referral.by`.
 Service: `accounting/services/loyalty/referrals.js` (all numbers at its top), called from `earnClaim` after the friend's earn (`afterEarn(movement, session)` → returns what to push), from `createUser`, and from the routes below.
 
 Client:
-- `GET client/referrals` → `{ code, link, welcomePoints, firstPoints, sharePerTwenty, months: 12, steps: [{ friends, points, reached }], friends: [{ name (first name + initial), joinedAt, status: 'joined'|'sharing'|'ended'|'canceled', qualifiedAt, shareEndsAt, points }], totalPoints, off }`.
-- `GET referrals/check/:code` (public, rate-limited like the signup check) → `{ ok, firstName }` so the sign-up page can say «دعاك أحمد».
-- `POST account/create` accepts an optional `referralCode`. A wrong code never blocks the sign-up: the account is made without a referral and the app says so.
+- `GET client/referrals` → `{ code, path: '/r/<code>' (the app adds its own address), welcomePoints, firstPoints, sharePerTwenty, months: 12, steps: [{ friends, points, reached }], friends: [{ name (first name + initial), joinedAt, status: 'joined'|'sharing'|'ended'|'canceled', qualifiedAt, shareEndsAt, points }], totalPoints, off }`.
+- `GET referrals/check/:code` (public, rate-limited like the signup check) → `{ ok, name, welcomePoints }` so the sign-up page can say «دعاك أحمد».
+- `POST account/create` accepts an optional `referralCode` (and `referralSource: 'link'|'code'`) and answers `referral: { ok, inviterName, welcome } | { ok: false, message }`. A wrong code never blocks the sign-up: the account is made without a referral and the app says so.
 
 Staff (permission `loyalty_adjust`):
 - `PUT user/:id/referral` `{ code }` — set within 7 days of the account's creation.

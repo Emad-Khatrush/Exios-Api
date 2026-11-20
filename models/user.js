@@ -120,6 +120,21 @@ const userSchema = new Schema({
   // Loyalty points switched off for this customer (partners on a special price): set by staff with a
   // reason; absent = on. accounting/services/loyalty/index.js (isOff / setOff)
   loyaltyOff: { at: Date, by: { type: Schema.Types.ObjectId, ref: 'User' }, reason: String },
+  // Invite a friend (spec 2026-11-20, accounting/services/loyalty/referrals.js). `code`: this
+  // customer's own code, made the first time they open the invite page. `by`: who invited them, set
+  // once at sign-up or by staff within 7 days. `qualifiedAt`: when they had paid $50, the start of
+  // the inviter's 12 months of share. `canceledAt`: staff stopped the rewards from this friend.
+  referral: {
+    code: String,
+    by: { type: Schema.Types.ObjectId, ref: 'User' },
+    at: Date,
+    source: { type: String, enum: ['link', 'code', 'staff'] },
+    setBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    qualifiedAt: Date,
+    canceledAt: Date,
+    canceledBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    cancelReason: String,
+  },
   // The client app's notifications page was last opened then: what came after it is unread
   notificationsSeenAt: Date,
   loyaltyTier: {
@@ -150,11 +165,16 @@ const userSchema = new Schema({
   },
 }, { timestamps: true });
 
+userSchema.index({ 'referral.code': 1 }, { unique: true, partialFilterExpression: { 'referral.code': { $type: 'string' } } });
+userSchema.index({ 'referral.by': 1 }, { partialFilterExpression: { 'referral.by': { $exists: true } } });
+
 // Sent as JSON (the account in the apps), a switched-off points flag keeps only its date: why and by
 // whom are staff notes (staff read them from GET user/:id/loyalty → offInfo)
 userSchema.set('toJSON', {
   transform(doc, ret) {
     if (ret.loyaltyOff) ret.loyaltyOff = ret.loyaltyOff.at ? { at: ret.loyaltyOff.at } : undefined;
+    // Why a referral was cancelled is a staff note
+    if (ret.referral) delete ret.referral.cancelReason;
     return ret;
   },
 });

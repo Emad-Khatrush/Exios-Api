@@ -188,6 +188,8 @@ async function awardDue({ now = new Date() } = {}) {
   let failed = 0;
   // What each customer earned in this run, told on their phone once the run is done
   const earnedBy = new Map(); // userId -> { points, level }
+  // What each inviter got from their friends in this run (spec 2026-11-20)
+  const invitedBy = new Map(); // inviterId -> { firsts: [friend names], share, steps: [], level }
   const start = loyaltyStartDate();
   if (start) {
     const ledger = await claimLedger({ $in: [/^PUR:/, /^SHP:/] });
@@ -204,6 +206,15 @@ async function awardDue({ now = new Date() } = {}) {
           mine.points += earned.points;
           if (earned.movedTo) mine.level = earned.movedTo;
           earnedBy.set(earned.userId, mine);
+          const ref = earned.referral;
+          if (ref) {
+            const theirs = invitedBy.get(ref.inviterId) || { firsts: [], share: 0, steps: [], level: null };
+            if (ref.first) theirs.firsts.push(ref.friendName);
+            theirs.share += ref.share;
+            if (ref.step) theirs.steps.push(ref.step);
+            if (ref.movedTo) theirs.level = ref.movedTo;
+            invitedBy.set(ref.inviterId, theirs);
+          }
         }
       } catch (error) {
         failed += 1;
@@ -218,6 +229,7 @@ async function awardDue({ now = new Date() } = {}) {
     await customerPush.pointsEarned(userId, points);
     if (level) await customerPush.levelUp(userId, level);
   }
+  for (const [inviterId, got] of invitedBy) await customerPush.referralRewards(inviterId, got);
   const { settings } = await getConfig();
   if (settings?.liveEnabled) {
     // Movements recorded while accounting was not live, oldest first (an earn before the expiry or
@@ -283,7 +295,9 @@ async function earnClaim(arKey, now, session) {
   if (settings?.liveEnabled) await postEarnEntry(movement.toObject(), order.orderId, session);
   // Reaching the next level happens at once, in the same transaction
   const moved = await require('./levels').refreshLevel(order.user, { now, session });
-  return { userId: String(order.user), points, movedTo: moved?.to || null };
+  // The friend's inviter: the big reward at $50 paid, then the share for 12 months (spec 2026-11-20)
+  const referral = await require('./referrals').afterEarn(movement.toObject(), { now, session });
+  return { userId: String(order.user), points, movedTo: moved?.to || null, referral };
 }
 
 // A customer's points: balance (unexpired lots), expiring soon, on the way, and totals
@@ -886,7 +900,7 @@ async function adjust({ userId, points, reason } = {}, { session, req } = {}) {
 
 // Points the system gives (a level's upgrade gift): an add lot like a staff addition,
 // once per eventKey, lasting as long as the customer's level keeps points. Returns the lot or null.
-async function grantGift({ userId, points, reason, eventKey, now = new Date() } = {}, session) {
+async function grantGift({ userId, points, reason, eventKey, levelPoints, now = new Date() } = {}, session) {
   assertInTransaction(session);
   if (!(points > 0) || !eventKey) return null;
   if (await LoyaltyPoint.exists({ eventKey }).session(session)) return null;
@@ -896,7 +910,7 @@ async function grantGift({ userId, points, reason, eventKey, now = new Date() } 
   const office = await customerOffice(customer.city, session);
   const days = tiers.tierOf(customer.loyaltyTier?.level).expiryDays;
   const [created] = await LoyaltyPoint.create([{
-    user: customer._id, kind: 'add', points, remaining: points, office, reason, eventKey,
+    user: customer._id, kind: 'add', points, remaining: points, office, reason, eventKey, ...(levelPoints > 0 && { levelPoints }),
     earnedAt: now, expiresAt: new Date(now.getTime() + days * DAY_MS),
   }], { session });
   if ((await getConfig()).settings?.liveEnabled) await postAdjustEntry(created.toObject(), session);

@@ -14,25 +14,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 const users = () => mongoose.connection.collection('users');
 const HISTORY_KEEP = 50;
+// The movements that count toward a level: earns, and the adds that carry levelPoints
+const COUNTS = { $or: [{ kind: 'earn' }, { kind: 'add', levelPoints: { $gt: 0 } }] };
 
 // ---- Level points ----
 
 // The level points of some customers at `now`, by user id: the points each EARNED in the last 365
 // days before any multiplier (an earn lot later taken back with its cancelled order does not
-// count).
+// count), plus the invite-a-friend rewards of that year (adds with levelPoints, spec 2026-11-20).
 async function levelPointsOf(userIds, { now = new Date(), session } = {}) {
   const ids = [...new Set(userIds.map(String))].filter((id) => mongoose.isValidObjectId(id)).map(oid);
   const result = new Map(ids.map((id) => [String(id), 0]));
   if (!ids.length) return result;
   const since = new Date(now.getTime() - tiers.WINDOW_DAYS * DAY_MS);
-  const lots = await LoyaltyPoint.find({ user: { $in: ids }, kind: 'earn', earnedAt: { $gt: since, $lte: now } })
-    .select('_id user points basePoints').session(session || null).lean();
+  const lots = await LoyaltyPoint.find({ user: { $in: ids }, ...COUNTS, earnedAt: { $gt: since, $lte: now } })
+    .select('_id user kind points basePoints levelPoints').session(session || null).lean();
   const revoked = new Set((await LoyaltyPoint.find({ kind: 'revoke', 'sources.lotId': { $in: lots.map((lot) => lot._id) } })
     .select('sources.lotId').session(session || null).lean()).flatMap((m) => (m.sources || []).map((s) => String(s.lotId))));
   for (const lot of lots) {
     if (revoked.has(String(lot._id))) continue;
     const key = String(lot.user);
-    result.set(key, result.get(key) + (Number.isFinite(lot.basePoints) ? lot.basePoints : lot.points));
+    const counted = lot.kind === 'add' ? lot.levelPoints : (Number.isFinite(lot.basePoints) ? lot.basePoints : lot.points);
+    result.set(key, result.get(key) + counted);
   }
   return result;
 }
@@ -199,7 +202,7 @@ async function report({ now = new Date(), limit = 20 } = {}) {
       { projection: { firstName: 1, lastName: 1, customerId: 1, loyaltyTier: 1 } }).limit(200).toArray(),
     users().find({ 'loyaltyTier.reviewAt': { $lte: warnUntil }, 'loyaltyTier.level': { $exists: true, $ne: tiers.TIERS[0].key }, 'loyaltyOff.at': { $exists: false } },
       { projection: { firstName: 1, lastName: 1, customerId: 1, phone: 1, loyaltyTier: 1 } }).limit(500).toArray(),
-    LoyaltyPoint.distinct('user', { kind: 'earn', earnedAt: { $gt: new Date(now.getTime() - tiers.WINDOW_DAYS * DAY_MS) } }),
+    LoyaltyPoint.distinct('user', { ...COUNTS, earnedAt: { $gt: new Date(now.getTime() - tiers.WINDOW_DAYS * DAY_MS) } }),
   ]);
   const name = (u) => [u.firstName, u.lastName].filter(Boolean).join(' ');
   const levelPointsMap = await levelPointsOf([...reviewing.map((u) => u._id), ...earners], { now });
