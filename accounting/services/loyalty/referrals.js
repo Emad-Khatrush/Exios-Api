@@ -1,7 +1,9 @@
 // Invite a friend (spec 2026-11-20-referrals-design.md). A customer shares their code; a new
-// customer who signs up with it gets a welcome gift. Once the friend has paid $50 of shipping or
-// purchases (25 points earned before any multiplier) the inviter gets a big reward, then half of
-// what the friend earns for 12 months. Steps of 3, 5 and 10 such friends add more. The inviter's
+// customer who signs up with it gets a welcome gift. Once the friend has paid $200 of shipping or
+// purchases in total (over any number of orders) the inviter gets a big reward, then 10 points for
+// every $50 the friend pays, for 12 months. Steps (3 friends and $1,000 paid by friends, 5 and
+// $3,000, 10 and $6,000) add more. "Paid" is read from the friend's earns: 1 point before the
+// multiplier per $2 of shipping or purchases (an Alipay transfer earns half, so counts half). The inviter's
 // rewards count toward their level (owner, 2026-11-20); the friend's welcome gift does not.
 // Every reward is a loyalty add through grantGift, so it has its entry and happens once (eventKey).
 const crypto = require('crypto');
@@ -12,15 +14,18 @@ const { assertInTransaction } = require('../transaction');
 
 // ---- The rules (owner may tune them here) ----
 const WELCOME_POINTS = 500; // the friend, at sign-up
-const FIRST_POINTS = 1000; // the inviter, once the friend has paid QUALIFY_BASE_POINTS
-const QUALIFY_BASE_POINTS = 25; // = $50 at 10 points per $20
-const SHARE_DIVISOR = 2; // the inviter gets half of what the friend earns before the multiplier
+const FIRST_POINTS = 1000; // the inviter, once the friend has paid QUALIFY_USD in total
+const QUALIFY_USD = 200;
+const SHARE_POINTS = 10; // the inviter's share: SHARE_POINTS for every SHARE_PER_USD the friend pays
+const SHARE_PER_USD = 50;
+const USD_PER_BASE_POINT = 2; // 10 points per $20 before any multiplier
 const SHARE_DAYS = 365; // from the moment the friend qualified
 const STAFF_SET_DAYS = 7; // staff may give a new account its inviter within this many days
+// Each step needs both: that many friends who reached QUALIFY_USD, and that much paid by all friends
 const STEPS = [
-  { friends: 3, points: 1000 },
-  { friends: 5, points: 2000, title: 'سفير Exios' },
-  { friends: 10, points: 5000 },
+  { friends: 3, usd: 1000, points: 1000 },
+  { friends: 5, usd: 3000, points: 2000, title: 'سفير Exios' },
+  { friends: 10, usd: 6000, points: 5000 },
 ];
 const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 6;
@@ -125,9 +130,29 @@ const qualifiedCount = (inviterId, session) => users().countDocuments({
   'referral.by': oid(inviterId), 'referral.qualifiedAt': { $exists: true }, 'referral.canceledAt': { $exists: false },
 }, { session });
 
-// Right after a friend's earn, in its transaction: qualifies the friend at $50 paid (the big reward
-// and the steps), and gives the inviter their share while the 12 months last. Returns what to tell
-// the inviter ({ inviterId, friendName, first, share, step, movedTo }) or null.
+// What some customers paid in total, in dollars, by user id (from their earns)
+async function paidUsdOf(userIds, session) {
+  const result = new Map(userIds.map((id) => [String(id), 0]));
+  if (!userIds.length) return result;
+  const rows = await LoyaltyPoint.aggregate([
+    { $match: { user: { $in: userIds.map(oid) }, kind: 'earn' } },
+    { $group: { _id: '$user', base: { $sum: { $ifNull: ['$basePoints', '$points'] } } } },
+  ]).session(session || null);
+  for (const row of rows) result.set(String(row._id), row.base * USD_PER_BASE_POINT);
+  return result;
+}
+// What the inviter's friends whose referral stands paid together
+async function activeFriendsPaid(inviterId, session) {
+  const ids = (await users().find({ 'referral.by': oid(inviterId), 'referral.canceledAt': { $exists: false } },
+    { projection: { _id: 1 }, session }).toArray()).map((f) => f._id);
+  return [...(await paidUsdOf(ids, session)).values()].reduce((sum, v) => sum + v, 0);
+}
+const shareOf = (basePoints) => Math.floor((basePoints * USD_PER_BASE_POINT * SHARE_POINTS) / SHARE_PER_USD);
+
+// Right after a friend's earn, in its transaction: qualifies the friend at $200 paid in total (the
+// big reward), gives the inviter their share while the 12 months last, and the steps once both the
+// friends and the dollars are reached. Returns what to tell the inviter ({ inviterId, friendName,
+// first, share, step, movedTo }) or null.
 async function afterEarn(earn, { now = new Date(), session } = {}) {
   assertInTransaction(session);
   const friend = await users().findOne({ _id: oid(earn.user) },
@@ -138,11 +163,7 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
   let { qualifiedAt } = ref;
   let qualifiedNow = false;
   if (!qualifiedAt) {
-    const [row] = await LoyaltyPoint.aggregate([
-      { $match: { user: friend._id, kind: 'earn' } },
-      { $group: { _id: null, base: { $sum: { $ifNull: ['$basePoints', '$points'] } } } },
-    ]).session(session);
-    if ((row?.base || 0) < QUALIFY_BASE_POINTS) return null;
+    if (((await paidUsdOf([friend._id], session)).get(String(friend._id)) || 0) < QUALIFY_USD) return null;
     qualifiedAt = now;
     qualifiedNow = true;
     await users().updateOne({ _id: friend._id, 'referral.qualifiedAt': { $exists: false } }, { $set: { 'referral.qualifiedAt': now } }, { session });
@@ -150,17 +171,19 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
   const result = { inviterId, friendName: shortName(friend), first: 0, share: 0, step: null, movedTo: null };
   if (await loyalty().isOff(inviterId, session)) return null;
   const grant = (points, reason, eventKey) => loyalty().grantGift({ userId: inviterId, points, reason, eventKey, levelPoints: points, now }, session);
-  if (qualifiedNow && await grant(FIRST_POINTS, `مكافأة دعوة: ${result.friendName} دفع أول طلبياته`, keys.first(friend._id))) {
+  if (qualifiedNow && await grant(FIRST_POINTS, `مكافأة دعوة: ${result.friendName} دفع ${QUALIFY_USD}$`, keys.first(friend._id))) {
     result.first = FIRST_POINTS;
   }
   const earnedAt = new Date(earn.earnedAt || now);
-  const share = Math.floor((Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points) / SHARE_DIVISOR);
+  const share = shareOf(Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points);
   if (share > 0 && earnedAt < shareEndsAt(qualifiedAt) && await grant(share, `حصتك من شحن صديقك ${result.friendName}`, keys.share(earn._id))) {
     result.share = share;
   }
-  if (qualifiedNow) {
-    const count = await qualifiedCount(inviterId, session);
-    for (const step of STEPS.filter((s) => s.friends <= count)) {
+  // Every earn of a friend adds to the dollars, so the steps are checked each time
+  const count = await qualifiedCount(inviterId, session);
+  if (count >= STEPS[0].friends) {
+    const paid = await activeFriendsPaid(inviterId, session);
+    for (const step of STEPS.filter((s) => s.friends <= count && s.usd <= paid)) {
       if (await grant(step.points, `مكافأة ${step.friends} أصدقاء`, keys.step(inviterId, step.friends))) result.step = step;
     }
   }
@@ -199,6 +222,8 @@ async function mine(userId, { now = new Date() } = {}) {
   const friends = await users().find({ 'referral.by': oid(userId) },
     { projection: { firstName: 1, lastName: 1, referral: 1, createdAt: 1 } }).sort({ 'referral.at': -1 }).limit(200).toArray();
   const points = await pointsByFriend(userId, friends.map((f) => f._id));
+  const paid = await paidUsdOf(friends.map((f) => f._id));
+  const friendsPaidUsd = friends.filter((f) => !f.referral.canceledAt).reduce((sum, f) => sum + (paid.get(String(f._id)) || 0), 0);
   const steps = await LoyaltyPoint.find({ user: oid(userId), eventKey: { $regex: `^REFERRAL_STEP:${userId}:` } }).select('points').lean();
   const qualified = friends.filter((f) => f.referral.qualifiedAt && !f.referral.canceledAt).length;
   const rows = friends.map((f) => ({
@@ -209,6 +234,9 @@ async function mine(userId, { now = new Date() } = {}) {
     qualifiedAt: f.referral.qualifiedAt || null,
     shareEndsAt: shareEndsAt(f.referral.qualifiedAt),
     points: points.get(String(f._id)) || 0,
+    paidUsd: paid.get(String(f._id)) || 0,
+    // What is left to pay before the inviter's big reward (0 once reached)
+    leftUsd: f.referral.qualifiedAt ? 0 : Math.max(QUALIFY_USD - (paid.get(String(f._id)) || 0), 0),
   }));
   return {
     off: false,
@@ -216,11 +244,13 @@ async function mine(userId, { now = new Date() } = {}) {
     path: `/r/${code}`, // the app puts its own address before it (QA or production)
     welcomePoints: WELCOME_POINTS,
     firstPoints: FIRST_POINTS,
-    qualifyUsd: QUALIFY_BASE_POINTS * 2,
-    sharePerTwenty: 10 / SHARE_DIVISOR,
+    qualifyUsd: QUALIFY_USD,
+    sharePoints: SHARE_POINTS,
+    sharePerUsd: SHARE_PER_USD,
     months: Math.round(SHARE_DAYS / 30.4),
     qualified,
-    steps: STEPS.map((s) => ({ ...s, reached: qualified >= s.friends })),
+    friendsPaidUsd,
+    steps: STEPS.map((s) => ({ ...s, reached: qualified >= s.friends && friendsPaidUsd >= s.usd })),
     friends: rows,
     totalPoints: rows.reduce((sum, r) => sum + r.points, 0) + steps.reduce((sum, s) => sum + s.points, 0),
   };
@@ -250,10 +280,11 @@ async function staffInfo(userId) {
     canSetUntil,
     invited,
     qualified,
+    qualifyUsd: QUALIFY_USD,
   };
 }
 
 module.exports = {
-  WELCOME_POINTS, FIRST_POINTS, QUALIFY_BASE_POINTS, SHARE_DIVISOR, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
+  WELCOME_POINTS, FIRST_POINTS, QUALIFY_USD, SHARE_POINTS, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
   keys, normalizeCode, shortName, codeOf, check, attach, cancel, afterEarn, mine, staffInfo,
 };

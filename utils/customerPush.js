@@ -138,10 +138,10 @@ async function ratingReminder(userId, count) {
 
 // Invite a friend (spec 2026-11-20). A friend signed up with the customer's code
 function referralJoinedText(friendName) {
-  const { FIRST_POINTS, QUALIFY_BASE_POINTS } = require('../accounting/services/loyalty/referrals');
+  const { FIRST_POINTS, QUALIFY_USD } = require('../accounting/services/loyalty/referrals');
   return {
     title: `🎉 ${friendName} سجّل بدعوتك`,
-    body: `عندما يدفع ${QUALIFY_BASE_POINTS * 2}$ من شحناته تكسب ${pointsText(FIRST_POINTS)} نقطة، ثم تكسب من كل شحنة له لمدة سنة.`,
+    body: `عندما يصل مجموع ما يدفعه ${QUALIFY_USD}$ تكسب ${pointsText(FIRST_POINTS)} نقطة، ثم تكسب من كل شحنة له لمدة سنة.`,
   };
 }
 async function referralJoined(inviterId, friendName) {
@@ -151,7 +151,7 @@ async function referralJoined(inviterId, friendName) {
 function referralWelcomeText(inviterName, points) {
   return {
     title: `🎁 هدية ${pointsText(points)} نقطة من ${inviterName}`,
-    body: `أضفناها لرصيدك (${usdText(points)}). تُخصم من فاتورة شحنك عند الدفع في المكتب.`,
+    body: `أضفناها لرصيدك (${usdText(points)}). استعملها في أول فاتورة شحن أو شراء.`,
   };
 }
 async function referralWelcome(friendId, inviterName, points) {
@@ -160,7 +160,7 @@ async function referralWelcome(friendId, inviterName, points) {
 }
 // What an inviter got from their friends in one run: big rewards, steps, the share, together
 function referralRewardsText({ firsts = [], share = 0, steps = [] } = {}) {
-  const { FIRST_POINTS } = require('../accounting/services/loyalty/referrals');
+  const { FIRST_POINTS, QUALIFY_USD } = require('../accounting/services/loyalty/referrals');
   const total = firsts.length * FIRST_POINTS + share + steps.reduce((sum, s) => sum + s.points, 0);
   if (!(total > 0)) return null;
   const top = steps[steps.length - 1];
@@ -171,7 +171,7 @@ function referralRewardsText({ firsts = [], share = 0, steps = [] } = {}) {
     };
   }
   if (firsts.length) {
-    const who = firsts.length === 1 ? `صديقك ${firsts[0]} دفع أول طلبياته` : `${firsts.length} من أصدقائك دفعوا أول طلبياتهم`;
+    const who = firsts.length === 1 ? `صديقك ${firsts[0]} وصل إلى ${QUALIFY_USD}$` : `${firsts.length} من أصدقائك وصلوا إلى ${QUALIFY_USD}$`;
     return { title: `💰 كسبت ${pointsText(total)} نقطة`, body: `${who}، وستكسب من كل شحنة لهم لمدة سنة.` };
   }
   return { title: `⭐ كسبت ${pointsText(total)} نقطة من شحن أصدقائك`, body: 'حصتك من شحنات من دعوتهم. ادعُ المزيد واكسب أكثر.' };

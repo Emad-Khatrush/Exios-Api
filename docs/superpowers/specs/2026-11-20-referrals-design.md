@@ -17,9 +17,11 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 | What | Points | Money |
 |---|---|---|
 | Friend's welcome gift, at sign-up with a code | 500 | $5 |
-| Inviter's big reward, once the friend has paid $50 of shipping or purchases | 1,000 | $10 |
-| Inviter's share, 12 months from that moment | half of what the friend earns before the friend's own multiplier (5 points per $20) | 0.25% |
-| Ladder: 3 / 5 / 10 friends who reached the big reward | +1,000 / +2,000 (and the title «سفير Exios») / +5,000 | $10 / $20 / $50 |
+| Inviter's big reward, once the friend has paid **$200 in total** (over any number of orders) of shipping or purchases | 1,000 | $10 |
+| Inviter's share, 12 months from that moment | **10 points per $50** the friend pays (whatever the friend's own multiplier) | 0.2% |
+| Steps: 3 friends who reached $200 **and** $1,000 paid by all friends / 5 and $3,000 / 10 and $6,000 | +1,000 / +2,000 (and the title «سفير Exios») / +5,000 | $10 / $20 / $50 |
+
+Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps on friends only).
 
 4. **The inviter's rewards count toward their level** (owner, 2026-11-20): the big reward, the share and the steps are adds carrying `levelPoints` (= their points), and `levelPointsOf` counts them within the same 365-day window as earns. The friend's welcome gift and every other gift still do not count. Effect: one qualified friend (1,000) reaches the second level.
 
@@ -29,9 +31,10 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 - **Who can be invited:** only a new account. The code is given at sign-up (link or typed), or by staff in the customer's profile within **7 days** of the account's creation. Once set it never changes; staff can only cancel it.
 - **Refused:** one's own code, an unknown code, a code of a staff account, an inviter whose points are off, and a friend who already has an inviter.
 - **Welcome gift:** given when the referral is set (sign-up or staff), once ever per friend. Spent like any points: by staff, at most 20% of an invoice. Not given when the friend's points are off.
-- **"Qualified" friend:** the moment the friend's paid earnings (sum of `basePoints` of their `earn` movements, i.e. $50 at 10 points per $20 = 25 base points) reach **25**. This is counted from real earns only, so it already means paid, delivered, after `LOYALTY_START_DATE`, not cancelled, not "no points".
+- **"Paid":** read from the friend's earns: the sum of `basePoints` × $2 (10 points per $20 before any multiplier; an Alipay transfer earns half, so counts half).
+- **"Qualified" friend:** the moment the friend has paid **$200** in total. The invite page shows the inviter what each friend still has to pay (`leftUsd`). This is counted from real earns only, so it already means paid, delivered, after `LOYALTY_START_DATE`, not cancelled, not "no points".
 - **Big reward:** to the inviter, in the same transaction as the friend's earn that made them qualified.
-- **Share:** for every earn of the friend from the qualifying one until `qualifiedAt + 365 days`: `floor(basePoints / 2)` to the inviter, in the same transaction as the friend's earn. The friend's own points are never reduced: the company pays the share.
+- **Share:** for every earn of the friend from the qualifying one until `qualifiedAt + 365 days`: `floor(basePoints × 2 × 10 / 50)` to the inviter, in the same transaction as the friend's earn. The friend's own points are never reduced: the company pays the share.
 - **Ladder:** counted on qualified friends with an active referral; each step given once ever.
 - **Inviter's points off:** no reward or share is given while off, and it is not paid later.
 - **Cancelling a referral** (staff, with a reason): no further rewards or share from that friend. What was already given stays; staff can deduct it with the usual deduction if needed.
@@ -53,7 +56,7 @@ All rewards are loyalty `add` movements through `grantGift`, so each has its acc
 { code: String (unique, sparse),          // this customer's own code
   by: ObjectId User,                      // who invited them
   at: Date, source: 'link'|'code'|'staff', setBy: ObjectId User,
-  qualifiedAt: Date,                      // when they reached $50 paid
+  qualifiedAt: Date,                      // when they reached $200 paid
   canceledAt: Date, canceledBy: ObjectId, cancelReason: String }
 ```
 Index on `referral.by`.
@@ -95,4 +98,4 @@ Staff (permission `loyalty_adjust`):
 
 ## Testing
 
-API (`accounting/tests/referrals.test.js`): code made once and unique; sign-up with a good code → referral + welcome gift once; own / unknown / staff / off inviter's code → no referral, account still made; staff set after 7 days → refused; friend's earns below 25 base points → nothing; the earn crossing 25 → big reward + share on that earn; later earns within 365 days → half of basePoints, after → nothing; friend's multiplier does not change the share; inviter off → nothing; cancelled referral → nothing more; ladder at 3/5/10 once each; every reward once (eventKeys). Client: the WhatsApp message and link, the ladder text, the friend status wording, the saved code from `/r/:code`.
+API (`accounting/tests/referrals.test.js`): code made once and unique; sign-up with a good code → referral + welcome gift once; own / unknown / staff / off inviter's code → no referral, account still made; staff set after 7 days → refused; friend below $200 → nothing and the page shows what is left; the earn crossing $200 over several orders → big reward + share on that earn; later earns within 365 days → 10 per $50, after → nothing; friend's multiplier does not change the share; inviter off → nothing; cancelled referral → nothing more; steps need both the friends and the dollars, checked on every earn, once each; every reward once (eventKeys). Client: the WhatsApp message and link, the ladder text, the friend status wording, the saved code from `/r/:code`.
