@@ -131,6 +131,8 @@ const userSchema = new Schema({
     source: { type: String, enum: ['link', 'code', 'staff'] },
     setBy: { type: Schema.Types.ObjectId, ref: 'User' },
     qualifiedAt: Date,
+    // Bumped when a big reward did not stand (order changed or cancelled): the next one has a new key
+    round: Number,
     // When this customer reached the ambassador step (badge, and a higher share from then on)
     ambassadorAt: Date,
     canceledAt: Date,

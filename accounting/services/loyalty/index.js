@@ -300,6 +300,21 @@ async function earnClaim(arKey, now, session) {
   return { userId: String(order.user), points, movedTo: moved?.to || null, referral };
 }
 
+// An earn still stands as it was made: its order neither cancelled nor "no points", its claim fully
+// paid (and delivered) and worth the same points (not repriced or written off since). For the
+// invite-a-friend rewards that wait 24 hours (referrals.js).
+async function earnStillValid(earnId, session) {
+  const earn = earnId && await LoyaltyPoint.findOne({ _id: earnId, kind: 'earn' }).select('arKey basePoints points').session(session || null).lean();
+  if (!earn?.arKey) return false;
+  const order = await Order.findById(parseKey(earn.arKey).orderId).setOptions({ withDeleted: true }).select(`${ORDER_FIELDS} isDeleted`).session(session || null).lean();
+  if (!order || order.isDeleted) return false;
+  const ledger = (await claimLedger({ $in: [earn.arKey] }, session)).get(earn.arKey);
+  const redeemed = (await redeemedOn([earn.arKey], session)).get(earn.arKey);
+  const state = claimState({ arKey: earn.arKey, order, ledger, redeemed, earned: false });
+  const base = Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points;
+  return !!state && state !== 'earned' && state.waitingFor === 'processing' && state.points === base;
+}
+
 // A customer's points: balance (unexpired lots), expiring soon, on the way, and totals
 async function summaryOf(userId) {
   const user = oid(userId);
@@ -1208,5 +1223,5 @@ module.exports = {
   moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, earnStillValid, takeBackLot, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };
