@@ -469,11 +469,15 @@ async function takeBackDue({ now = new Date() } = {}) {
   const given = await ReferralReward.find({ status: 'granted', sourceOrder: { $exists: true }, grantedAt: { $gte: new Date(now.getTime() - TAKE_BACK_DAYS * DAY_MS) } })
     .select('_id sourceOrder sourceEarn').lean();
   const dead = await deadOrders([...new Set(given.map((r) => String(r.sourceOrder)))].map(oid));
+  const givenFull = await ReferralReward.find({ _id: { $in: given.map((r) => r._id) } }).select('_id friend sourceOrder').lean();
+  const orderOwner = new Map((await Order.find({ _id: { $in: givenFull.map((r) => r.sourceOrder) } }).select('user').lean()).map((o) => [String(o._id), String(o.user)]));
+  const movedAway = new Set(givenFull.filter((r) => r.friend && orderOwner.has(String(r.sourceOrder)) && orderOwner.get(String(r.sourceOrder)) !== String(r.friend)).map((r) => String(r._id)));
   // Its order cancelled, or the friend's earn behind it no longer stands: a payment cancelled, the
   // invoice repriced or written off (owner, 2026-11-20: any change or cancellation takes it back)
   const due = [];
   for (const r of given) {
     if (dead.has(String(r.sourceOrder))) due.push({ _id: r._id, why: 'أُلغيت طلبية الصديق' });
+    else if (movedAway.has(String(r._id))) due.push({ _id: r._id, why: 'نُقلت طلبية الصديق لعميل آخر' });
     else if (!await loyalty().earnStillValid(r.sourceEarn)) due.push({ _id: r._id, why: 'عُدّلت طلبية الصديق أو أُلغيت دفعتها' });
   }
   let revoked = 0;
@@ -561,7 +565,7 @@ const friendStatus = (ref, now) => {
 
 const HISTORY_SIZE = 30;
 // The reasons the system writes are shown to the customer; anything else is a staff note
-const SHOWN_REASONS = ['عُدّلت طلبية الصديق أو أُلغيت دفعتها', 'نقاط الداعي موقوفة', 'لم تعد شروط المكافأة متحققة', 'أُلغيت الدعوة', 'عُدّلت طلبية الصديق أو أُلغيت', 'أُلغيت طلبية الصديق', `لم يعد مجموع ما دفعه الصديق ${QUALIFY_USD}$`];
+const SHOWN_REASONS = ['نُقلت طلبية الصديق لعميل آخر', 'عُدّلت طلبية الصديق أو أُلغيت دفعتها', 'نقاط الداعي موقوفة', 'لم تعد شروط المكافأة متحققة', 'أُلغيت الدعوة', 'عُدّلت طلبية الصديق أو أُلغيت', 'أُلغيت طلبية الصديق', `لم يعد مجموع ما دفعه الصديق ${QUALIFY_USD}$`];
 const STATUS_FILTER = { granted: ['granted'], pending: ['pending'], canceled: ['canceled', 'revoked'] };
 
 // Where a reward stands, in the customer's words
