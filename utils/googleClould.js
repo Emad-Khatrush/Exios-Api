@@ -122,4 +122,7 @@ const downloadUrlFor = async (publicUrl, filename) => {
   return url;
 };
 
-module.exports = { storage, uploadToGoogleCloud, saveToGoogleCloud, deleteFromGoogleCloud, downloadUrlFor };
+// The service account's client for other Google APIs (Cloud Vision reads passport numbers); none on QA
+const googleAuthClient = () => (isQa ? null : storage.authClient);
+
+module.exports = { storage, uploadToGoogleCloud, saveToGoogleCloud, deleteFromGoogleCloud, downloadUrlFor, googleAuthClient };

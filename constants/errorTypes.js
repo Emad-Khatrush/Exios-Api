@@ -11,6 +11,10 @@ exports.errorMessages = {
   USER_ROLE_INVALID: 'user-role-invalid',
   PASSPORT_IMAGE_REQUIRED: 'passport-image-required',
   PASSPORT_UPLOAD_FAILED: 'passport-upload-failed',
+  // The passport photo must be an image; its number is required, plausible and not on another account
+  PASSPORT_IMAGE_TYPE: 'passport-image-type',
+  PASSPORT_NUMBER_REQUIRED: 'passport-number-required',
+  PASSPORT_EXIST: 'passport-exist',
   // sign-up without agreeing to the terms, or agreeing to a version that is no longer the current one
   TERMS_NOT_ACCEPTED: 'terms-not-accepted',
   TERMS_VERSION_OUTDATED: 'terms-version-outdated',

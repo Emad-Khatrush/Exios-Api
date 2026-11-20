@@ -12,6 +12,7 @@ const { generateString } = require('../middleware/helper');
 const UserStatement = require('../models/userStatement');
 const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { TERMS_VERSION, acceptanceRecord, termsStatus } = require('../utils/termsAcceptance');
+const passportNumber = require('../utils/passportNumber');
 
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -27,12 +28,17 @@ module.exports.createUser = async (req, res, next) => {
   const city = text(req.body.city);
   const phone = Number(formatPhoneNumber(text(req.body.phone)));
   const isAgreeToTermsOfCompany = req.body.isAgreeToTermsOfCompany === true || req.body.isAgreeToTermsOfCompany === 'true';
+  // The number the customer confirmed, and what was read from the photo (staff compare them)
+  const passportNo = passportNumber.normalize(req.body.passportNumber);
+  const passportRead = passportNumber.normalize(req.body.passportNumberRead);
 
   try {
     if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
     if (!email || !password || !firstName || !lastName || !phone) return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     if (repeatedPassword !== password) return next(new ErrorHandler(400, errorMessages.PASSWORD_NOT_MATCH));
     if (!isAgreeToTermsOfCompany) return next(new ErrorHandler(400, errorMessages.TERMS_NOT_ACCEPTED));
+    if (!passportNumber.isValid(passportNo)) return next(new ErrorHandler(400, errorMessages.PASSPORT_NUMBER_REQUIRED));
+    if (await User.exists({ 'passportVerification.number': passportNo })) return next(new ErrorHandler(400, errorMessages.PASSPORT_EXIST));
     const customerId = generateString(1, characters) + generateString(3, numbers);
     // Login matches the email in any letter case, so the same email in other case counts as taken
     const userFound = await User.findOne({ $or: [ { customerId }, { username: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } } ] });
@@ -58,6 +64,9 @@ module.exports.createUser = async (req, res, next) => {
       passportVerification: {
         status: 'pending',
         imageUrl: uploadedPassport.publicUrl,
+        number: passportNo,
+        numberSource: passportRead && passportRead === passportNo ? 'read' : 'typed',
+        ...(passportRead && { numberRead: passportRead }),
         submittedAt: new Date(),
       },
       roles: {
@@ -89,12 +98,28 @@ module.exports.checkSignupAvailability = async (req, res, next) => {
       ? !!(await User.exists({ username: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } }))
       : false;
     const phoneTaken = /^\d+$/.test(phoneText) ? !!(await User.exists({ phone: Number(phoneText) })) : false;
-    res.status(200).json({ emailTaken, phoneTaken });
+    const passportNo = passportNumber.normalize(req.body.passportNumber);
+    const passportTaken = passportNumber.isValid(passportNo) ? !!(await User.exists({ 'passportVerification.number': passportNo })) : false;
+    res.status(200).json({ emailTaken, phoneTaken, passportTaken });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
   }
 }
+
+// Sign-up: the number on the passport photo, for the customer to confirm. { number, checked, taken }
+// (number null when it could not be read: the customer types it)
+module.exports.readPassportNumber = async (req, res, next) => {
+  try {
+    if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
+    const read = await passportNumber.readFromImage(req.file.buffer);
+    const taken = read?.number ? !!(await User.exists({ 'passportVerification.number': read.number })) : false;
+    res.status(200).json({ number: read?.number || null, checked: !!read?.checked, taken });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
+  }
+};
 
 module.exports.uploadPassport = async (req, res, next) => {
   try {
@@ -127,6 +152,7 @@ module.exports.updatePassportVerification = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status, rejectionReason, firstName, lastName } = req.body;
+    const number = passportNumber.normalize(req.body.passportNumber);
 
     if (!['verified', 'rejected'].includes(status)) {
       return next(new ErrorHandler(400, 'Status must be verified or rejected'));
@@ -142,6 +168,15 @@ module.exports.updatePassportVerification = async (req, res, next) => {
       'passportVerification.reviewedAt': new Date(),
       'passportVerification.reviewedBy': req.user._id,
     };
+
+    // Approving needs the passport number (read at sign-up, or typed by staff for older accounts), unique
+    if (status === 'verified') {
+      if (!passportNumber.isValid(number)) return next(new ErrorHandler(400, 'اكتب رقم جواز السفر قبل الموافقة'));
+      if (await User.exists({ _id: { $ne: id }, 'passportVerification.number': number })) {
+        return next(new ErrorHandler(400, 'رقم الجواز هذا مسجّل بحساب آخر'));
+      }
+      updateFields['passportVerification.number'] = number;
+    }
 
     // Let the reviewer fix the customer's name (as spelled on the passport) at the moment of approval
     if (status === 'verified') {

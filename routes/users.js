@@ -5,11 +5,18 @@ const users = require('../controllers/users');
 const { protect, isEmployee, isAdmin, isClient, allowAdminsAndEmployee, allowAdminsAndAccountants } = require('../middleware/check-auth');
 const { allow, anyStaff } = require('../middleware/permissions');
 
+const ErrorHandler = require('../utils/errorHandler');
+const { errorMessages } = require('../constants/errorTypes');
+
+// Passport photos: images only (owner, 2026-11-20), no larger than 10 MB
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 10 * 1024 * 1024, // No larger than 10mb
   },
+  fileFilter: (req, file, cb) => (String(file.mimetype || '').startsWith('image/')
+    ? cb(null, true)
+    : cb(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_TYPE))),
 });
 
 const router  = express.Router();
@@ -44,6 +51,25 @@ const limitSignupCheck = (req, res, next) => {
   next();
 };
 router.post('/account/check', limitSignupCheck, users.checkSignupAvailability);
+
+// Sign-up reads the passport number from the photo (Google Cloud Vision, paid past 1,000 a month):
+// public, so it is limited per address and per day
+const readHits = new Map();
+let readDay = { day: '', count: 0 };
+const READS_PER_DAY = 1500;
+const limitPassportRead = (req, res, next) => {
+  const now = Date.now();
+  const hits = (readHits.get(req.ip) || []).filter((t) => now - t < 10 * 60 * 1000);
+  const day = new Date(now).toISOString().slice(0, 10);
+  if (readDay.day !== day) readDay = { day, count: 0 };
+  if (hits.length >= 8 || readDay.count >= READS_PER_DAY) return res.status(429).json({ success: false, message: 'too-many-requests' });
+  hits.push(now);
+  readDay.count += 1;
+  readHits.set(req.ip, hits);
+  if (readHits.size > 5000) readHits.clear();
+  next();
+};
+router.post('/account/passport/read', limitPassportRead, upload.single('passportImage'), users.readPassportNumber);
 
 router.route('/account/update')
       .put(protect, isClient, users.updateUser);

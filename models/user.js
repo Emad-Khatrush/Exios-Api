@@ -109,6 +109,11 @@ const userSchema = new Schema({
     imageUrl: { type: String },
     rejectionReason: { type: String },
     wasRejected: { type: Boolean, default: false },
+    // The passport number (owner, 2026-11-20): read from the photo and confirmed by the customer at
+    // sign-up, or typed by staff when approving; unique. `numberRead`: what the photo gave, if anything
+    number: { type: String },
+    numberSource: { type: String, enum: ['read', 'typed'] },
+    numberRead: { type: String },
     submittedAt: { type: Date },
     reviewedAt: { type: Date },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -169,6 +174,7 @@ const userSchema = new Schema({
   },
 }, { timestamps: true });
 
+userSchema.index({ 'passportVerification.number': 1 }, { unique: true, partialFilterExpression: { 'passportVerification.number': { $type: 'string' } } });
 userSchema.index({ 'referral.code': 1 }, { unique: true, partialFilterExpression: { 'referral.code': { $type: 'string' } } });
 userSchema.index({ 'referral.by': 1 }, { partialFilterExpression: { 'referral.by': { $exists: true } } });
 
