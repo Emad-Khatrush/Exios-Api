@@ -301,7 +301,8 @@ async function deadOrders(orderIds, session) {
   return new Set(dead.map((o) => String(o._id)));
 }
 
-// What some customers paid in total, in dollars, by user id: their earns on orders that still count
+// What some customers paid in total, in dollars, by user id: their earns that still stand as they were
+// made (the order not cancelled, no payment cancelled and nothing changed since: earnStillValid)
 async function paidUsdOf(userIds, session) {
   const result = new Map(userIds.map((id) => [String(id), 0]));
   if (!userIds.length) return result;
@@ -309,7 +310,7 @@ async function paidUsdOf(userIds, session) {
     .select('user basePoints points orderId').session(session || null).lean();
   const dead = await deadOrders([...new Set(earns.map((e) => String(e.orderId)).filter(Boolean))].map(oid), session);
   for (const e of earns) {
-    if (dead.has(String(e.orderId))) continue;
+    if (dead.has(String(e.orderId)) || !await loyalty().earnStillValid(e._id, session)) continue;
     const key = String(e.user);
     result.set(key, result.get(key) + (Number.isFinite(e.basePoints) ? e.basePoints : e.points) * USD_PER_BASE_POINT);
   }
@@ -457,14 +458,7 @@ async function releaseDue({ now = new Date() } = {}) {
 
 // The hourly job: a reward given whose friend's order was cancelled (or deleted, or marked "no
 // points") is taken back. A big reward is taken back only when the friend no longer reaches $200.
-// What a friend paid on the earns that still stand as they were made (none of their orders cancelled,
-// none of their payments cancelled or changed since)
-async function validPaidUsd(friendId, session) {
-  const earns = await LoyaltyPoint.find({ user: oid(friendId), kind: 'earn' }).select('_id basePoints points').session(session || null).lean();
-  let usd = 0;
-  for (const e of earns) if (await loyalty().earnStillValid(e._id, session)) usd += baseOf(e) * USD_PER_BASE_POINT;
-  return usd;
-}
+const validPaidUsd = async (friendId, session) => (await paidUsdOf([friendId], session)).get(String(friendId)) || 0;
 
 // Given rewards are checked for a year and a little more: past that the share has ended anyway
 const TAKE_BACK_DAYS = SHARE_DAYS + 35;
@@ -503,9 +497,40 @@ async function takeBackDue({ now = new Date() } = {}) {
   return { revoked, failed };
 }
 
-// Both, for the hourly loyalty jobs: take back first, then release
+// A friend whose big reward did not stand (taken back, or cancelled while it waited) and who paid
+// again: once what stands reaches $200 again, the big reward waits again (a new key, its 24 hours).
+// A new earn does this by itself (afterEarn); paying an order again does not earn again, so this does.
+async function requalifyDue({ now = new Date() } = {}) {
+  const { runInTransaction } = require('../transaction');
+  const friends = await users().find({ 'referral.by': { $exists: true }, 'referral.round': { $gte: 1 }, 'referral.qualifiedAt': { $exists: false },
+    'referral.canceledAt': { $exists: false } }, { projection: { _id: 1 } }).toArray();
+  let held = 0;
+  for (const { _id } of friends) {
+    try {
+      const done = await runInTransaction(async (session) => {
+        const friend = await users().findOne({ _id, 'referral.qualifiedAt': { $exists: false } }, { projection: { firstName: 1, lastName: 1, referral: 1 }, session });
+        if (!friend || await loyalty().isOff(friend.referral.by, session)) return false;
+        if (await validPaidUsd(friend._id, session) < QUALIFY_USD) return false;
+        const earns = await LoyaltyPoint.find({ user: friend._id, kind: 'earn' }).sort({ earnedAt: -1, _id: -1 }).select('_id orderId').session(session).lean();
+        let source = null;
+        for (const e of earns) if (await loyalty().earnStillValid(e._id, session)) { source = e; break; }
+        if (!source) return false;
+        await users().updateOne({ _id: friend._id }, { $set: { 'referral.qualifiedAt': now } }, { session });
+        return hold({ inviter: friend.referral.by, friend: friend._id, sourceEarn: source._id, sourceOrder: source.orderId, kind: 'first', points: FIRST_POINTS,
+          reason: `مكافأة دعوة: ${shortName(friend)} دفع ${QUALIFY_USD}$`, eventKey: keys.first(friend._id, friend.referral.round) }, now, session);
+      });
+      if (done) held += 1;
+    } catch (error) {
+      console.error(`[referrals] requalify ${_id}: ${error.message}`);
+    }
+  }
+  return { held };
+}
+
+// For the hourly loyalty jobs: take back, then qualify again, then release
 async function runDue(options) {
   const back = await takeBackDue(options);
+  await requalifyDue(options);
   const released = await releaseDue(options);
   return { ...released, revoked: back.revoked, failed: released.failed + back.failed };
 }
@@ -699,6 +724,6 @@ async function staffInfo(userId) {
 
 module.exports = {
   WELCOME_POINTS, FIRST_POINTS, HOLD_HOURS, QUALIFY_USD, SHARE_POINTS, AMBASSADOR_SHARE_POINTS, AMBASSADOR_TITLE, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
-  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, runDue, mine, historyOf, staffInfo,
+  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, requalifyDue, runDue, mine, historyOf, staffInfo,
   suspicionFlags, reviewQueue, approveReferral, rejectReferral, approveStep, rejectStep, manualReport,
 };
