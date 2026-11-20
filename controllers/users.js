@@ -68,9 +68,10 @@ module.exports.createUser = async (req, res, next) => {
     });
 
     // Invite a friend (spec 2026-11-20): a code that cannot be used leaves the account without an inviter
-    const referral = await require('./referrals').attachAtSignup(user._id, text(req.body.referralCode), text(req.body.referralSource));
+    // Invited: 500 points; otherwise the new account's 100 (never both)
+    const gifts = await require('./referrals').attachAtSignup(user._id, text(req.body.referralCode), text(req.body.referralSource));
     const token = await user.getSignedToken();
-    res.status(200).json({ success: true, token: token, ...(referral && { referral }) });
+    res.status(200).json({ success: true, token: token, ...gifts });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(404, errorMessages.SERVER_ERROR));

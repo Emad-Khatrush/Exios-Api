@@ -23,6 +23,8 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 
 Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps on friends only).
 
+**New account's gift** (owner, 2026-11-20): every account opened without an inviter gets **100 points** at sign-up (`SIGNUP_GIFT:<userId>`, «هدية فتح الحساب»). Invited: 500 in all, never both; when staff set the inviter later, the welcome adds only what is missing (400).
+
 **«سفير Exios»** (owner, 2026-11-20, "balanced"): reaching the last step (10 friends, $10,000; owner moved it there 2026-11-20) sets `referral.ambassadorAt`. From then on the inviter's share is **15 points per $50** (not retroactive: only friends' earns from that moment). A badge shows it: under the name in the app's menus, on the invite page, and in the admin's Points tab.
 
 4. **The inviter's rewards count toward their level** (owner, 2026-11-20): the big reward, the share and the steps are adds carrying `levelPoints` (= their points), and `levelPointsOf` counts them within the same 365-day window as earns. The friend's welcome gift and every other gift still do not count. Effect: one qualified friend (1,000) reaches the second level.

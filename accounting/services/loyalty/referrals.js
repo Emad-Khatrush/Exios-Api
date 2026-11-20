@@ -14,6 +14,8 @@ const { assertInTransaction } = require('../transaction');
 
 // ---- The rules (owner may tune them here) ----
 const WELCOME_POINTS = 500; // the friend, at sign-up
+// Every new account without an inviter, at sign-up (owner, 2026-11-20). Invited: WELCOME_POINTS in all, never both
+const SIGNUP_POINTS = 100;
 const FIRST_POINTS = 1000; // the inviter, once the friend has paid QUALIFY_USD in total
 const QUALIFY_USD = 200;
 const SHARE_POINTS = 10; // the inviter's share: SHARE_POINTS for every SHARE_PER_USD the friend pays
@@ -40,6 +42,7 @@ const loyalty = () => require('./index');
 
 const keys = {
   welcome: (friendId) => `REFERRAL_WELCOME:${friendId}`,
+  signup: (userId) => `SIGNUP_GIFT:${userId}`,
   first: (friendId) => `REFERRAL_FIRST:${friendId}`,
   share: (earnId) => `REFERRAL_SHARE:${earnId}`,
   step: (inviterId, friends) => `REFERRAL_STEP:${inviterId}:${friends}`,
@@ -112,10 +115,21 @@ async function attach({ friendId, code, source = 'code', by, now = new Date() } 
     $set: { 'referral.by': inviter._id, 'referral.at': now, 'referral.source': source, ...(by && { 'referral.setBy': oid(by) }) },
   }, { session });
   if (!res.modifiedCount) throw new ErrorHandler(400, 'هذا العميل مسجّل بدعوة من قبل');
+  // A new account's gift already given (staff set the inviter later): the welcome tops it up to WELCOME_POINTS
+  const signup = await LoyaltyPoint.findOne({ eventKey: keys.signup(friend._id) }).select('points').session(session).lean();
   const welcome = friend.loyaltyOff?.at ? null : await loyalty().grantGift({
-    userId: friend._id, points: WELCOME_POINTS, reason: 'هدية الانضمام بدعوة صديق', eventKey: keys.welcome(friend._id), now,
+    userId: friend._id, points: WELCOME_POINTS - (signup?.points || 0), reason: 'هدية الانضمام بدعوة صديق', eventKey: keys.welcome(friend._id), now,
   }, session);
   return { inviterId: String(inviter._id), inviterName: shortName(inviter), friendName: shortName(friend), welcome: welcome ? WELCOME_POINTS : 0 };
+}
+
+// A new account without an inviter: SIGNUP_POINTS once ever (not when it was invited)
+async function signupGift({ userId, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  const user = await users().findOne({ _id: oid(userId) }, { projection: { 'referral.by': 1, roles: 1, loyaltyOff: 1 }, session });
+  if (!user || user.referral?.by || !user.roles?.isClient || isStaff(user) || user.loyaltyOff?.at) return 0;
+  const lot = await loyalty().grantGift({ userId: user._id, points: SIGNUP_POINTS, reason: 'هدية فتح الحساب', eventKey: keys.signup(user._id), now }, session);
+  return lot ? SIGNUP_POINTS : 0;
 }
 
 // Staff stop the rewards from one friend (what was given stays)
@@ -304,5 +318,5 @@ async function staffInfo(userId) {
 
 module.exports = {
   WELCOME_POINTS, FIRST_POINTS, QUALIFY_USD, SHARE_POINTS, AMBASSADOR_SHARE_POINTS, AMBASSADOR_TITLE, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
-  keys, normalizeCode, shortName, codeOf, check, attach, cancel, afterEarn, mine, staffInfo,
+  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, mine, staffInfo,
 };

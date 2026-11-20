@@ -44,8 +44,9 @@ module.exports.staffCancel = handle(async (req) => {
 });
 
 // Sign-up: the code a new customer gave. A code that cannot be used never fails the sign-up: the
-// account stays, without an inviter, and the app is told why.
-module.exports.attachAtSignup = async (friendId, code, source) => {
+// account stays, without an inviter, and the app is told why. Without an inviter the account gets
+// the new account's gift instead (100 points; invited: 500, never both).
+async function attachCode(friendId, code, source) {
   if (!String(code || '').trim()) return null;
   try {
     const attached = await runInTransaction((session) => referrals.attach({ friendId, code, source: source === 'link' ? 'link' : 'code' }, session));
@@ -54,4 +55,15 @@ module.exports.attachAtSignup = async (friendId, code, source) => {
   } catch (error) {
     return { ok: false, message: error?.statusCode === 400 || error?.status === 400 ? error.message : 'تعذر تطبيق كود الدعوة' };
   }
+}
+module.exports.attachAtSignup = async (friendId, code, source) => {
+  const referral = await attachCode(friendId, code, source);
+  if (referral?.ok) return { referral };
+  let signupGift = 0;
+  try {
+    signupGift = await runInTransaction((session) => referrals.signupGift({ userId: friendId }, session));
+  } catch (error) {
+    console.error('[referrals] signup gift:', error.message);
+  }
+  return { ...(referral && { referral }), signupGift };
 };
