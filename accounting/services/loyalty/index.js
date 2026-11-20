@@ -1023,6 +1023,21 @@ const monthKey = (date) => moment(date).tz(TZ).format('YYYY-MM');
 // after each one (every movement walked oldest first, so it is right on any page and whatever the
 // filter; pages from 1). `type` keeps one kind of movement (HISTORY_TYPES); `months` has, for each
 // month on the page, what that month gained and spent over all its movements of that type.
+// Where an addition came from, by its key: the app titles each one ("مكافأة دعوة صديق", "هدية
+// الترقية"…) instead of calling every addition one from the office. A take-back or an expiry is
+// told by the lot it took from.
+function sourceOf(eventKey) {
+  const key = String(eventKey || '');
+  if (key.startsWith('REFERRAL_WELCOME:')) return 'invite-welcome';
+  if (key.startsWith('REFERRAL_STEP:')) return 'invite-step';
+  if (key.startsWith('REFERRAL_')) return 'invite';
+  if (key.startsWith('SIGNUP_GIFT:')) return 'signup';
+  if (key.startsWith('LOYALTY_TIER_GIFT:')) return 'level';
+  if (key.startsWith('RATING:')) return 'rating';
+  if (key.startsWith('LOYALTY_ADJUST:')) return 'staff';
+  return null;
+}
+
 async function historyOf(userId, { page, limit, type } = {}) {
   const typeName = type === undefined || type === null || type === '' ? 'all' : String(type);
   if (!Object.prototype.hasOwnProperty.call(HISTORY_TYPES, typeName)) throw new ErrorHandler(400, 'نوع الحركة غير معروف');
@@ -1032,7 +1047,7 @@ async function historyOf(userId, { page, limit, type } = {}) {
   const user = oid(userId);
   const filter = kinds ? { user, kind: { $in: kinds } } : { user };
   const [movements, total, all] = await Promise.all([
-    LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt promotion')
+    LoyaltyPoint.find(filter).select('kind points orderId reason createdAt expiresAt promotion eventKey sources')
       .sort({ createdAt: -1, _id: -1 }).skip((paging.page - 1) * paging.limit).limit(paging.limit).lean(),
     LoyaltyPoint.countDocuments(filter),
     LoyaltyPoint.find({ user }).select('kind points createdAt').sort({ createdAt: 1, _id: 1 }).lean(),
@@ -1056,6 +1071,14 @@ async function historyOf(userId, { page, limit, type } = {}) {
   const orderIds = [...new Set(movements.filter((m) => m.orderId).map((m) => String(m.orderId)))];
   const numbers = new Map((await Order.find({ _id: { $in: orderIds } }).setOptions({ withDeleted: true }).select('orderId').lean())
     .map((o) => [String(o._id), o.orderId]));
+  // The lots a take-back or an expiry took from, for where they came from (and their reason)
+  const fromIds = [...new Set(movements.filter((m) => ['revoke', 'expire'].includes(m.kind)).map((m) => String(m.sources?.[0]?.lotId || '')).filter(Boolean))];
+  const fromLots = new Map((await LoyaltyPoint.find({ _id: { $in: fromIds } }).select('eventKey reason').lean()).map((l) => [String(l._id), l]));
+  const rowSource = (m) => {
+    if (m.kind === 'add') return sourceOf(m.eventKey);
+    if (m.kind === 'revoke' || m.kind === 'expire') return sourceOf(fromLots.get(String(m.sources?.[0]?.lotId))?.eventKey);
+    return null;
+  };
   return {
     rows: movements.map((m) => ({
       id: String(m._id),
@@ -1063,7 +1086,8 @@ async function historyOf(userId, { page, limit, type } = {}) {
       points: m.points,
       orderId: m.orderId,
       orderNumber: m.orderId ? numbers.get(String(m.orderId)) : undefined,
-      reason: m.reason,
+      reason: m.reason || (m.kind === 'revoke' ? fromLots.get(String(m.sources?.[0]?.lotId))?.reason : undefined),
+      source: rowSource(m),
       createdAt: m.createdAt,
       month: monthKey(m.createdAt),
       expiresAt: LOTS.includes(m.kind) ? m.expiresAt : undefined,
