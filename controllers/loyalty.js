@@ -63,7 +63,13 @@ const handle = (fn) => async (req, res, next) => {
 // ---- Customers (their own data only) ----
 
 // A customer whose points are switched off gets nothing but { off: true }: the app hides the points
-module.exports.mine = handle(async (req) => (await loyalty.isOff(req.user._id) ? { off: true } : customerPoints(req.user._id)));
+// The customer's own points: why and by whom the office set their level are staff notes, kept out
+module.exports.mine = handle(async (req) => {
+  if (await loyalty.isOff(req.user._id)) return { off: true };
+  const data = await customerPoints(req.user._id);
+  if (data.level) delete data.level.manual;
+  return data;
+});
 
 module.exports.myHistory = handle(async (req) => (await loyalty.isOff(req.user._id)
   ? { rows: [], total: 0 }

@@ -117,6 +117,9 @@ async function levelOf(userId, { now = new Date(), withHistory = false } = {}) {
       : null,
     celebrate: tier.rank > 0 && saved.seen !== tier.key ? tier.key : null,
     manual: saved.manual?.at ? { reason: saved.manual.reason || '', at: saved.manual.at, by: saved.manual.by ? String(saved.manual.by) : null } : null,
+    // Raised by the office above what the points reach: the app says so, so the customer is not
+    // surprised to see their points below their level (owner, 2026-11-20)
+    byOffice: !!saved.manual?.at && tier.rank > tiers.qualifyingTier(points).rank,
     ...(withHistory && { history: (saved.history || []).slice().reverse() }),
   };
 }
