@@ -21,7 +21,7 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 | Inviter's share, 12 months from that moment | **10 points per $50** the friend pays (whatever the friend's own multiplier) | 0.2% |
 | Steps: 3 friends who reached $200 **and** $2,000 paid by all friends / 5 and $5,000 / 10 and $10,000 | +1,000 / +2,000 / +5,000 (and the title «سفير Exios») | $10 / $20 / $50 |
 
-Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps on friends only).
+Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps on friends only). Later the same day: the inviter's reward 1,000 → **500 ($5)** and the friend's welcome 500 → **300 ($3)**.
 
 **24 hours on hold** (owner, 2026-11-20): every reward of the inviter (big reward, share, steps) is a `ReferralReward` with `releaseAt` = earn + 24 h. The hourly job (`referrals.runDue`) gives it when the friend's earn still stands (`earnStillValid`: order not cancelled, claim fully paid, same points: not repriced or written off), else cancels it (a cancelled big reward lets the friend qualify again, with a new key). A reward given whose order is cancelled later is taken back (`takeBackDue`); a big reward only when the friend no longer reaches $200. "Paid" no longer counts cancelled orders.
 

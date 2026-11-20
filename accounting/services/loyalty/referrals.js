@@ -17,10 +17,10 @@ const ErrorHandler = require('../../../utils/errorHandler');
 const { assertInTransaction } = require('../transaction');
 
 // ---- The rules (owner may tune them here) ----
-const WELCOME_POINTS = 500; // the friend, at sign-up
+const WELCOME_POINTS = 300; // the friend, at sign-up
 // Every new account without an inviter, at sign-up (owner, 2026-11-20). Invited: WELCOME_POINTS in all, never both
 const SIGNUP_POINTS = 100;
-const FIRST_POINTS = 1000; // the inviter, once the friend has paid QUALIFY_USD in total
+const FIRST_POINTS = 500; // the inviter, once the friend has paid QUALIFY_USD in total
 const QUALIFY_USD = 200;
 const SHARE_POINTS = 10; // the inviter's share: SHARE_POINTS for every SHARE_PER_USD the friend pays
 // An ambassador (the step with `ambassador`) earns this instead, on what friends pay from then on (owner, 2026-11-20)
