@@ -57,6 +57,8 @@ const keys = {
 const normalizeCode = (code) => String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 // A first name and the initial of the last one: what other customers see of a person
 const shortName = (u) => [u?.firstName, u?.lastName ? `${String(u.lastName).trim().charAt(0)}.` : ''].filter(Boolean).join(' ').trim() || 'صديقك';
+// The inviter's own pages (their friends, their record) show the friend's full name (owner, 2026-11-20)
+const fullName = (u) => [u?.firstName, u?.lastName].map((s) => String(s || '').trim()).filter(Boolean).join(' ') || 'صديقك';
 const isStaff = (u) => !!(u?.roles?.isAdmin || u?.roles?.isEmployee || u?.roles?.isAccountant);
 const shareEndsAt = (qualifiedAt) => (qualifiedAt ? new Date(new Date(qualifiedAt).getTime() + SHARE_DAYS * DAY_MS) : null);
 
@@ -616,7 +618,7 @@ async function historyOf(inviterId, { friendId, status, page = 1, now = new Date
     at: r.createdAt,
     grantedAt: r.grantedAt || null,
     canceledAt: r.canceledAt || null,
-    friend: r.friend ? { id: String(r.friend), name: shortName(friends.get(String(r.friend))) } : null,
+    friend: r.friend ? { id: String(r.friend), name: fullName(friends.get(String(r.friend))) } : null,
     orderNumber: r.sourceOrder ? orders.get(String(r.sourceOrder)) || null : null,
     paidUsd: r.sourceEarn ? earns.get(String(r.sourceEarn)) || 0 : null,
     step: r.kind === 'step' ? { friends: r.step?.friends, usd: r.step?.usd, title: r.step?.title || null } : null,
@@ -627,7 +629,7 @@ async function historyOf(inviterId, { friendId, status, page = 1, now = new Date
     const ref = friendDoc.referral;
     friend = {
       id: String(friendDoc._id),
-      name: shortName(friendDoc),
+      name: fullName(friendDoc),
       joinedAt: ref.at || friendDoc.createdAt,
       status: friendStatus(ref, now),
       paidUsd: paid,
@@ -656,7 +658,7 @@ async function mine(userId, { now = new Date() } = {}) {
   const qualified = friends.filter((f) => f.referral.qualifiedAt && !f.referral.canceledAt).length;
   const rows = friends.map((f) => ({
     id: String(f._id),
-    name: shortName(f),
+    name: fullName(f),
     joinedAt: f.referral.at || f.createdAt,
     status: friendStatus(f.referral, now),
     qualifiedAt: f.referral.qualifiedAt || null,
