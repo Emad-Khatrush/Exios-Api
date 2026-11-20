@@ -4,7 +4,7 @@
 // every $50 the friend pays, for 12 months. Steps (3 friends and $2,000 paid by friends, 5 and
 // $5,000, 10 and $10,000 with the title «سفير Exios») add more. "Paid" is read from the friend's earns: 1 point before the
 // multiplier per $2 of shipping or purchases (an Alipay transfer earns half, so counts half). The inviter's
-// big reward and share count toward their level (owner, 2026-11-20); the steps and the friend's gift do not.
+// share counts toward their level (owner, 2026-11-20); the big reward, the steps and the friend's gift do not.
 // Every reward is a loyalty add through grantGift, so it has its entry and happens once (eventKey).
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -189,11 +189,11 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
   }
   const result = { inviterId, friendName: shortName(friend), first: 0, share: 0, step: null, movedTo: null };
   if (await loyalty().isOff(inviterId, session)) return null;
-  // The big reward and the share count toward the level; the steps do not (owner, 2026-11-20)
+  // Only the share counts toward the level; the big reward and the steps do not (owner, 2026-11-20)
   const grant = (points, reason, eventKey, countsForLevel = true) => loyalty().grantGift({
     userId: inviterId, points, reason, eventKey, ...(countsForLevel && { levelPoints: points }), now,
   }, session);
-  if (qualifiedNow && await grant(FIRST_POINTS, `مكافأة دعوة: ${result.friendName} دفع ${QUALIFY_USD}$`, keys.first(friend._id))) {
+  if (qualifiedNow && await grant(FIRST_POINTS, `مكافأة دعوة: ${result.friendName} دفع ${QUALIFY_USD}$`, keys.first(friend._id), false)) {
     result.first = FIRST_POINTS;
   }
   const earnedAt = new Date(earn.earnedAt || now);
