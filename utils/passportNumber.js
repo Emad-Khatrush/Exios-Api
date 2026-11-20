@@ -39,8 +39,42 @@ function fromMrz(text) {
       if (isValid(number) && checkDigit(field) === Number(digit)) return { number, checked: true };
     }
   }
-  const any = candidates.map((l) => normalize(l.slice(0, 9).replace(/</g, ''))).find(isValid);
+  // A phone photo: glare can split a machine line in two and the photo's edge can cut its first
+  // letters. What is left of the second line still shows the end of the number, its check digit, the
+  // nationality and the birth date: "…B123456<4LBY900101". The printed "Passport No." field then
+  // gives the whole number, which the check digit confirms.
+  const fragments = [];
+  for (const line of lines.concat(String(text || '').split(/\r?\n/).map((l) => l.toUpperCase().replace(/\s+/g, '')))) {
+    const m = line.match(/([A-Z0-9]+)(<*)([0-9])[A-Z<]{3}[0-9]{6}/);
+    if (m) fragments.push({ tail: m[1], field: `${m[1]}${m[2]}`, digit: Number(m[3]) });
+  }
+  // A fragment that holds the whole number field (9 characters) checks itself
+  for (const f of fragments) {
+    if (f.field.length === 9 && isValid(f.tail) && checkDigit(f.field) === f.digit) return { number: f.tail, checked: true };
+  }
+  const printed = printedNumbers(text);
+  const pad9 = (n) => `${n}<<<<<<<<<`.slice(0, 9);
+  for (const number of printed) {
+    if (fragments.some((f) => number.endsWith(f.tail) && checkDigit(pad9(number)) === f.digit)) return { number, checked: true };
+  }
+  const any = printed[0] || candidates.map((l) => normalize(l.slice(0, 9).replace(/</g, ''))).find(isValid)
+    || fragments.map((f) => f.tail).find(isValid);
   return any ? { number: any, checked: false } : null;
+}
+
+// Numbers printed on the page, the one right after a "Passport No." label first
+function printedNumbers(text) {
+  const lines = String(text || '').split(/\r?\n/).map((l) => l.trim().toUpperCase());
+  const looks = (t) => isValid(t) && /[0-9]/.test(t) && /^[A-Z]{0,3}[0-9]+[A-Z0-9]*$/.test(t);
+  const found = [];
+  lines.forEach((line, i) => {
+    if (/PASSPORT\s*N[O0]/.test(line)) {
+      const after = `${line.replace(/.*PASSPORT\s*N[O0]\.?/, '')} ${lines[i + 1] || ''}`;
+      after.split(/\s+/).map(normalize).filter(looks).forEach((t) => found.push(t));
+    }
+  });
+  lines.forEach((line) => line.split(/\s+/).map(normalize).filter(looks).forEach((t) => found.push(t)));
+  return [...new Set(found)];
 }
 
 // The number read from a passport photo (Google Cloud Vision), or null when it cannot be read or the
