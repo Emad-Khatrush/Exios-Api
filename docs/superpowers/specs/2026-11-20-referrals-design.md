@@ -19,7 +19,7 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 | Friend's welcome gift, at sign-up with a code | 500 | $5 |
 | Inviter's big reward, once the friend has paid **$200 in total** (over any number of orders) of shipping or purchases | 1,000 | $10 |
 | Inviter's share, 12 months from that moment | **10 points per $50** the friend pays (whatever the friend's own multiplier) | 0.2% |
-| Steps: 3 friends who reached $200 **and** $5,000 paid by all friends / 5 and $7,500 / 10 and $10,000 | +1,000 / +2,000 / +5,000 (and the title «سفير Exios») | $10 / $20 / $50 |
+| Steps: 3 friends who reached $200 **and** $2,000 paid by all friends / 5 and $5,000 / 10 and $10,000 | +1,000 / +2,000 / +5,000 (and the title «سفير Exios») | $10 / $20 / $50 |
 
 Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps on friends only).
 

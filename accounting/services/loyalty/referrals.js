@@ -1,8 +1,8 @@
 // Invite a friend (spec 2026-11-20-referrals-design.md). A customer shares their code; a new
 // customer who signs up with it gets a welcome gift. Once the friend has paid $200 of shipping or
 // purchases in total (over any number of orders) the inviter gets a big reward, then 10 points for
-// every $50 the friend pays, for 12 months. Steps (3 friends and $5,000 paid by friends, 5 and
-// $7,500, 10 and $10,000 with the title «سفير Exios») add more. "Paid" is read from the friend's earns: 1 point before the
+// every $50 the friend pays, for 12 months. Steps (3 friends and $2,000 paid by friends, 5 and
+// $5,000, 10 and $10,000 with the title «سفير Exios») add more. "Paid" is read from the friend's earns: 1 point before the
 // multiplier per $2 of shipping or purchases (an Alipay transfer earns half, so counts half). The inviter's
 // rewards count toward their level (owner, 2026-11-20); the friend's welcome gift does not.
 // Every reward is a loyalty add through grantGift, so it has its entry and happens once (eventKey).
@@ -26,8 +26,8 @@ const SHARE_DAYS = 365; // from the moment the friend qualified
 const STAFF_SET_DAYS = 7; // staff may give a new account its inviter within this many days
 // Each step needs both: that many friends who reached QUALIFY_USD, and that much paid by all friends
 const STEPS = [
-  { friends: 3, usd: 5000, points: 1000 },
-  { friends: 5, usd: 7500, points: 2000 },
+  { friends: 3, usd: 2000, points: 1000 },
+  { friends: 5, usd: 5000, points: 2000 },
   { friends: 10, usd: 10000, points: 5000, title: AMBASSADOR_TITLE, ambassador: true },
 ];
 const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
