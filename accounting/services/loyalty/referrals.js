@@ -565,7 +565,8 @@ const STATUS_FILTER = { granted: ['granted'], pending: ['pending'], canceled: ['
 // Where a reward stands, in the customer's words
 async function rowState(r, friend, now) {
   if (r.status === 'granted') return { state: 'granted', note: null };
-  if (r.status === 'revoked') return { state: 'canceled', note: `سُحبت: ${r.cancelReason || 'أُلغيت طلبية الصديق'}` };
+  // Given, then taken back: told apart from one cancelled before it was given
+  if (r.status === 'revoked') return { state: 'canceled', revoked: true, note: r.cancelReason || 'أُلغيت طلبية الصديق' };
   if (r.status === 'canceled') return { state: 'canceled', note: SHOWN_REASONS.includes(r.cancelReason) ? r.cancelReason : 'ألغاها المكتب' };
   if (new Date(r.releaseAt) > now) return { state: 'pending', note: 'hold', releaseAt: r.releaseAt };
   if (r.kind === 'step') return { state: 'pending', note: r.approvedAt ? 'soon' : 'review' };
@@ -603,12 +604,13 @@ async function historyOf(inviterId, { friendId, status, page = 1, now = new Date
     .select('orderId').lean()).map((o) => [String(o._id), o.orderId]));
   const earns = new Map((await LoyaltyPoint.find({ _id: { $in: slice.map((s) => s.r.sourceEarn).filter(Boolean) } }).select('basePoints points').lean())
     .map((e) => [String(e._id), baseOf(e) * USD_PER_BASE_POINT]));
-  const items = slice.map(({ r, state, note, releaseAt }) => ({
+  const items = slice.map(({ r, state, note, releaseAt, revoked }) => ({
     id: String(r._id),
     kind: r.kind,
     points: r.points,
     countsForLevel: r.levelPoints > 0,
     state,
+    revoked: !!revoked,
     note,
     releaseAt: releaseAt || null,
     at: r.createdAt,
@@ -632,7 +634,8 @@ async function historyOf(inviterId, { friendId, status, page = 1, now = new Date
       leftUsd: ref.qualifiedAt ? 0 : Math.max(QUALIFY_USD - paid, 0),
       qualifiedAt: ref.qualifiedAt || null,
       shareEndsAt: shareEndsAt(ref.qualifiedAt),
-      orders: new Set(rows.map((row) => String(row.r.sourceOrder || '')).filter(Boolean)).size,
+      // Orders that brought something that stands (given or waiting), not what was cancelled or taken back
+      orders: new Set(rows.filter((row) => row.state !== 'canceled').map((row) => String(row.r.sourceOrder || '')).filter(Boolean)).size,
       waiting: ref.review?.status === 'pending' ? 'review' : friendDoc.passportVerification?.status !== 'verified' ? 'passport' : null,
     };
   }
