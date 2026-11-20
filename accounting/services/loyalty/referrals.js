@@ -2,7 +2,7 @@
 // customer who signs up with it gets a welcome gift. Once the friend has paid $200 of shipping or
 // purchases in total (over any number of orders) the inviter gets a big reward, then 10 points for
 // every $50 the friend pays, for 12 months. Steps (3 friends and $2,000 paid by friends, 5 and
-// $5,000, 10 and $10,000 with the title «سفير Exios») add more. "Paid" is read from the friend's earns: 1 point before the
+// $5,000, 10 and $10,000 with the title «سفير إكسيوس») add more. "Paid" is read from the friend's earns: 1 point before the
 // multiplier per $2 of shipping or purchases (an Alipay transfer earns half, so counts half). The inviter's
 // share counts toward their level (owner, 2026-11-20); the big reward, the steps and the friend's gift do not.
 // Every reward of the inviter waits 24 hours (models/referralReward.js) and is cancelled when the friend's
@@ -25,7 +25,7 @@ const QUALIFY_USD = 200;
 const SHARE_POINTS = 10; // the inviter's share: SHARE_POINTS for every SHARE_PER_USD the friend pays
 // An ambassador (the step with `ambassador`) earns this instead, on what friends pay from then on (owner, 2026-11-20)
 const AMBASSADOR_SHARE_POINTS = 15;
-const AMBASSADOR_TITLE = 'سفير Exios';
+const AMBASSADOR_TITLE = 'سفير إكسيوس';
 const SHARE_PER_USD = 50;
 const USD_PER_BASE_POINT = 2; // 10 points per $20 before any multiplier
 const SHARE_DAYS = 365; // from the moment the friend qualified

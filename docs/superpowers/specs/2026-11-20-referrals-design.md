@@ -19,7 +19,7 @@ Numbers proposed by me (the owner chose "about $15 per new customer" as the dire
 | Friend's welcome gift, at sign-up with a code | 500 | $5 |
 | Inviter's big reward, once the friend has paid **$200 in total** (over any number of orders) of shipping or purchases | 1,000 | $10 |
 | Inviter's share, 12 months from that moment | **10 points per $50** the friend pays (whatever the friend's own multiplier) | 0.2% |
-| Steps: 3 friends who reached $200 **and** $2,000 paid by all friends / 5 and $5,000 / 10 and $10,000 | +1,000 / +2,000 / +5,000 (and the title «سفير Exios») | $10 / $20 / $50 |
+| Steps: 3 friends who reached $200 **and** $2,000 paid by all friends / 5 and $5,000 / 10 and $10,000 | +1,000 / +2,000 / +5,000 (and the title «سفير إكسيوس») | $10 / $20 / $50 |
 
 Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps on friends only). Later the same day: the inviter's reward 1,000 → **500 ($5)** and the friend's welcome 500 → **300 ($3)**.
 
@@ -36,7 +36,7 @@ Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps 
 
 **New account's gift** (owner, 2026-11-20): every account opened without an inviter gets **100 points** at sign-up (`SIGNUP_GIFT:<userId>`, «هدية فتح الحساب»). Invited: 500 in all, never both; when staff set the inviter later, the welcome adds only what is missing (400).
 
-**«سفير Exios»** (owner, 2026-11-20, "balanced"): reaching the last step (10 friends, $10,000; owner moved it there 2026-11-20) sets `referral.ambassadorAt`. From then on the inviter's share is **15 points per $50** (not retroactive: only friends' earns from that moment). A badge shows it: under the name in the app's menus, on the invite page, and in the admin's Points tab.
+**«سفير إكسيوس»** (owner, 2026-11-20, "balanced"): reaching the last step (10 friends, $10,000; owner moved it there 2026-11-20) sets `referral.ambassadorAt`. From then on the inviter's share is **15 points per $50** (not retroactive: only friends' earns from that moment). A badge shows it: under the name in the app's menus, on the invite page, and in the admin's Points tab.
 
 4. **The inviter's rewards count toward their level** (owner, 2026-11-20): only the share is an add carrying `levelPoints` (the big reward and the steps do NOT count: owner, later the same day; they are for spending only) (= their points), and `levelPointsOf` counts them within the same 365-day window as earns. The friend's welcome gift and every other gift still do not count. Effect: the level rises with what friends actually pay (10 level points per $50), never from one-off rewards.
 
