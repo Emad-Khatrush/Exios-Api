@@ -27,6 +27,13 @@ Changed by the owner on 2026-11-20 (first version: $50, 5 points per $20, steps 
 
 **Passport number** (owner, 2026-11-20, against duplicate accounts): read from the photo at sign-up (Google Cloud Vision, MRZ with its check digit, `utils/passportNumber.js`), confirmed by the customer, unique (`passportVerification.number`, sign-up refused with `passport-exist`), required and editable when staff approve. Passport photos: images only.
 
+**Protections** (owner, 2026-11-20):
+- A friend's rewards (big reward, share) wait, beyond the 24 hours, until the friend's passport is verified; steps count only verified friends.
+- Suspicious referrals: same device at sign-up (same address AND browser; a shared network alone is not a sign) or the same family name → `referral.flags`, `referral.review.status = 'pending'`; their rewards wait until staff approve (reject cancels the referral and what waited).
+- Step rewards always wait for staff approval (rejected: never offered again).
+- Staff page «مراجعة الدعوات» (`/loyalty/referrals`): the review queue and a report of referrals set by hand, by staff member.
+- Older accounts' passport numbers: `scripts/backfillPassportNumbers.js` (dry run by default) reads each stored photo once; a checked number is saved, an unchecked one waits for staff, two accounts with the same number are both marked `numberConflict`. Sign-up also refuses a number read from an older photo.
+
 **New account's gift** (owner, 2026-11-20): every account opened without an inviter gets **100 points** at sign-up (`SIGNUP_GIFT:<userId>`, «هدية فتح الحساب»). Invited: 500 in all, never both; when staff set the inviter later, the welcome adds only what is missing (400).
 
 **«سفير Exios»** (owner, 2026-11-20, "balanced"): reaching the last step (10 friends, $10,000; owner moved it there 2026-11-20) sets `referral.ambassadorAt`. From then on the inviter's share is **15 points per $50** (not retroactive: only friends' earns from that moment). A badge shows it: under the name in the app's menus, on the invite page, and in the admin's Points tab.
