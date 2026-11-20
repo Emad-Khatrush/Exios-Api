@@ -4,7 +4,7 @@
 // every $50 the friend pays, for 12 months. Steps (3 friends and $2,000 paid by friends, 5 and
 // $5,000, 10 and $10,000 with the title «سفير Exios») add more. "Paid" is read from the friend's earns: 1 point before the
 // multiplier per $2 of shipping or purchases (an Alipay transfer earns half, so counts half). The inviter's
-// rewards count toward their level (owner, 2026-11-20); the friend's welcome gift does not.
+// big reward and share count toward their level (owner, 2026-11-20); the steps and the friend's gift do not.
 // Every reward is a loyalty add through grantGift, so it has its entry and happens once (eventKey).
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -189,7 +189,10 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
   }
   const result = { inviterId, friendName: shortName(friend), first: 0, share: 0, step: null, movedTo: null };
   if (await loyalty().isOff(inviterId, session)) return null;
-  const grant = (points, reason, eventKey) => loyalty().grantGift({ userId: inviterId, points, reason, eventKey, levelPoints: points, now }, session);
+  // The big reward and the share count toward the level; the steps do not (owner, 2026-11-20)
+  const grant = (points, reason, eventKey, countsForLevel = true) => loyalty().grantGift({
+    userId: inviterId, points, reason, eventKey, ...(countsForLevel && { levelPoints: points }), now,
+  }, session);
   if (qualifiedNow && await grant(FIRST_POINTS, `مكافأة دعوة: ${result.friendName} دفع ${QUALIFY_USD}$`, keys.first(friend._id))) {
     result.first = FIRST_POINTS;
   }
@@ -205,7 +208,7 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
   if (count >= STEPS[0].friends) {
     const paid = await activeFriendsPaid(inviterId, session);
     for (const step of STEPS.filter((s) => s.friends <= count && s.usd <= paid)) {
-      if (await grant(step.points, `مكافأة ${step.friends} أصدقاء`, keys.step(inviterId, step.friends))) {
+      if (await grant(step.points, `مكافأة ${step.friends} أصدقاء`, keys.step(inviterId, step.friends), false)) {
         result.step = step;
         if (step.ambassador) {
           await users().updateOne({ _id: oid(inviterId), 'referral.ambassadorAt': { $exists: false } }, { $set: { 'referral.ambassadorAt': now } }, { session });
