@@ -77,8 +77,18 @@ function printedNumbers(text) {
   return [...new Set(found)];
 }
 
-// The number read from a passport photo (Google Cloud Vision), or null when it cannot be read or the
-// service is not set up (QA, no keys, Vision not enabled): the customer then types it.
+// What a photo's text says: the number (or null), and whether it looks like a passport at all (the
+// word PASSPORT or جواز, a machine line, or a passport number was found). Owner, 2026-11-20: a photo
+// that is not a passport is pointed out to the customer, who is told it would be rejected.
+function analyze(text) {
+  const read = fromMrz(text);
+  const upper = String(text || '').toUpperCase();
+  const passport = !!read || /PASSPORT|PASSEPORT|PASAPORTE|REISEPASS|جواز/.test(upper) || /P<[A-Z]{3}/.test(upper.replace(/\s+/g, ''));
+  return { number: read?.number || null, checked: !!read?.checked, passport };
+}
+
+// What a passport photo says (Google Cloud Vision): { number, checked, passport }; null when the
+// service could not be used (QA, no keys, Vision not enabled): the customer then types the number.
 async function readFromImage(buffer) {
   if (!buffer?.length) return null;
   try {
@@ -93,11 +103,11 @@ async function readFromImage(buffer) {
     });
     const answer = res?.data?.responses?.[0];
     if (answer?.error) throw new Error(answer.error.message);
-    return fromMrz(answer?.fullTextAnnotation?.text || answer?.textAnnotations?.[0]?.description || '');
+    return analyze(answer?.fullTextAnnotation?.text || answer?.textAnnotations?.[0]?.description || '');
   } catch (error) {
     console.error('[passport] read:', error?.response?.data?.error?.message || error.message);
     return null;
   }
 }
 
-module.exports = { normalize, isValid, checkDigit, fromMrz, readFromImage };
+module.exports = { normalize, isValid, checkDigit, fromMrz, analyze, readFromImage };

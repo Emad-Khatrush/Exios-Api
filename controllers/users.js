@@ -107,14 +107,15 @@ module.exports.checkSignupAvailability = async (req, res, next) => {
   }
 }
 
-// Sign-up: the number on the passport photo, for the customer to confirm. { number, checked, taken }
-// (number null when it could not be read: the customer types it)
+// Sign-up: the number on the passport photo, for the customer to confirm. { number, checked, taken,
+// passport } (number null when it could not be read: the customer types it; passport false when the
+// photo does not look like a passport, null when it could not be read at all)
 module.exports.readPassportNumber = async (req, res, next) => {
   try {
     if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
     const read = await passportNumber.readFromImage(req.file.buffer);
     const taken = read?.number ? !!(await User.exists({ 'passportVerification.number': read.number })) : false;
-    res.status(200).json({ number: read?.number || null, checked: !!read?.checked, taken });
+    res.status(200).json({ number: read?.number || null, checked: !!read?.checked, taken, passport: read ? read.passport : null });
   } catch (error) {
     console.log(error);
     return next(new ErrorHandler(500, errorMessages.SERVER_ERROR));
