@@ -17,6 +17,9 @@ const WELCOME_POINTS = 500; // the friend, at sign-up
 const FIRST_POINTS = 1000; // the inviter, once the friend has paid QUALIFY_USD in total
 const QUALIFY_USD = 200;
 const SHARE_POINTS = 10; // the inviter's share: SHARE_POINTS for every SHARE_PER_USD the friend pays
+// An ambassador (the step with `ambassador`) earns this instead, on what friends pay from then on (owner, 2026-11-20)
+const AMBASSADOR_SHARE_POINTS = 15;
+const AMBASSADOR_TITLE = 'سفير Exios';
 const SHARE_PER_USD = 50;
 const USD_PER_BASE_POINT = 2; // 10 points per $20 before any multiplier
 const SHARE_DAYS = 365; // from the moment the friend qualified
@@ -24,7 +27,7 @@ const STAFF_SET_DAYS = 7; // staff may give a new account its inviter within thi
 // Each step needs both: that many friends who reached QUALIFY_USD, and that much paid by all friends
 const STEPS = [
   { friends: 3, usd: 1000, points: 1000 },
-  { friends: 5, usd: 3000, points: 2000, title: 'سفير Exios' },
+  { friends: 5, usd: 3000, points: 2000, title: AMBASSADOR_TITLE, ambassador: true },
   { friends: 10, usd: 6000, points: 5000 },
 ];
 const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -147,7 +150,9 @@ async function activeFriendsPaid(inviterId, session) {
     { projection: { _id: 1 }, session }).toArray()).map((f) => f._id);
   return [...(await paidUsdOf(ids, session)).values()].reduce((sum, v) => sum + v, 0);
 }
-const shareOf = (basePoints) => Math.floor((basePoints * USD_PER_BASE_POINT * SHARE_POINTS) / SHARE_PER_USD);
+const shareOf = (basePoints, perShare = SHARE_POINTS) => Math.floor((basePoints * USD_PER_BASE_POINT * perShare) / SHARE_PER_USD);
+// An ambassador's share applies to friends' earns made from the moment they became one
+const isAmbassadorAt = (ambassadorAt, at) => !!ambassadorAt && new Date(at) >= new Date(ambassadorAt);
 
 // Right after a friend's earn, in its transaction: qualifies the friend at $200 paid in total (the
 // big reward), gives the inviter their share while the 12 months last, and the steps once both the
@@ -175,7 +180,9 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
     result.first = FIRST_POINTS;
   }
   const earnedAt = new Date(earn.earnedAt || now);
-  const share = shareOf(Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points);
+  const inviter = await users().findOne({ _id: oid(inviterId) }, { projection: { 'referral.ambassadorAt': 1 }, session });
+  const ambassador = isAmbassadorAt(inviter?.referral?.ambassadorAt, earnedAt);
+  const share = shareOf(Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points, ambassador ? AMBASSADOR_SHARE_POINTS : SHARE_POINTS);
   if (share > 0 && earnedAt < shareEndsAt(qualifiedAt) && await grant(share, `حصتك من شحن صديقك ${result.friendName}`, keys.share(earn._id))) {
     result.share = share;
   }
@@ -184,7 +191,12 @@ async function afterEarn(earn, { now = new Date(), session } = {}) {
   if (count >= STEPS[0].friends) {
     const paid = await activeFriendsPaid(inviterId, session);
     for (const step of STEPS.filter((s) => s.friends <= count && s.usd <= paid)) {
-      if (await grant(step.points, `مكافأة ${step.friends} أصدقاء`, keys.step(inviterId, step.friends))) result.step = step;
+      if (await grant(step.points, `مكافأة ${step.friends} أصدقاء`, keys.step(inviterId, step.friends))) {
+        result.step = step;
+        if (step.ambassador) {
+          await users().updateOne({ _id: oid(inviterId), 'referral.ambassadorAt': { $exists: false } }, { $set: { 'referral.ambassadorAt': now } }, { session });
+        }
+      }
     }
   }
   if (!result.first && !result.share && !result.step) return null;
@@ -219,6 +231,7 @@ const friendStatus = (ref, now) => {
 async function mine(userId, { now = new Date() } = {}) {
   if (await loyalty().isOff(userId)) return { off: true };
   const code = await codeOf(userId);
+  const ambassadorAt = (await users().findOne({ _id: oid(userId) }, { projection: { 'referral.ambassadorAt': 1 } }))?.referral?.ambassadorAt;
   const friends = await users().find({ 'referral.by': oid(userId) },
     { projection: { firstName: 1, lastName: 1, referral: 1, createdAt: 1 } }).sort({ 'referral.at': -1 }).limit(200).toArray();
   const points = await pointsByFriend(userId, friends.map((f) => f._id));
@@ -246,6 +259,10 @@ async function mine(userId, { now = new Date() } = {}) {
     firstPoints: FIRST_POINTS,
     qualifyUsd: QUALIFY_USD,
     sharePoints: SHARE_POINTS,
+    ambassadorSharePoints: AMBASSADOR_SHARE_POINTS,
+    ambassadorTitle: AMBASSADOR_TITLE,
+    // When the customer became an ambassador (their share is AMBASSADOR_SHARE_POINTS since), or null
+    ambassadorAt: ambassadorAt || null,
     sharePerUsd: SHARE_PER_USD,
     months: Math.round(SHARE_DAYS / 30.4),
     qualified,
@@ -281,10 +298,11 @@ async function staffInfo(userId) {
     invited,
     qualified,
     qualifyUsd: QUALIFY_USD,
+    ambassadorAt: ref.ambassadorAt || null,
   };
 }
 
 module.exports = {
-  WELCOME_POINTS, FIRST_POINTS, QUALIFY_USD, SHARE_POINTS, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
+  WELCOME_POINTS, FIRST_POINTS, QUALIFY_USD, SHARE_POINTS, AMBASSADOR_SHARE_POINTS, AMBASSADOR_TITLE, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
   keys, normalizeCode, shortName, codeOf, check, attach, cancel, afterEarn, mine, staffInfo,
 };

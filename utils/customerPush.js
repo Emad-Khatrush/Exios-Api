@@ -167,7 +167,9 @@ function referralRewardsText({ firsts = [], share = 0, steps = [] } = {}) {
   if (top) {
     return {
       title: `🏆 ${top.friends} أصدقاء! كسبت ${pointsText(total)} نقطة`,
-      body: top.title ? `صرت «${top.title}». شكراً لأنك تنشر Exios.` : 'شكراً لأنك تنشر Exios. استمر وادعُ المزيد.',
+      body: top.ambassador
+        ? `صرت «${top.title}»: من الآن تكسب ${require('../accounting/services/loyalty/referrals').AMBASSADOR_SHARE_POINTS} نقطة عن كل 50$ يدفعها أصدقاؤك.`
+        : 'شكراً لأنك تنشر Exios. استمر وادعُ المزيد.',
     };
   }
   if (firsts.length) {
