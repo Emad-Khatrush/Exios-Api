@@ -26,6 +26,11 @@ async function announce(friendId, attached) {
 
 module.exports.mine = handle((req) => referrals.mine(req.user._id));
 
+// Every reward from the customer's friends (or one friend's), page by page
+module.exports.history = handle((req) => referrals.historyOf(req.user._id, {
+  friendId: req.query.friend || undefined, status: req.query.status || undefined, page: req.query.page,
+}));
+
 module.exports.check = handle((req) => referrals.check(req.params.code));
 
 module.exports.staffInfo = handle((req) => referrals.staffInfo(customerId(req)));

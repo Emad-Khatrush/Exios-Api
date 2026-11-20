@@ -510,6 +510,90 @@ const friendStatus = (ref, now) => {
 };
 
 // The invite page: the code, the rules, the steps and every friend with where they stand
+// ---- The inviter's record of every reward (owner, 2026-11-20) ----
+
+const HISTORY_SIZE = 30;
+// The reasons the system writes are shown to the customer; anything else is a staff note
+const SHOWN_REASONS = ['نقاط الداعي موقوفة', 'لم تعد شروط المكافأة متحققة', 'أُلغيت الدعوة', 'عُدّلت طلبية الصديق أو أُلغيت', 'أُلغيت طلبية الصديق', `لم يعد مجموع ما دفعه الصديق ${QUALIFY_USD}$`];
+const STATUS_FILTER = { granted: ['granted'], pending: ['pending'], canceled: ['canceled', 'revoked'] };
+
+// Where a reward stands, in the customer's words
+async function rowState(r, friend, now) {
+  if (r.status === 'granted') return { state: 'granted', note: null };
+  if (r.status === 'revoked') return { state: 'canceled', note: `سُحبت: ${r.cancelReason || 'أُلغيت طلبية الصديق'}` };
+  if (r.status === 'canceled') return { state: 'canceled', note: SHOWN_REASONS.includes(r.cancelReason) ? r.cancelReason : 'ألغاها المكتب' };
+  if (new Date(r.releaseAt) > now) return { state: 'pending', note: 'hold', releaseAt: r.releaseAt };
+  if (r.kind === 'step') return { state: 'pending', note: r.approvedAt ? 'soon' : 'review' };
+  if (friend?.referral?.review?.status === 'pending') return { state: 'pending', note: 'review' };
+  if (friend?.passportVerification?.status !== 'verified') return { state: 'pending', note: 'passport' };
+  return { state: 'pending', note: 'soon' };
+}
+
+// The inviter's rewards, newest first, all of them or one friend's, with each one's order, what the
+// friend paid on it, and where it stands; and (for one friend) a summary of that friend
+async function historyOf(inviterId, { friendId, status, page = 1, now = new Date() } = {}) {
+  if (await loyalty().isOff(inviterId)) return { off: true };
+  const filter = { inviter: oid(inviterId) };
+  let friendDoc = null;
+  if (friendId) {
+    if (!mongoose.isValidObjectId(friendId)) throw new ErrorHandler(400, 'حدد الصديق');
+    friendDoc = await users().findOne({ _id: oid(friendId), 'referral.by': oid(inviterId) },
+      { projection: { firstName: 1, lastName: 1, referral: 1, createdAt: 1, 'passportVerification.status': 1 } });
+    if (!friendDoc) throw new ErrorHandler(404, 'هذا الصديق ليس من دعوتك');
+    filter.friend = friendDoc._id;
+  }
+  const all = await ReferralReward.find(filter).sort({ createdAt: -1, _id: -1 }).lean();
+  const friendIds = [...new Set(all.map((r) => String(r.friend || '')).filter(Boolean))];
+  const friends = new Map((await users().find({ _id: { $in: friendIds.map(oid) } },
+    { projection: { firstName: 1, lastName: 1, referral: 1, 'passportVerification.status': 1 } }).toArray()).map((f) => [String(f._id), f]));
+  const rows = [];
+  for (const r of all) rows.push({ r, ...(await rowState(r, friends.get(String(r.friend)), now)) });
+  const totals = { granted: 0, pending: 0, canceled: 0 };
+  for (const row of rows) totals[row.state] += row.r.points;
+  const shown = status && STATUS_FILTER[status] ? rows.filter((row) => row.state === (status === 'canceled' ? 'canceled' : status)) : rows;
+  const pages = Math.max(Math.ceil(shown.length / HISTORY_SIZE), 1);
+  const at = Math.min(Math.max(Number(page) || 1, 1), pages);
+  const slice = shown.slice((at - 1) * HISTORY_SIZE, at * HISTORY_SIZE);
+  const orders = new Map((await Order.find({ _id: { $in: slice.map((s) => s.r.sourceOrder).filter(Boolean) } }).setOptions({ withDeleted: true })
+    .select('orderId').lean()).map((o) => [String(o._id), o.orderId]));
+  const earns = new Map((await LoyaltyPoint.find({ _id: { $in: slice.map((s) => s.r.sourceEarn).filter(Boolean) } }).select('basePoints points').lean())
+    .map((e) => [String(e._id), baseOf(e) * USD_PER_BASE_POINT]));
+  const items = slice.map(({ r, state, note, releaseAt }) => ({
+    id: String(r._id),
+    kind: r.kind,
+    points: r.points,
+    countsForLevel: r.levelPoints > 0,
+    state,
+    note,
+    releaseAt: releaseAt || null,
+    at: r.createdAt,
+    grantedAt: r.grantedAt || null,
+    canceledAt: r.canceledAt || null,
+    friend: r.friend ? { id: String(r.friend), name: shortName(friends.get(String(r.friend))) } : null,
+    orderNumber: r.sourceOrder ? orders.get(String(r.sourceOrder)) || null : null,
+    paidUsd: r.sourceEarn ? earns.get(String(r.sourceEarn)) || 0 : null,
+    step: r.kind === 'step' ? { friends: r.step?.friends, usd: r.step?.usd, title: r.step?.title || null } : null,
+  }));
+  let friend = null;
+  if (friendDoc) {
+    const paid = (await paidUsdOf([friendDoc._id])).get(String(friendDoc._id)) || 0;
+    const ref = friendDoc.referral;
+    friend = {
+      id: String(friendDoc._id),
+      name: shortName(friendDoc),
+      joinedAt: ref.at || friendDoc.createdAt,
+      status: friendStatus(ref, now),
+      paidUsd: paid,
+      leftUsd: ref.qualifiedAt ? 0 : Math.max(QUALIFY_USD - paid, 0),
+      qualifiedAt: ref.qualifiedAt || null,
+      shareEndsAt: shareEndsAt(ref.qualifiedAt),
+      orders: new Set(rows.map((row) => String(row.r.sourceOrder || '')).filter(Boolean)).size,
+      waiting: ref.review?.status === 'pending' ? 'review' : friendDoc.passportVerification?.status !== 'verified' ? 'passport' : null,
+    };
+  }
+  return { off: false, items, page: at, pages, total: shown.length, totals, friend, holdHours: HOLD_HOURS, qualifyUsd: QUALIFY_USD };
+}
+
 async function mine(userId, { now = new Date() } = {}) {
   if (await loyalty().isOff(userId)) return { off: true };
   const code = await codeOf(userId);
@@ -595,6 +679,6 @@ async function staffInfo(userId) {
 
 module.exports = {
   WELCOME_POINTS, FIRST_POINTS, HOLD_HOURS, QUALIFY_USD, SHARE_POINTS, AMBASSADOR_SHARE_POINTS, AMBASSADOR_TITLE, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
-  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, runDue, mine, staffInfo,
+  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, runDue, mine, historyOf, staffInfo,
   suspicionFlags, reviewQueue, approveReferral, rejectReferral, approveStep, rejectStep, manualReport,
 };

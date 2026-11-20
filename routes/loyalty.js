@@ -35,6 +35,7 @@ router.post('/client/ratings', protect, isClient, ratingRewards.rate);
 // Invite a friend (spec 2026-11-20): the invite page, and the sign-up page's check of a code (public,
 // limited per address so codes cannot be scanned)
 router.get('/client/referrals', protect, isClient, referrals.mine);
+router.get('/client/referrals/history', protect, isClient, referrals.history);
 const checkHits = new Map();
 const limitCodeCheck = (req, res, next) => {
   const now = Date.now();
