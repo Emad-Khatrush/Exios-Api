@@ -88,7 +88,7 @@ async function inviterOf(code, session) {
   const clean = normalizeCode(code);
   if (clean.length !== CODE_LENGTH) return null;
   const user = await users().findOne({ 'referral.code': clean },
-    { projection: { firstName: 1, lastName: 1, roles: 1, loyaltyOff: 1 }, session });
+    { projection: { firstName: 1, lastName: 1, roles: 1, loyaltyOff: 1, termsAcceptance: 1 }, session });
   if (!user || !user.roles?.isClient || isStaff(user)) return null;
   return user;
 }
@@ -106,7 +106,7 @@ async function check(code) {
 async function attach({ friendId, code, source = 'code', by, now = new Date() } = {}, session) {
   assertInTransaction(session);
   const friend = await users().findOne({ _id: oid(friendId) },
-    { projection: { firstName: 1, lastName: 1, roles: 1, referral: 1, createdAt: 1, loyaltyOff: 1 }, session });
+    { projection: { firstName: 1, lastName: 1, roles: 1, referral: 1, createdAt: 1, loyaltyOff: 1, termsAcceptance: 1 }, session });
   if (!friend) throw new ErrorHandler(404, 'العميل غير موجود');
   if (!friend.roles?.isClient || isStaff(friend)) throw new ErrorHandler(400, 'الدعوة للعملاء فقط');
   if (friend.referral?.by) throw new ErrorHandler(400, 'هذا العميل مسجّل بدعوة من قبل');
@@ -117,8 +117,14 @@ async function attach({ friendId, code, source = 'code', by, now = new Date() } 
   if (!inviter) throw new ErrorHandler(400, 'كود الدعوة غير صحيح');
   if (String(inviter._id) === String(friend._id)) throw new ErrorHandler(400, 'لا يمكنك استعمال كود دعوتك');
   if (inviter.loyaltyOff?.at) throw new ErrorHandler(400, 'كود الدعوة غير متاح');
+  // Signs that the friend may be the inviter, or the inviter's family shipping under another name: the
+  // rewards from this friend then wait for staff to approve them (owner, 2026-11-20)
+  const flags = suspicionFlags(inviter, friend);
   const res = await users().updateOne({ _id: friend._id, 'referral.by': { $exists: false } }, {
-    $set: { 'referral.by': inviter._id, 'referral.at': now, 'referral.source': source, ...(by && { 'referral.setBy': oid(by) }) },
+    $set: {
+      'referral.by': inviter._id, 'referral.at': now, 'referral.source': source, ...(by && { 'referral.setBy': oid(by) }),
+      ...(flags.length && { 'referral.flags': flags, 'referral.review': { status: 'pending' } }),
+    },
   }, { session });
   if (!res.modifiedCount) throw new ErrorHandler(400, 'هذا العميل مسجّل بدعوة من قبل');
   // A new account's gift already given (staff set the inviter later): the welcome tops it up to WELCOME_POINTS
@@ -127,6 +133,138 @@ async function attach({ friendId, code, source = 'code', by, now = new Date() } 
     userId: friend._id, points: WELCOME_POINTS - (signup?.points || 0), reason: 'هدية الانضمام بدعوة صديق', eventKey: keys.welcome(friend._id), now,
   }, session);
   return { inviterId: String(inviter._id), inviterName: shortName(inviter), friendName: shortName(friend), welcome: welcome ? WELCOME_POINTS : 0 };
+}
+
+// ---- Suspicious referrals (owner, 2026-11-20) ----
+
+// A family name as written in either alphabet, for comparing: lower case, no spaces or marks, the
+// Arabic article and letter variants folded
+const familyKey = (name) => String(name || '').trim().toLowerCase()
+  .replace(/^(ال|al[-\s]?|el[-\s]?)/, '').replace(/[\u064B-\u0652\s'’.-]/g, '')
+  .replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
+const signups = (u) => (u?.termsAcceptance || []).filter((t) => t.ip);
+
+// Why a referral looks like one person (or one family) on both sides. A shared network alone is not
+// a sign in Libya (mobile networks put many people behind one address): the same address AND the
+// same browser is.
+function suspicionFlags(inviter, friend) {
+  const flags = [];
+  const mine = signups(inviter);
+  const theirs = signups(friend);
+  if (theirs.some((f) => mine.some((i) => i.ip === f.ip && i.userAgent && i.userAgent === f.userAgent))) {
+    flags.push({ code: 'same-device', detail: 'سجّل من نفس الجهاز والشبكة التي سجّل منها الداعي' });
+  }
+  const a = familyKey(inviter?.lastName);
+  if (a.length >= 3 && a === familyKey(friend?.lastName)) flags.push({ code: 'same-family', detail: 'نفس اسم العائلة' });
+  return flags;
+}
+
+// Why a reward waits (not given yet, not cancelled), or null
+async function waitReason(reward, session) {
+  if (reward.kind === 'step') return reward.approvedAt ? null : 'review';
+  const friend = await users().findOne({ _id: reward.friend }, { projection: { 'passportVerification.status': 1, 'referral.review': 1 }, session });
+  if (friend?.referral?.review?.status === 'pending') return 'review';
+  if (friend?.passportVerification?.status !== 'verified') return 'passport';
+  return null;
+}
+
+// What staff review: referrals that look suspicious, and the big step rewards (always), oldest first
+async function reviewQueue() {
+  const flagged = await users().find({ 'referral.review.status': 'pending' },
+    { projection: { firstName: 1, lastName: 1, customerId: 1, referral: 1, passportVerification: 1, createdAt: 1 } }).sort({ 'referral.at': 1 }).limit(200).toArray();
+  const steps = await ReferralReward.find({ kind: 'step', status: 'pending', approvedAt: { $exists: false } }).sort({ createdAt: 1 }).limit(200).lean();
+  const ids = [...new Set([...flagged.map((f) => String(f.referral.by)), ...steps.map((s) => String(s.inviter))])];
+  const people = new Map((await users().find({ _id: { $in: ids.map(oid) } }, { projection: { firstName: 1, lastName: 1, customerId: 1 } }).toArray())
+    .map((u) => [String(u._id), u]));
+  const who = (u) => (u ? { id: String(u._id), name: [u.firstName, u.lastName].filter(Boolean).join(' '), customerId: u.customerId } : null);
+  const paid = await paidUsdOf(flagged.map((f) => f._id));
+  const held = new Map();
+  for (const r of await ReferralReward.find({ friend: { $in: flagged.map((f) => f._id) }, status: 'pending' }).select('friend points').lean()) {
+    held.set(String(r.friend), (held.get(String(r.friend)) || 0) + r.points);
+  }
+  const friendCounts = new Map();
+  for (const s of steps) {
+    const key = String(s.inviter);
+    if (!friendCounts.has(key)) {
+      friendCounts.set(key, { qualified: await qualifiedCount(key), paidUsd: await activeFriendsPaid(key) });
+    }
+  }
+  return {
+    referrals: flagged.map((f) => ({
+      friend: who(f), inviter: who(people.get(String(f.referral.by))), at: f.referral.at, flags: f.referral.flags || [],
+      passport: f.passportVerification?.status || null, paidUsd: paid.get(String(f._id)) || 0, heldPoints: held.get(String(f._id)) || 0,
+    })),
+    steps: steps.map((s) => ({ id: String(s._id), inviter: who(people.get(String(s.inviter))), friends: s.step?.friends, usd: s.step?.usd,
+      points: s.points, ambassador: !!s.step?.ambassador, at: s.createdAt, ...friendCounts.get(String(s.inviter)) })),
+  };
+}
+
+// Staff approve a suspicious referral: its rewards go on as usual
+async function approveReferral({ friendId, by, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  const res = await users().updateOne({ _id: oid(friendId), 'referral.review.status': 'pending' },
+    { $set: { 'referral.review': { status: 'approved', at: now, ...(by && { by: oid(by) }) } } }, { session });
+  if (!res.modifiedCount) throw new ErrorHandler(400, 'لا توجد دعوة تنتظر المراجعة لهذا العميل');
+  return { approved: true };
+}
+
+// Staff reject it: the referral is cancelled and every reward still waiting from it with it
+async function rejectReferral({ friendId, reason, by, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  const why = String(reason || '').trim();
+  if (!why) throw new ErrorHandler(400, 'اكتب سبب رفض الدعوة');
+  const res = await users().updateOne({ _id: oid(friendId), 'referral.review.status': 'pending' },
+    { $set: { 'referral.review': { status: 'rejected', at: now, note: why, ...(by && { by: oid(by) }) } } }, { session });
+  if (!res.modifiedCount) throw new ErrorHandler(400, 'لا توجد دعوة تنتظر المراجعة لهذا العميل');
+  await cancel({ friendId, reason: why, by, now }, session);
+  await ReferralReward.updateMany({ friend: oid(friendId), status: 'pending' }, { $set: { status: 'canceled', canceledAt: now, cancelReason: why } }, { session });
+  return { rejected: true };
+}
+
+// Staff approve a step reward (always reviewed: they are the big ones); the hourly job then gives it
+async function approveStep({ rewardId, by, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  const res = await ReferralReward.updateOne({ _id: oid(rewardId), kind: 'step', status: 'pending', approvedAt: { $exists: false } },
+    { $set: { approvedAt: now, ...(by && { approvedBy: oid(by) }) } }, { session });
+  if (!res.modifiedCount) throw new ErrorHandler(400, 'لا توجد مكافأة تنتظر الموافقة');
+  return { approved: true };
+}
+// …or refuse it, for good (its key stays taken, so it is not offered again)
+async function rejectStep({ rewardId, reason, by, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  const why = String(reason || '').trim();
+  if (!why) throw new ErrorHandler(400, 'اكتب سبب رفض المكافأة');
+  const res = await ReferralReward.updateOne({ _id: oid(rewardId), kind: 'step', status: 'pending' },
+    { $set: { status: 'canceled', canceledAt: now, cancelReason: why, ...(by && { approvedBy: oid(by) }) } }, { session });
+  if (!res.modifiedCount) throw new ErrorHandler(400, 'لا توجد مكافأة تنتظر الموافقة');
+  return { rejected: true };
+}
+
+// Referrals staff set by hand, by staff member: how many, and the latest ones
+async function manualReport({ limit = 100 } = {}) {
+  const rows = await users().find({ 'referral.source': 'staff' },
+    { projection: { firstName: 1, lastName: 1, customerId: 1, referral: 1 } }).sort({ 'referral.at': -1 }).limit(2000).toArray();
+  const staffIds = [...new Set(rows.map((r) => String(r.referral.setBy || '')).filter(Boolean))];
+  const inviterIds = [...new Set(rows.map((r) => String(r.referral.by)))];
+  const names = new Map((await users().find({ _id: { $in: [...staffIds, ...inviterIds].map(oid) } }, { projection: { firstName: 1, lastName: 1, customerId: 1 } }).toArray())
+    .map((u) => [String(u._id), u]));
+  const nameOf = (id) => { const u = names.get(String(id)); return u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : '—'; };
+  const byStaff = new Map();
+  for (const r of rows) {
+    const key = String(r.referral.setBy || '');
+    const row = byStaff.get(key) || { staff: { id: key || null, name: key ? nameOf(key) : 'غير معروف' }, count: 0, inviters: new Set() };
+    row.count += 1;
+    row.inviters.add(String(r.referral.by));
+    byStaff.set(key, row);
+  }
+  return {
+    byStaff: [...byStaff.values()].map((r) => ({ staff: r.staff, count: r.count, inviters: r.inviters.size })).sort((a, b) => b.count - a.count),
+    latest: rows.slice(0, limit).map((r) => ({
+      friend: { id: String(r._id), name: [r.firstName, r.lastName].filter(Boolean).join(' '), customerId: r.customerId },
+      inviter: { id: String(r.referral.by), name: nameOf(r.referral.by), customerId: names.get(String(r.referral.by))?.customerId },
+      staff: r.referral.setBy ? nameOf(r.referral.setBy) : 'غير معروف', at: r.referral.at, canceled: !!r.referral.canceledAt,
+    })),
+  };
 }
 
 // A new account without an inviter: SIGNUP_POINTS once ever (not when it was invited)
@@ -149,8 +287,10 @@ async function cancel({ friendId, reason, by, now = new Date() } = {}, session) 
   return { canceled: true };
 }
 
+// Friends who reached $200, whose passport is verified and whose referral is not waiting for or refused by staff
 const qualifiedCount = (inviterId, session) => users().countDocuments({
   'referral.by': oid(inviterId), 'referral.qualifiedAt': { $exists: true }, 'referral.canceledAt': { $exists: false },
+  'passportVerification.status': 'verified', 'referral.review.status': { $nin: ['pending', 'rejected'] },
 }, { session });
 
 // The friend's orders that no longer count: cancelled, deleted or marked "no points"
@@ -273,6 +413,7 @@ async function releaseDue({ now = new Date() } = {}) {
   const told = new Map(); // inviterId -> { firsts, share, steps, level }
   let granted = 0;
   let canceled = 0;
+  let waiting = 0;
   let failed = 0;
   for (const { _id } of due) {
     try {
@@ -281,6 +422,8 @@ async function releaseDue({ now = new Date() } = {}) {
         if (!reward) return null;
         const problem = await holdProblem(reward, session);
         if (problem) { await cancelHeld(reward, problem, now, session); return { canceled: true }; }
+        // Still standing, but waiting for the friend's passport to be verified or for staff: next run
+        if (await waitReason(reward, session)) return { waiting: true };
         const lot = await loyalty().grantGift({ userId: reward.inviter, points: reward.points, reason: reward.reason, eventKey: reward.eventKey,
           ...(reward.levelPoints > 0 && { levelPoints: reward.levelPoints }), now }, session);
         await ReferralReward.updateOne({ _id: reward._id }, { $set: { status: 'granted', grantedAt: now, ...(lot && { lotId: lot._id }) } }, { session });
@@ -293,6 +436,7 @@ async function releaseDue({ now = new Date() } = {}) {
       });
       if (!out) continue;
       if (out.canceled) { canceled += 1; continue; }
+      if (out.waiting) { waiting += 1; continue; }
       granted += 1;
       const key = String(out.reward.inviter);
       const theirs = told.get(key) || { firsts: [], share: 0, steps: [], level: null };
@@ -308,7 +452,7 @@ async function releaseDue({ now = new Date() } = {}) {
   }
   const customerPush = require('../../../utils/customerPush');
   for (const [inviterId, got] of told) await customerPush.referralRewards(inviterId, got);
-  return { granted, canceled, failed };
+  return { granted, canceled, waiting, failed };
 }
 
 // The hourly job: a reward given whose friend's order was cancelled (or deleted, or marked "no
@@ -371,7 +515,7 @@ async function mine(userId, { now = new Date() } = {}) {
   const code = await codeOf(userId);
   const ambassadorAt = (await users().findOne({ _id: oid(userId) }, { projection: { 'referral.ambassadorAt': 1 } }))?.referral?.ambassadorAt;
   const friends = await users().find({ 'referral.by': oid(userId) },
-    { projection: { firstName: 1, lastName: 1, referral: 1, createdAt: 1 } }).sort({ 'referral.at': -1 }).limit(200).toArray();
+    { projection: { firstName: 1, lastName: 1, referral: 1, createdAt: 1, 'passportVerification.status': 1 } }).sort({ 'referral.at': -1 }).limit(200).toArray();
   const { given: points, held } = await pointsByFriend(userId, friends.map((f) => f._id));
   const paid = await paidUsdOf(friends.map((f) => f._id));
   const friendsPaidUsd = friends.filter((f) => !f.referral.canceledAt).reduce((sum, f) => sum + (paid.get(String(f._id)) || 0), 0);
@@ -387,6 +531,8 @@ async function mine(userId, { now = new Date() } = {}) {
     shareEndsAt: shareEndsAt(f.referral.qualifiedAt),
     points: points.get(String(f._id)) || 0,
     heldPoints: held.get(String(f._id)) || 0,
+    // Why this friend's rewards wait beyond the 24 hours: their passport, or the office's review
+    waiting: f.referral.review?.status === 'pending' ? 'review' : f.passportVerification?.status !== 'verified' ? 'passport' : null,
     paidUsd: paid.get(String(f._id)) || 0,
     // What is left to pay before the inviter's big reward (0 once reached)
     leftUsd: f.referral.qualifiedAt ? 0 : Math.max(QUALIFY_USD - (paid.get(String(f._id)) || 0), 0),
@@ -436,6 +582,8 @@ async function staffInfo(userId) {
     shareEndsAt: shareEndsAt(ref.qualifiedAt),
     canceledAt: ref.canceledAt || null,
     cancelReason: ref.cancelReason || null,
+    flags: ref.flags || [],
+    review: ref.review ? { status: ref.review.status, at: ref.review.at || null, note: ref.review.note || null } : null,
     canSet: !ref.by && !!canSetUntil && Date.now() <= canSetUntil.getTime(),
     canSetUntil,
     invited,
@@ -448,4 +596,5 @@ async function staffInfo(userId) {
 module.exports = {
   WELCOME_POINTS, FIRST_POINTS, HOLD_HOURS, QUALIFY_USD, SHARE_POINTS, AMBASSADOR_SHARE_POINTS, AMBASSADOR_TITLE, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
   SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, runDue, mine, staffInfo,
+  suspicionFlags, reviewQueue, approveReferral, rejectReferral, approveStep, rejectStep, manualReport,
 };

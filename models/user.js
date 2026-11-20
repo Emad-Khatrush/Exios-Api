@@ -112,8 +112,12 @@ const userSchema = new Schema({
     // The passport number (owner, 2026-11-20): read from the photo and confirmed by the customer at
     // sign-up, or typed by staff when approving; unique. `numberRead`: what the photo gave, if anything
     number: { type: String },
-    numberSource: { type: String, enum: ['read', 'typed'] },
+    numberSource: { type: String, enum: ['read', 'typed', 'backfill'] },
     numberRead: { type: String },
+    // Older accounts: when their stored photo was read (so it is read once), and the accounts whose
+    // number matched it (both kept for staff to decide)
+    numberTriedAt: { type: Date },
+    numberConflict: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     submittedAt: { type: Date },
     reviewedAt: { type: Date },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -136,6 +140,9 @@ const userSchema = new Schema({
     source: { type: String, enum: ['link', 'code', 'staff'] },
     setBy: { type: Schema.Types.ObjectId, ref: 'User' },
     qualifiedAt: Date,
+    // Signs that both sides may be one person or one family; the rewards then wait for staff
+    flags: [{ _id: false, code: String, detail: String }],
+    review: { status: { type: String, enum: ['pending', 'approved', 'rejected'] }, at: Date, by: { type: Schema.Types.ObjectId, ref: 'User' }, note: String },
     // Bumped when a big reward did not stand (order changed or cancelled): the next one has a new key
     round: Number,
     // When this customer reached the ambassador step (badge, and a higher share from then on)

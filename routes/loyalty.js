@@ -61,6 +61,13 @@ router.put('/user/:id/loyalty/off', protect, allow(['loyalty_adjust']), loyalty.
 router.get('/user/:id/referral', protect, allow(['loyalty_customer', 'loyalty_adjust', 'loyalty_level', 'clients'], employeesOnly), referrals.staffInfo);
 router.put('/user/:id/referral', protect, allow(['loyalty_adjust']), referrals.staffSet);
 router.delete('/user/:id/referral', protect, allow(['loyalty_adjust']), referrals.staffCancel);
+// Reviewing invites (owner, 2026-11-20): suspicious referrals and the big step rewards, and who set referrals by hand
+router.get('/loyalty/referrals/review', protect, allow(['loyalty']), referrals.reviewQueue);
+router.get('/loyalty/referrals/manual', protect, allow(['loyalty']), referrals.manualReport);
+router.post('/loyalty/referrals/friend/:id/approve', protect, allow(['loyalty_adjust']), referrals.approveReferral);
+router.post('/loyalty/referrals/friend/:id/reject', protect, allow(['loyalty_adjust']), referrals.rejectReferral);
+router.post('/loyalty/referrals/reward/:id/approve', protect, allow(['loyalty_adjust']), referrals.approveStep);
+router.post('/loyalty/referrals/reward/:id/reject', protect, allow(['loyalty_adjust']), referrals.rejectStep);
 router.get('/order/:id/loyalty', protect, allow(['loyalty', 'invoices_payments'], employeesOnly), loyalty.order);
 // Same access as the order page (any staff member who can open it), but a 403 for the rest
 router.get('/order/:id/loyalty/paid', protect, anyStaff(employeesOnly), loyalty.paid);

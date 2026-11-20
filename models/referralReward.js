@@ -24,6 +24,9 @@ const referralRewardSchema = new Schema({
   releaseAt: { type: Date, required: true },
   status: { type: String, enum: ['pending', 'granted', 'canceled', 'revoked'], default: 'pending' },
   lotId: { type: Schema.Types.ObjectId, ref: 'LoyaltyPoint' },
+  // A step reward waits for staff (owner, 2026-11-20): who approved it, and when
+  approvedAt: Date,
+  approvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   grantedAt: Date,
   canceledAt: Date,
   cancelReason: String,

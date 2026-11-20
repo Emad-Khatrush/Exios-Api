@@ -14,6 +14,12 @@ const { uploadToGoogleCloud } = require('../utils/googleClould');
 const { TERMS_VERSION, acceptanceRecord, termsStatus } = require('../utils/termsAcceptance');
 const passportNumber = require('../utils/passportNumber');
 
+// A passport already on an account: its number, or the number read from an older account's photo
+// (utils/passportBackfill.js) that staff have not confirmed yet
+const passportTakenBy = async (number) => !!(await User.exists({
+  $or: [{ 'passportVerification.number': number }, { 'passportVerification.numberRead': number }],
+}));
+
 module.exports.createUser = async (req, res, next) => {
   const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const numbers = '0123456789';
@@ -38,7 +44,7 @@ module.exports.createUser = async (req, res, next) => {
     if (repeatedPassword !== password) return next(new ErrorHandler(400, errorMessages.PASSWORD_NOT_MATCH));
     if (!isAgreeToTermsOfCompany) return next(new ErrorHandler(400, errorMessages.TERMS_NOT_ACCEPTED));
     if (!passportNumber.isValid(passportNo)) return next(new ErrorHandler(400, errorMessages.PASSPORT_NUMBER_REQUIRED));
-    if (await User.exists({ 'passportVerification.number': passportNo })) return next(new ErrorHandler(400, errorMessages.PASSPORT_EXIST));
+    if (await passportTakenBy(passportNo)) return next(new ErrorHandler(400, errorMessages.PASSPORT_EXIST));
     const customerId = generateString(1, characters) + generateString(3, numbers);
     // Login matches the email in any letter case, so the same email in other case counts as taken
     const userFound = await User.findOne({ $or: [ { customerId }, { username: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } } ] });
@@ -99,7 +105,7 @@ module.exports.checkSignupAvailability = async (req, res, next) => {
       : false;
     const phoneTaken = /^\d+$/.test(phoneText) ? !!(await User.exists({ phone: Number(phoneText) })) : false;
     const passportNo = passportNumber.normalize(req.body.passportNumber);
-    const passportTaken = passportNumber.isValid(passportNo) ? !!(await User.exists({ 'passportVerification.number': passportNo })) : false;
+    const passportTaken = passportNumber.isValid(passportNo) ? await passportTakenBy(passportNo) : false;
     res.status(200).json({ emailTaken, phoneTaken, passportTaken });
   } catch (error) {
     console.log(error);
@@ -114,7 +120,7 @@ module.exports.readPassportNumber = async (req, res, next) => {
   try {
     if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
     const read = await passportNumber.readFromImage(req.file.buffer);
-    const taken = read?.number ? !!(await User.exists({ 'passportVerification.number': read.number })) : false;
+    const taken = read?.number ? await passportTakenBy(read.number) : false;
     res.status(200).json({ number: read?.number || null, checked: !!read?.checked, taken, passport: read ? read.passport : null });
   } catch (error) {
     console.log(error);
