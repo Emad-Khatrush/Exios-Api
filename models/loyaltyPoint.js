@@ -17,6 +17,9 @@ const loyaltyPointSchema = new Schema({
   // An add only: the points that count toward the level, like an earn's basePoints (invite-a-friend
   // rewards, spec 2026-11-20). Other adds (gifts, staff additions) never count.
   levelPoints: Number,
+  // An add only: the points of this earn given back after its claim, owed again, was paid again
+  // (owner, 2026-11-20). See owedDue in accounting/services/loyalty/index.js
+  reearnOf: { type: Schema.Types.ObjectId, ref: 'LoyaltyPoint' },
   arKey: String,
   orderId: { type: Schema.Types.ObjectId, ref: 'Order' },
   office: String,
@@ -38,5 +41,6 @@ const loyaltyPointSchema = new Schema({
 loyaltyPointSchema.index({ user: 1, expiresAt: 1 });
 loyaltyPointSchema.index({ arKey: 1 });
 loyaltyPointSchema.index({ orderId: 1 });
+loyaltyPointSchema.index({ reearnOf: 1 }, { partialFilterExpression: { reearnOf: { $exists: true } } });
 
 module.exports = mongoose.model('LoyaltyPoint', loyaltyPointSchema);

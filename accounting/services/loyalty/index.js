@@ -608,7 +608,7 @@ const TAKE_BACK = { expire: 'LOYALTY_EXPIRE', revoke: 'LOYALTY_REVOKE' };
 // Takes what is left of a lot off the balance: an expire or revoke movement naming the lot, and
 // (accounting live) Dr loyalty_points (the customer) / Cr loyalty_expense (the lot's office).
 // Returns the movement, or null when nothing is left on the lot.
-async function takeBackLot(lotId, kind, session) {
+async function takeBackLot(lotId, kind, session, { reason } = {}) {
   const lot = await LoyaltyPoint.findById(lotId).session(session).lean();
   if (!lot || !(lot.remaining > 0)) return null;
   const changed = await LoyaltyPoint.updateOne({ _id: lot._id, remaining: lot.remaining }, { $set: { remaining: 0 } }, { session });
@@ -617,7 +617,7 @@ async function takeBackLot(lotId, kind, session) {
   const eventKey = `${TAKE_BACK[kind]}:${lot._id}`;
   const [movement] = await LoyaltyPoint.create([{
     user: lot.user, kind, points: lot.remaining, arKey: lot.arKey, orderId: lot.orderId, office,
-    sources: [{ lotId: lot._id, points: lot.remaining }], eventKey,
+    sources: [{ lotId: lot._id, points: lot.remaining }], eventKey, ...(reason && { reason }),
   }], { session });
   const { settings } = await getConfig();
   if (settings?.liveEnabled) await postTakeBackEntry(movement.toObject(), session);
@@ -672,7 +672,8 @@ async function reverseRedemption(redemption, session, { reason = 'إلغاء ا�
 // The points an order earned and not spent yet are taken back (order "no points" or cancelled).
 // Returns how many lots were taken back.
 async function revokeOrder(orderId, session) {
-  const lots = await LoyaltyPoint.find({ kind: 'earn', orderId: oid(orderId), remaining: { $gt: 0 } }).select('_id').session(session).lean();
+  const lots = await LoyaltyPoint.find({ orderId: oid(orderId), remaining: { $gt: 0 }, $or: [{ kind: 'earn' }, { kind: 'add', reearnOf: { $exists: true } }] })
+    .select('_id').session(session).lean();
   let revoked = 0;
   for (const { _id } of lots) if (await takeBackLot(_id, 'revoke', session)) revoked += 1;
   return revoked;
@@ -932,6 +933,84 @@ async function grantGift({ userId, points, reason, eventKey, levelPoints, now = 
   return created;
 }
 
+// ---- A paid claim owed again (owner, 2026-11-20) ----
+// A claim earns once, when fully paid. If it becomes owed again (a payment cancelled, or its price
+// raised and not paid yet), what is left of its points is taken back; once it is fully paid again,
+// exactly what was taken comes back (a new lot with the earn's expiry). Points already spent are not
+// taken, so they do not come back either: the customer ends with the claim's points once. A price
+// lowered later still changes nothing (a later reprice never earns again).
+const OWED_REASON = 'أُلغيت دفعة على الطلبية أو زاد مبلغها: تعود النقاط عند سدادها';
+const REEARN_REASON = 'إرجاع نقاط طلبية بعد سدادها';
+const OWED_WINDOW_DAYS = EXPIRY_DAYS * 2 + 35; // points this old have expired anyway
+const reearnKey = (earnId, n) => `LOYALTY_REEARN:${earnId}:${n}`;
+
+// One claim's cycle, read again inside the transaction: its earn, the lots given back since, and the
+// owed take-backs; then takes back or gives back as the claim now stands. Returns 'taken', 'given' or null.
+async function settleOwedClaim(earnId, now, session) {
+  const earn = await LoyaltyPoint.findOne({ _id: earnId, kind: 'earn' }).session(session).lean();
+  if (!earn) return null;
+  const order = await Order.findById(earn.orderId).select(ORDER_FIELDS).session(session).lean();
+  if (!order || !isEligibleOrder(order)) return null; // cancelled or "no points": the usual revoke handles it
+  const lots = [earn, ...await LoyaltyPoint.find({ kind: 'add', reearnOf: earn._id }).sort({ createdAt: 1, _id: 1 }).session(session).lean()];
+  const owedBacks = await LoyaltyPoint.find({ kind: 'revoke', reason: OWED_REASON, 'sources.lotId': { $in: lots.map((l) => l._id) } })
+    .sort({ createdAt: 1, _id: 1 }).session(session).lean();
+  const last = lots[lots.length - 1];
+  const lastTaken = owedBacks.find((m) => String(m.sources[0].lotId) === String(last._id));
+  const row = (await claimLedger({ $in: [earn.arKey] }, session)).get(earn.arKey);
+  const owed = (row?.open || 0) > 0;
+  await lockWalletOwner(earn.user, session);
+  if (owed && !lastTaken) {
+    const movement = await takeBackLot(last._id, 'revoke', session, { reason: OWED_REASON });
+    if (movement) await require('./levels').refreshLevel(earn.user, { now, session }).catch(() => null);
+    return movement ? 'taken' : null;
+  }
+  if (!owed && lastTaken && (!row || row.billed > 0)) {
+    if (earn.expiresAt && new Date(earn.expiresAt) <= now) return null;
+    const points = lastTaken.points;
+    const base = Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points;
+    const levelPoints = Math.floor((base * points) / Math.max(earn.points, 1));
+    const [lot] = await LoyaltyPoint.create([{
+      user: earn.user, kind: 'add', points, remaining: points, office: earn.office, reason: REEARN_REASON, reearnOf: earn._id,
+      orderId: earn.orderId, eventKey: reearnKey(earn._id, lots.length), earnedAt: now, expiresAt: earn.expiresAt,
+      ...(levelPoints > 0 && { levelPoints }),
+    }], { session });
+    if ((await getConfig()).settings?.liveEnabled) await postAdjustEntry(lot.toObject(), session);
+    await require('./levels').refreshLevel(earn.user, { now, session });
+    return 'given';
+  }
+  return null;
+}
+
+// The hourly job: every earned claim of the last two years that is owed again, or was taken back
+// and may be paid again
+async function owedDue({ now = new Date() } = {}) {
+  const since = new Date(now.getTime() - OWED_WINDOW_DAYS * DAY_MS);
+  const earns = await LoyaltyPoint.find({ kind: 'earn', earnedAt: { $gte: since } }).select('_id arKey').lean();
+  if (!earns.length) return { taken: 0, given: 0, failed: 0 };
+  const ledger = await claimLedger({ $in: [...new Set(earns.map((e) => e.arKey))] });
+  const owedNow = new Set(earns.filter((e) => (ledger.get(e.arKey)?.open || 0) > 0).map((e) => String(e._id)));
+  // Claims taken back before: the earn, or a lot given back from it, named by an owed take-back
+  const owedLots = await LoyaltyPoint.distinct('sources.lotId', { kind: 'revoke', reason: OWED_REASON });
+  const takenFrom = new Set([
+    ...(await LoyaltyPoint.find({ _id: { $in: owedLots }, kind: 'earn' }).select('_id').lean()).map((l) => String(l._id)),
+    ...(await LoyaltyPoint.find({ _id: { $in: owedLots }, kind: 'add', reearnOf: { $exists: true } }).select('reearnOf').lean()).map((l) => String(l.reearnOf)),
+  ]);
+  let taken = 0;
+  let given = 0;
+  let failed = 0;
+  for (const id of new Set([...owedNow, ...takenFrom])) {
+    try {
+      const out = await runInTransaction((session) => settleOwedClaim(oid(id), now, session));
+      if (out === 'taken') taken += 1;
+      if (out === 'given') given += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(`[loyalty] owed ${id}: ${error.message}`);
+    }
+  }
+  return { taken, given, failed };
+}
+
 // Every customer with a balance or a history: their balance (unexpired lots), what expires within
 // 30 days and their last movement. Totals cover every customer (the liability), whatever the filter.
 async function customersWithPoints({ search, sort = 'balance', expiringOnly = false, page, limit } = {}) {
@@ -1035,6 +1114,7 @@ function sourceOf(eventKey) {
   if (key.startsWith('LOYALTY_TIER_GIFT:')) return 'level';
   if (key.startsWith('RATING:')) return 'rating';
   if (key.startsWith('LOYALTY_ADJUST:')) return 'staff';
+  if (key.startsWith('LOYALTY_REEARN:')) return 'reearn';
   return null;
 }
 
@@ -1199,7 +1279,7 @@ async function settleOrders({ now = new Date() } = {}) {
   let revoked = 0;
   let restored = 0;
   let failed = 0;
-  const earning = await LoyaltyPoint.distinct('orderId', { kind: 'earn', remaining: { $gt: 0 } });
+  const earning = await LoyaltyPoint.distinct('orderId', { remaining: { $gt: 0 }, $or: [{ kind: 'earn' }, { kind: 'add', reearnOf: { $exists: true } }] });
   // A deleted order counts as cancelled (its claims are reversed the same way): withDeleted
   const toRevoke = await Order.find({ _id: { $in: earning }, $or: [{ isCanceled: true }, { isDeleted: true }, { 'loyalty.noPoints': true }] })
     .setOptions({ withDeleted: true }).select('_id').lean();
@@ -1247,5 +1327,5 @@ module.exports = {
   moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, earnStillValid, takeBackLot, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, earnStillValid, takeBackLot, owedDue, OWED_REASON, REEARN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };
