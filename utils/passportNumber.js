@@ -83,8 +83,13 @@ function printedNumbers(text) {
 function analyze(text) {
   const read = fromMrz(text);
   const upper = String(text || '').toUpperCase();
-  const passport = !!read || /PASSPORT|PASSEPORT|PASAPORTE|REISEPASS|جواز/.test(upper) || /P<[A-Z]{3}/.test(upper.replace(/\s+/g, ''));
-  return { number: read?.number || null, checked: !!read?.checked, passport };
+  const compact = upper.replace(/\s+/g, '');
+  // Only a passport's own signs count: its name, a machine line ("P<LBY…", "…<9LBY970821"), or a
+  // number its check digit confirms. Any other number (a phone, an order, a date on an ID card) is
+  // neither a sign nor a number to offer.
+  const passport = !!read?.checked || /PASSPORT|PASSEPORT|PASAPORTE|REISEPASS|جواز/.test(upper)
+    || /P<[A-Z]{3}/.test(compact) || /<[0-9][A-Z]{3}[0-9]{6}/.test(compact);
+  return { number: passport && read ? read.number : null, checked: !!(passport && read?.checked), passport };
 }
 
 // What a passport photo says (Google Cloud Vision): { number, checked, passport }; null when the
