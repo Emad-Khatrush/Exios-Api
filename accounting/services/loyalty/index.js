@@ -20,7 +20,7 @@ const { lockClaimAllocations } = require('../claims/locks');
 const { syncOrder } = require('../claims/sync');
 const { openBalances, resolveClaimKeys, splitOverClaims, claimLines } = require('../posting/operations');
 const { resolveAccount } = require('../roles');
-const { purchaseKey, shipmentKey, parseKey, CLAIM_EVENTS } = require('../claims/keys');
+const { purchaseKey, shipmentKey, parseKey, packageChargeCents, CLAIM_EVENTS } = require('../claims/keys');
 const { earnPoints, redeemCap, takeOldest, EXPIRY_DAYS, SOON_DAYS } = require('./rules');
 const tiers = require('./tiers');
 const promotions = require('./promotions');
@@ -30,7 +30,7 @@ const LOTS = ['earn', 'add', 'restore'];
 const earnKey = (arKey) => `LOYALTY_EARN:${arKey}`;
 const oid = (value) => new mongoose.Types.ObjectId(String(value));
 // shipment and package method: which points offer a claim gets (promotions.js)
-const ORDER_FIELDS = 'orderId user placedAt createdAt isRemittance isCanceled loyalty paymentList._id paymentList.status.received shipment.method shipment.fromWhere paymentList.deliveredPackages.shipmentMethod paymentList.deliveredPackages.compensation.closed';
+const ORDER_FIELDS = 'orderId user placedAt createdAt isRemittance isCanceled loyalty paymentList._id paymentList.status.received shipment.method shipment.fromWhere paymentList.deliveredPackages.shipmentMethod paymentList.deliveredPackages.compensation.closed paymentList.deliveredPackages.weight paymentList.deliveredPackages.exiosPrice paymentList.freeShippingOffer';
 const WRITEOFF_EVENTS = ['CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY'];
 
 // Orders placed from this day earn points (env LOYALTY_START_DATE, an ISO date). Unset or invalid:
@@ -125,10 +125,12 @@ function claimState({ arKey, order, ledger, redeemed, earned }) {
   if (parsed.kind === 'shipment') {
     const pkg = (order.paymentList || []).find((p) => String(p._id) === parsed.packageId);
     if (!pkg) return null;
-    // A package closed by a compensation (lost, or damaged and closed) is never delivered: its paid
-    // shipping is earned revenue in the books and earns like a delivered package (2026-11-21: it
-    // was left "waiting for delivery" for ever)
-    if (!pkg.status?.received && !pkg.deliveredPackages?.compensation?.closed) return { points, waitingFor: 'delivery' };
+    // A package closed by a compensation (lost, or damaged and closed) is never delivered (it was
+    // left "waiting for delivery" for ever). Owner, 2026-11-21: it earns only when its whole shipping
+    // was paid; closed with part of it paid (billed only that part), it earns nothing
+    const closed = !pkg.status?.received && pkg.deliveredPackages?.compensation?.closed;
+    if (closed && billed < packageChargeCents(pkg)) return null;
+    if (!pkg.status?.received && !closed) return { points, waitingFor: 'delivery' };
   }
   return { points, waitingFor: 'processing' };
 }
