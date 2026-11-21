@@ -398,6 +398,17 @@ const CHECKS = {
       const key = `${p.order}|${p.category === 'receivedGoods' ? 'SHP' : 'PUR'}`;
       paid.set(key, (paid.get(key) || 0) + Math.round(usd * 100));
     });
+    // Points paid on the order's invoice or shipping (a point is a cent; less what came back): the
+    // system page counts them as paid too (2026-11-21: every order paid partly with points showed here)
+    const LoyaltyPoint = require('../../../models/loyaltyPoint');
+    const points = await LoyaltyPoint.aggregate([
+      { $match: { orderId: { $in: ids }, kind: { $in: ['redeem', 'restore'] }, arKey: { $regex: '^(PUR|SHP):' } } },
+      { $group: { _id: { order: '$orderId', kind: { $substrCP: ['$arKey', 0, 3] } }, cents: { $sum: { $cond: [{ $eq: ['$kind', 'redeem'] }, '$points', { $multiply: ['$points', -1] }] } } } },
+    ]);
+    points.forEach((row) => {
+      const key = `${row._id.order}|${row._id.kind}`;
+      paid.set(key, (paid.get(key) || 0) + Math.max(row.cents, 0));
+    });
     const items = [];
     orders.forEach((order) => {
       const books = byOrder.get(String(order._id));

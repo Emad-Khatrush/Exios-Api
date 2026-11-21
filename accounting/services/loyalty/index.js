@@ -344,10 +344,26 @@ async function summaryOf(userId) {
   };
 }
 
+// An order's points given back after it was paid again, or moved with it to another customer (adds
+// with reearnOf), count as earned on the earn's claim; a take-back of one of them counts against
+// that claim. Without this the order page and the orders list showed 0 earned once points came back.
+function asEarned(movements) {
+  const byId = new Map(movements.map((m) => [String(m._id), m]));
+  const keyOf = (m) => (m.kind === 'add' && m.reearnOf ? byId.get(String(m.reearnOf))?.arKey : m.arKey);
+  return movements.map((m) => {
+    if (m.kind === 'add' && m.reearnOf) return { ...m, kind: 'earn', arKey: keyOf(m) };
+    if (m.kind === 'revoke' && !m.arKey) {
+      const lot = byId.get(String(m.sources?.[0]?.lotId || ''));
+      return lot ? { ...m, arKey: keyOf(lot) } : m;
+    }
+    return m;
+  });
+}
+
 // One order's points: earned, on the way, paid with points, or why it earns none
 async function orderLoyalty(orderId) {
   const order = await Order.findById(orderId).select(ORDER_FIELDS).lean();
-  const movements = await LoyaltyPoint.find({ orderId: oid(orderId) }).select('kind points arKey promotion').lean();
+  const movements = asEarned(await LoyaltyPoint.find({ orderId: oid(orderId) }).select('kind points arKey promotion reearnOf sources').lean());
   const sum = (kind) => movements.filter((m) => m.kind === kind).reduce((total, m) => total + m.points, 0);
   const pendingRows = order ? await pendingOf([order]) : [];
   const pending = pendingRows.reduce((total, row) => total + row.points, 0);
@@ -1276,8 +1292,9 @@ async function ordersPointsOf(userId) {
   const user = oid(userId);
   const [movements, orders] = await Promise.all([
     LoyaltyPoint.aggregate([
-      { $match: { user, kind: { $in: ['earn', 'revoke'] }, orderId: { $ne: null } } },
-      { $group: { _id: '$orderId', points: { $sum: { $cond: [{ $eq: ['$kind', 'earn'] }, '$points', { $multiply: ['$points', -1] }] } } } },
+      // Earns, and points of an order given back or moved in (adds with reearnOf), less take-backs
+      { $match: { user, orderId: { $ne: null }, $or: [{ kind: { $in: ['earn', 'revoke'] } }, { kind: 'add', reearnOf: { $exists: true } }] } },
+      { $group: { _id: '$orderId', points: { $sum: { $cond: [{ $eq: ['$kind', 'revoke'] }, { $multiply: ['$points', -1] }, '$points'] } } } },
     ]),
     Order.find({ user, isCanceled: { $ne: true }, 'loyalty.noPoints': { $ne: true } }).select(ORDER_FIELDS).lean(),
   ]);
