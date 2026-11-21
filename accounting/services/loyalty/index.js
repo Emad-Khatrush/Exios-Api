@@ -647,6 +647,48 @@ async function takeBackLot(lotId, kind, session, { reason } = {}) {
   return movement;
 }
 
+// ---- Points spent from a lot that is taken back (owner, 2026-11-21) ----
+// When a lot is taken back because its order was cancelled (or marked "no points"), moved to another
+// customer, or an invite reward was cancelled, what the customer had already spent from it comes off
+// the rest of their points balance: oldest lots first, down to 0 and never below, the wallet never
+// touched. One 'deduct' movement per lot (eventKey LOYALTY_CLAWBACK:<lot>), with its entry like a
+// staff deduction. Returns the points taken (0 when nothing was spent or nothing is left).
+const CLAWBACK_REASON = 'نقاط صُرفت من طلبية أُلغيت أو نُقلت أو من مكافأة أُلغيت';
+const clawbackKey = (lotId) => `LOYALTY_CLAWBACK:${lotId}`;
+
+// Points spent from a lot: what redemptions took from it, less those given back since
+async function spentOf(lotId, session) {
+  const redemptions = await LoyaltyPoint.find({ kind: 'redeem', 'sources.lotId': lotId }).select('_id sources').session(session).lean();
+  let spent = 0;
+  for (const r of redemptions) {
+    if (await LoyaltyPoint.exists({ eventKey: { $regex: `^${restorePrefix(r._id)}` } }).session(session)) continue;
+    spent += (r.sources || []).filter((src) => String(src.lotId) === String(lotId)).reduce((sum, src) => sum + src.points, 0);
+  }
+  return spent;
+}
+
+async function clawBackSpent(lotId, session, now = new Date()) {
+  const eventKey = clawbackKey(lotId);
+  if (await LoyaltyPoint.exists({ eventKey }).session(session)) return 0;
+  const lot = await LoyaltyPoint.findById(lotId).select('user office orderId').session(session).lean();
+  if (!lot) return 0;
+  const spent = await spentOf(lot._id, session);
+  if (!(spent > 0)) return 0;
+  await lockWalletOwner(lot.user, session);
+  const lots = await spendableLots(lot.user, now, session);
+  const take = Math.min(spent, lots.reduce((sum, l) => sum + l.remaining, 0));
+  if (!(take > 0)) return 0;
+  const sources = takeOldest(lots, take);
+  for (const { lotId: from, points } of sources) {
+    const result = await LoyaltyPoint.updateOne({ _id: from, remaining: { $gte: points } }, { $inc: { remaining: -points } }, { session });
+    if (result.modifiedCount !== 1) throw new Error('Loyalty lot changed concurrently; retry the transaction');
+  }
+  const [created] = await LoyaltyPoint.create([{ user: lot.user, kind: 'deduct', points: take, sources, office: lot.office || DEFAULT_ADJUST_OFFICE,
+    ...(lot.orderId && { orderId: lot.orderId }), reason: CLAWBACK_REASON, eventKey }], { session });
+  if ((await getConfig()).settings?.liveEnabled) await postAdjustEntry(created.toObject(), session);
+  return take;
+}
+
 // Dr loyalty_points (the customer) / Cr loyalty_expense (the movement's office), for an expire or
 // revoke movement; the entry has the movement's eventKey
 async function postTakeBackEntry(movement, session) {
@@ -699,6 +741,8 @@ async function revokeOrder(orderId, session, now = new Date()) {
     .select('_id user earnedAt remaining').session(session).lean();
   let revoked = 0;
   for (const lot of lots) if (lot.remaining > 0 && await takeBackLot(lot._id, 'revoke', session)) revoked += 1;
+  // What was already spent from them comes off the rest of the balance (owner, 2026-11-21)
+  for (const lot of lots) await clawBackSpent(lot._id, session, now);
   // The order may be what brought the customer's level (owner, 2026-11-21): it drops back with it,
   // spent or not; checked once per order
   const order = await Order.findById(orderId).setOptions({ withDeleted: true }).select('loyaltyLevelCheckedAt').session(session).lean();
@@ -1008,6 +1052,8 @@ async function settleOwedClaim(earnId, now, session) {
   if (!owed && !lastTaken && String(last.user) !== String(owner)) {
     if (earn.expiresAt && new Date(earn.expiresAt) <= now) return null;
     await takeBackLot(last._id, 'revoke', session, { reason: MOVED_OUT_REASON });
+    // What they had spent of it comes off the rest of their points (owner, 2026-11-21)
+    await clawBackSpent(last._id, session, now);
     const points = last.points;
     const base = Number.isFinite(earn.basePoints) ? earn.basePoints : earn.points;
     const levelPoints = Math.floor((base * points) / Math.max(earn.points, 1));
@@ -1182,6 +1228,7 @@ function sourceOf(eventKey) {
   if (key.startsWith('LOYALTY_TIER_GIFT:')) return 'level';
   if (key.startsWith('RATING:')) return 'rating';
   if (key.startsWith('LOYALTY_ADJUST:')) return 'staff';
+  if (key.startsWith('LOYALTY_CLAWBACK:')) return 'clawback';
   if (key.startsWith('LOYALTY_REEARN:')) return 'reearn';
   if (key.startsWith('LOYALTY_MOVE:')) return 'moved';
   return null;
@@ -1224,7 +1271,7 @@ async function historyOf(userId, { page, limit, type } = {}) {
   const fromIds = [...new Set(movements.filter((m) => ['revoke', 'expire'].includes(m.kind)).map((m) => String(m.sources?.[0]?.lotId || '')).filter(Boolean))];
   const fromLots = new Map((await LoyaltyPoint.find({ _id: { $in: fromIds } }).select('eventKey reason').lean()).map((l) => [String(l._id), l]));
   const rowSource = (m) => {
-    if (m.kind === 'add') return sourceOf(m.eventKey);
+    if (m.kind === 'add' || m.kind === 'deduct') return sourceOf(m.eventKey);
     if (m.kind === 'revoke' || m.kind === 'expire') return sourceOf(fromLots.get(String(m.sources?.[0]?.lotId))?.eventKey);
     return null;
   };
@@ -1402,5 +1449,5 @@ module.exports = {
   moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, earnStillValid, takeBackLot, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };

@@ -489,7 +489,11 @@ async function takeBackDue({ now = new Date() } = {}) {
         if (!reward) return false;
         // A big reward stays while the friend still reaches $200 on what stands
         if (reward.kind === 'first' && await validPaidUsd(reward.friend, session) >= QUALIFY_USD) return false;
-        if (reward.lotId) await loyalty().takeBackLot(reward.lotId, 'revoke', session);
+        if (reward.lotId) {
+          await loyalty().takeBackLot(reward.lotId, 'revoke', session);
+          // What the inviter had spent of it comes off the rest of their points (owner, 2026-11-21)
+          await loyalty().clawBackSpent(reward.lotId, session);
+        }
         await ReferralReward.updateOne({ _id: reward._id }, { $set: { status: 'revoked', canceledAt: new Date(), cancelReason: why } }, { session });
         if (reward.kind === 'first') await requalify(reward.friend, session);
         return true;
