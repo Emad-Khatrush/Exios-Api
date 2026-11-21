@@ -2233,6 +2233,8 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
     const { receivedAmount, currency, createdAt, paymentType, customerId, category, list, rate } = req.body;
     const newList = typeof list === 'string' ? JSON.parse(list) : (list || []);
     if (paymentType !== 'cash') throw new ErrorHandler(400, 'Use the wallet payment action for wallet deductions');
+    // Shipping is paid only at delivery, from the delivery screen (owner, 2026-11-21)
+    if (category === 'receivedGoods') await require('./wallet').assertShippingDelivered({ _id: id }, newList);
     // Loyalty points sent with the payment: paid first in the same transaction, the cash pays the
     // rest. Only points (no amount) is accepted when they close what is due.
     const points = require('../accounting/services/loyalty').pointsOfPayment(req.body.points);

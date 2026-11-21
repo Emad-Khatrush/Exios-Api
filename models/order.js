@@ -211,6 +211,9 @@ const orderSchema = new Schema({
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     at: Date,
   },
+  // Cancelled (or "no points") order checked once for the customer's level (owner, 2026-11-21:
+  // the order that brought the level drops it back; loyalty/levels.js dropAfterCancel)
+  loyaltyLevelCheckedAt: Date,
   // Deleted by an admin because it was created by mistake (spec 19.10): hidden from the whole
   // system; accounting still shows it (its claims reversed) with a "deleted" badge
   isDeleted: { type: Boolean, default: false },

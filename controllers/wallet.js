@@ -970,6 +970,10 @@ module.exports.useBalanceOfWallet = async (req, res, next) => {
     const { id } = req.params;
     const { createdAt, amount, currency, description, note, orderId, category, rate, actionType, office } = req.body;
     if (actionType === 'exchange') throw new ErrorHandler(400, 'استخدم نافذة الصرافة لتسجيل طرفي التحويل معًا');
+    if (orderId && category === 'receivedGoods') {
+      const parsed = typeof req.body.list === 'string' ? JSON.parse(req.body.list || '[]') : req.body.list;
+      await assertShippingDelivered({ orderId: String(orderId) }, parsed);
+    }
     const withdrawalSource = req.body.withdrawalSource || 'box';
     if (actionType === 'withdrawal' && !['box', 'custody', 'bank'].includes(withdrawalSource)) throw new ErrorHandler(400, 'اختر مصدر السحب النقدي');
     if (actionType === 'withdrawal' && withdrawalSource === 'custody') {
@@ -1140,3 +1144,17 @@ async function orderPointsTarget(userId, orderNumber, category, list, session) {
   const packageIds = category === 'receivedGoods' ? (list || []).map((p) => String(p?._id || p?.id || '')).filter(Boolean) : [];
   return { orderId: order._id, category, ...(packageIds.length && { packageIds }) };
 }
+
+// Shipping is paid only when the package is delivered, from the delivery screen (owner, 2026-11-21):
+// paid before, the delivery asked the full amount again and the customer paid twice. A package
+// already delivered (on credit, or written off and paid after all) may still be paid here.
+async function assertShippingDelivered(orderFilter, list, session) {
+  const order = await require('../models/order').findOne(orderFilter).select('paymentList._id paymentList.status.received').session(session || null).lean();
+  if (!order) return;
+  const ids = (list || []).map((p) => String(p?._id || p?.id || '')).filter(Boolean);
+  const targets = (order.paymentList || []).filter((p) => !ids.length || ids.includes(String(p._id)));
+  if (targets.some((p) => !p.status?.received)) {
+    throw new ErrorHandler(400, 'يُدفع شحن الطرد عند تسليمه فقط، من قسم التسليم. لا يمكن خصمه من صفحة الطلبية قبل التسليم.');
+  }
+}
+module.exports.assertShippingDelivered = assertShippingDelivered;

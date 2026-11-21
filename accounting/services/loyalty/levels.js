@@ -4,6 +4,7 @@
 const mongoose = require('mongoose');
 const moment = require('moment-timezone');
 const LoyaltyPoint = require('../../../models/loyaltyPoint');
+const Order = require('../../../models/order');
 const ErrorHandler = require('../../../utils/errorHandler');
 const { runInTransaction, assertInTransaction } = require('../transaction');
 const { lockWalletOwner } = require('../../../utils/walletLock');
@@ -28,11 +29,17 @@ async function levelPointsOf(userIds, { now = new Date(), session } = {}) {
   if (!ids.length) return result;
   const since = new Date(now.getTime() - tiers.WINDOW_DAYS * DAY_MS);
   const lots = await LoyaltyPoint.find({ user: { $in: ids }, ...COUNTS, earnedAt: { $gt: since, $lte: now } })
-    .select('_id user kind points basePoints levelPoints').session(session || null).lean();
+    .select('_id user kind points basePoints levelPoints orderId reearnOf').session(session || null).lean();
   const revoked = new Set((await LoyaltyPoint.find({ kind: 'revoke', 'sources.lotId': { $in: lots.map((lot) => lot._id) } })
     .select('sources.lotId').session(session || null).lean()).flatMap((m) => (m.sources || []).map((s) => String(s.lotId))));
+  // An order cancelled, deleted or marked "no points" does not count, even when its points were
+  // spent before (nothing was left to take back, so no take-back names the lot) (owner, 2026-11-21)
+  const orderIds = [...new Set(lots.filter((lot) => lot.orderId && (lot.kind === 'earn' || lot.reearnOf)).map((lot) => String(lot.orderId)))];
+  const voided = new Set(orderIds.length ? (await Order.find({ _id: { $in: orderIds.map(oid) }, $or: [{ isCanceled: true }, { isDeleted: true }, { 'loyalty.noPoints': true }] })
+    .setOptions({ withDeleted: true }).select('_id').session(session || null).lean()).map((o) => String(o._id)) : []);
   for (const lot of lots) {
     if (revoked.has(String(lot._id))) continue;
+    if ((lot.kind === 'earn' || lot.reearnOf) && voided.has(String(lot.orderId))) continue;
     const key = String(lot.user);
     const counted = lot.kind === 'add' ? lot.levelPoints : (Number.isFinite(lot.basePoints) ? lot.basePoints : lot.points);
     result.set(key, result.get(key) + counted);
@@ -56,12 +63,23 @@ async function saveLevel(userId, { level, now, why, reason, by, keepSince = fals
   await users().updateOne({ _id: oid(userId) }, { $set: set, $push: { 'loyaltyTier.history': { $each: [row], $slice: -HISTORY_KEEP } } }, { session });
 }
 
-// The gift of a level, given once ever per customer and level
+// The gift of a level, given once per customer and level; again only when the one before was taken
+// back because the order that reached the level was cancelled (then LOYALTY_TIER_GIFT:<user>:<level>:<n>)
 const giftKey = (userId, level) => `LOYALTY_TIER_GIFT:${userId}:${level}`;
+const GIFT_BACK_REASON = 'أُلغيت الطلبية التي وصلت بك إلى هذا المستوى';
+const giftLots = (userId, level, session) => LoyaltyPoint.find({ kind: 'add', eventKey: { $regex: `^${giftKey(userId, level)}(:\d+)?$` } })
+  .select('_id remaining').session(session || null).lean();
 async function giveUpgradeGift(userId, level, now, session) {
   const tier = tiers.tierOf(level);
   if (!(tier.upgradeGift > 0)) return null;
-  return require('./index').grantGift({ userId, points: tier.upgradeGift, reason: `هدية الترقية إلى مستوى ${tier.name}`, eventKey: giftKey(userId, level), now }, session);
+  const before = await giftLots(userId, level, session);
+  let eventKey = giftKey(userId, level);
+  if (before.length) {
+    const takenBack = await LoyaltyPoint.countDocuments({ kind: 'revoke', reason: GIFT_BACK_REASON, 'sources.lotId': { $in: before.map((l) => l._id) } }).session(session || null);
+    if (takenBack < before.length) return null;
+    eventKey = `${eventKey}:${before.length}`;
+  }
+  return require('./index').grantGift({ userId, points: tier.upgradeGift, reason: `هدية الترقية إلى مستوى ${tier.name}`, eventKey, now }, session);
 }
 
 // ---- Reaching the next level (right after an earn, in its transaction) ----
@@ -79,6 +97,40 @@ async function refreshLevel(userId, { now = new Date(), session } = {}) {
   // The gift of every level passed on the way (a big order can pass two), each once ever
   for (let rank = tiers.rankOf(current) + 1; rank <= reached.rank; rank += 1) await giveUpgradeGift(userId, tiers.TIERS[rank].key, now, session);
   return { from: current, to: reached.key };
+}
+
+// ---- An order that brought the level cancelled (owner, 2026-11-21) ----
+
+// Points of an order taken back because it was cancelled or marked "no points" (`lots`: the lots taken
+// back, with earnedAt). When one of them counted toward reaching the current level (earned by the
+// day the level was reached) and, without them, the points at that day reach a lower level, the
+// customer goes back to that level (never below what their points reach now) and what is left of
+// each lost level's upgrade gift is taken back. A level set by the office by hand is not touched.
+// Returns { from, to } or null.
+async function dropAfterCancel(userId, lots, { now = new Date(), session } = {}) {
+  assertInTransaction(session);
+  const user = await users().findOne({ _id: oid(userId) }, { projection: { loyaltyTier: 1 }, session });
+  const saved = user?.loyaltyTier;
+  const current = saved?.level;
+  if (!current || tiers.rankOf(current) === 0 || !saved.since) return null;
+  const last = (saved.history || []).filter((h) => h.to === current).at(-1);
+  if (last?.why === 'manual') return null;
+  const since = new Date(saved.since);
+  if (!lots.some((lot) => lot.earnedAt && new Date(lot.earnedAt) <= since)) return null;
+  const atThen = tiers.qualifyingTier(await levelPoints(userId, { now: since, session }));
+  const atNow = tiers.qualifyingTier(await levelPoints(userId, { now, session }));
+  const rank = Math.max(atThen.rank, atNow.rank);
+  if (rank >= tiers.rankOf(current)) return null;
+  const level = tiers.TIERS[rank].key;
+  await saveLevel(userId, { level, now, why: 'cancel' }, current, session);
+  await users().updateOne({ _id: oid(userId) }, { $set: { 'loyaltyTier.seen': level } }, { session });
+  const { takeBackLot } = require('./index');
+  for (let r = rank + 1; r <= tiers.rankOf(current); r += 1) {
+    for (const lot of await giftLots(userId, tiers.TIERS[r].key, session)) {
+      if (lot.remaining > 0) await takeBackLot(lot._id, 'revoke', session, { reason: GIFT_BACK_REASON });
+    }
+  }
+  return { from: current, to: level };
 }
 
 // ---- What a customer sees of their level ----
@@ -248,4 +300,4 @@ async function report({ now = new Date(), limit = 20 } = {}) {
   };
 }
 
-module.exports = { levelPointsOf, levelPoints, refreshLevel, levelOf, markSeen, setLevel, reviewDue, report };
+module.exports = { levelPointsOf, levelPoints, refreshLevel, dropAfterCancel, GIFT_BACK_REASON, levelOf, markSeen, setLevel, reviewDue, report };
