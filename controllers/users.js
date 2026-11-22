@@ -128,9 +128,19 @@ module.exports.readPassportNumber = async (req, res, next) => {
   }
 };
 
+// A new passport photo (never uploaded, or after a rejection): like sign-up, it needs the number the
+// customer confirmed (and what was read from the photo), unique among the other accounts
 module.exports.uploadPassport = async (req, res, next) => {
+  const passportNo = passportNumber.normalize(req.body.passportNumber);
+  const passportRead = passportNumber.normalize(req.body.passportNumberRead);
   try {
     if (!req.file) return next(new ErrorHandler(400, errorMessages.PASSPORT_IMAGE_REQUIRED));
+    if (!passportNumber.isValid(passportNo)) return next(new ErrorHandler(400, errorMessages.PASSPORT_NUMBER_REQUIRED));
+    const takenByOther = await User.exists({
+      _id: { $ne: req.user._id },
+      $or: [{ 'passportVerification.number': passportNo }, { 'passportVerification.numberRead': passportNo }],
+    });
+    if (takenByOther) return next(new ErrorHandler(400, errorMessages.PASSPORT_EXIST));
 
     const uploadedPassport = await uploadToGoogleCloud(req.file, 'exios-passports');
     if (!uploadedPassport?.publicUrl) return next(new ErrorHandler(500, errorMessages.PASSPORT_UPLOAD_FAILED));
@@ -141,10 +151,15 @@ module.exports.uploadPassport = async (req, res, next) => {
         'passportVerification.imageUrl': uploadedPassport.publicUrl,
         'passportVerification.submittedAt': new Date(),
         'passportVerification.rejectionReason': null,
+        'passportVerification.number': passportNo,
+        'passportVerification.numberSource': passportRead && passportRead === passportNo ? 'read' : 'typed',
+        ...(passportRead && { 'passportVerification.numberRead': passportRead }),
       },
       $unset: {
         'passportVerification.reviewedAt': '',
         'passportVerification.reviewedBy': '',
+        // A read from the old photo no longer describes this one
+        ...(!passportRead && { 'passportVerification.numberRead': '' }),
       }
     }, { new: true });
 
