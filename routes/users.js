@@ -36,7 +36,25 @@ router.route('/clients')
 router.route('/customer/:id')
       .get(protect, anyStaff(allowAdminsAndEmployee), users.getCustomerData)
 
-router.post('/account/create', upload.single('passportImage'), users.createUser);
+// Each new account stores a passport photo and gets the sign-up gift, so one address may open only so many
+// an hour. Only accounts actually made count (a refused form being fixed does not); generous because
+// mobile networks in Libya put many people behind one address.
+const SIGNUPS_PER_HOUR = 10;
+const signupHits = new Map();
+const limitSignups = (req, res, next) => {
+  const now = Date.now();
+  const recent = (signupHits.get(req.ip) || []).filter((t) => now - t < 60 * 60 * 1000);
+  if (recent.length >= SIGNUPS_PER_HOUR) return res.status(429).json({ success: false, message: errorMessages.TOO_MANY_REQUESTS });
+  res.on('finish', () => {
+    if (res.statusCode !== 200) return;
+    const list = (signupHits.get(req.ip) || []).filter((t) => Date.now() - t < 60 * 60 * 1000);
+    list.push(Date.now());
+    signupHits.set(req.ip, list);
+    if (signupHits.size > 5000) signupHits.clear();
+  });
+  next();
+};
+router.post('/account/create', limitSignups, upload.single('passportImage'), users.createUser);
 
 // Public, so it is limited per address: enough for a person fixing typos, too few to scan for accounts
 const checkHits = new Map();

@@ -590,6 +590,8 @@ module.exports.searchForDebt = async (req, res, next) => {
     {
       $unwind: '$owner'
     },
+    // Never the customer's password hash
+    { $project: { 'owner.password': 0 } },
     {
       $unwind: {
         path: '$order',
@@ -655,6 +657,8 @@ module.exports.checkDebtsByUser = async (req, res, next) => {
       {
         $unwind: '$owner'
       },
+      // Never the customer's password hash
+      { $project: { 'owner.password': 0 } },
       {
         $match: {
           status: 'open',

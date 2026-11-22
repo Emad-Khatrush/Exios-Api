@@ -281,16 +281,18 @@ module.exports.acceptTerms = async (req, res, next) => {
   }
 }
 
+// The customer may change their city only. The name is checked against the passport and the phone is
+// how they sign in and how invites are told apart, so the office changes those (PUT customer/:id/info).
 module.exports.updateUser = async (req, res, next) => {
-  const { firstName, lastName, city, phone } = req.body;
+  const same = (field, value) => value === undefined || value === null || String(value).trim() === String(req.user[field] ?? '');
+  const { firstName, lastName, phone } = req.body;
+  if (!same('firstName', firstName) || !same('lastName', lastName) || !(phone === undefined || phone === null || Number(formatPhoneNumber(String(phone))) === req.user.phone)) {
+    return next(new ErrorHandler(400, 'لتغيير الاسم أو رقم الهاتف تواصل مع المكتب'));
+  }
+  const city = typeof req.body.city === 'string' ? req.body.city.trim().slice(0, 60) : undefined;
 
   try {
-    const user = await User.findByIdAndUpdate(req.user._id, {
-      firstName,
-      lastName,
-      city,
-      phone
-    }, { new: true });
+    const user = await User.findByIdAndUpdate(req.user._id, { ...(city !== undefined && { city }) }, { new: true });
     res.status(200).json(user);
   } catch (error) {
     console.log(error);

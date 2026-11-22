@@ -861,7 +861,9 @@ module.exports.getUnverifiedUsersStatement = async (req, res, next) => {
         $replaceRoot: {                         // Replace the root with the userDetails document
           newRoot: "$userDetails"
         }
-      }
+      },
+      // Never the customer's password hash
+      { $project: { password: 0 } }
     ]
 
     if (tab === 'openedWallet') {
@@ -886,7 +888,9 @@ module.exports.getUnverifiedUsersStatement = async (req, res, next) => {
           $replaceRoot: {                         // Replace the root with the userDetails document
             newRoot: "$userDetails"
           }
-        }
+        },
+        // Never the customer's password hash
+        { $project: { password: 0 } }
       ]
     }
 

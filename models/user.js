@@ -37,9 +37,11 @@ const userSchema = new Schema({
   office: {
     type: String,
   },
+  // Never read unless asked for ('+password', sign-in only), so no response, lean read or populate carries the hash
   password: {
     type: String,
     required: true,
+    select: false,
   },
   imgUrl: {
     type: String,
@@ -189,6 +191,7 @@ userSchema.index({ 'referral.by': 1 }, { partialFilterExpression: { 'referral.by
 // whom are staff notes (staff read them from GET user/:id/loyalty → offInfo)
 userSchema.set('toJSON', {
   transform(doc, ret) {
+    delete ret.password;
     if (ret.loyaltyOff) ret.loyaltyOff = ret.loyaltyOff.at ? { at: ret.loyaltyOff.at } : undefined;
     // Why a referral was cancelled is a staff note
     if (ret.referral) delete ret.referral.cancelReason;
