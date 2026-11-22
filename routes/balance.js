@@ -23,6 +23,10 @@ router.route('/balances/:id/paymentHistory')
       .post(protect, allow(['debts'], allowAdminsAndEmployee), upload.array('files'), balance.createPaymentHistory)
       .put(protect, allow(['debts'], allowAdminsAndEmployee), balance.updateCompanyBalance);
 
+// Cancelling a payment made by mistake: same people as closing a debt by hand
+router.route('/balances/:id/paymentHistory/:paymentId')
+      .delete(protect, allow(['debts'], allowAdminsAndAccountants), balance.cancelDebtPayment);
+
 router.route('/balances/:id/confirmed')
       .put(protect, isAdmin, balance.confirmDebt)
 

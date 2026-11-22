@@ -320,9 +320,12 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         updatedAmount = 0;
       }
 
+      // Its own id, to keep on it the statement line made below (never taken from the request)
+      const historyId = new mongoose.Types.ObjectId();
+      const { statementId: _ignored, _id: _ignoredId, ...paymentFields } = req.body;
       let updateQuery = {
         $set: { amount: updatedAmount },
-        $push: { "paymentHistory": { ...req.body, amount: roundToTwo(Number(amount)), rate: rateValue, currency } },
+        $push: { "paymentHistory": { ...paymentFields, _id: historyId, amount: roundToTwo(Number(amount)), rate: rateValue, currency } },
       };
 
       if (updatedAmount === 0) {
@@ -374,6 +377,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         actionType: 'wallet',
         ...(currency === 'LYD' && rateValue > 0 && { rate: rateValue }),
       }], { session });
+      await Balance.updateOne({ _id: id, 'paymentHistory._id': historyId }, { $set: { 'paymentHistory.$.statementId': debtStatement._id } }, { session });
 
       if (existingBalance.order && existingBalance.debtType !== 'general') {
         const data = {
@@ -413,6 +417,104 @@ module.exports.createPaymentHistory = async (req, res, next) => {
   }
 };
 
+
+// The wallet line that took the money of a debt payment: kept on the payment since it was added;
+// for older payments, the line whose accounting event names this debt, with the payment's amount,
+// currency and date (one not already given back)
+// The line belongs to the customer who paid, also when the debt followed its order to another one since.
+const DEBT_PAYMENT_LINE_WINDOW_MS = 60 * 1000;
+async function statementOfDebtPayment(debt, payment, session) {
+  const { AccountingEvent } = require('../accounting/models');
+  const givenBack = (line) => AccountingEvent.exists({ type: 'statement', 'payload.reverses': { $in: [line._id, String(line._id)] } }).session(session);
+  if (payment.statementId) {
+    const line = await UserStatement.findOne({ _id: payment.statementId, calculationType: '-' }).session(session);
+    return line && !(await givenBack(line)) ? line : null;
+  }
+  const events = await AccountingEvent.find({ type: 'statement', 'payload.target.balanceId': { $in: [debt._id, String(debt._id)] } })
+    .select('refId').session(session).lean();
+  const time = new Date(payment.createdAt).getTime();
+  const candidates = await UserStatement.find({
+    _id: { $in: events.map((e) => e.refId) }, currency: payment.currency, calculationType: '-',
+    createdAt: { $gte: new Date(time - DEBT_PAYMENT_LINE_WINDOW_MS), $lte: new Date(time + DEBT_PAYMENT_LINE_WINDOW_MS) },
+  }).session(session);
+  for (const line of candidates) {
+    if (Math.abs(Number(line.amount) - Number(payment.amount)) > 0.001) continue;
+    if (!(await givenBack(line))) return line;
+  }
+  return null;
+}
+
+// Cancels one payment recorded from the debts screen by mistake: the money goes back to the wallet
+// with a "+" cancellation line that reverses the payment's entry exactly (as cancelling a wallet
+// payment on an order does), the order payment it made is removed, and the debt is owed again.
+module.exports.cancelDebtPayment = async (req, res, next) => {
+  try {
+    const { id, paymentId } = req.params;
+    const result = await runInTransaction(async (session) => {
+      const debt = await Balance.findById(id).session(session).populate('order', 'orderId');
+      if (!debt) throw new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND);
+      const payment = debt.paymentHistory.id(paymentId);
+      if (!payment) throw new ErrorHandler(404, 'الدفعة غير موجودة في هذا الدين، ربما أُلغيت من قبل');
+      if (debt.deliveryInvoiceId) throw new ErrorHandler(400, 'هذا متبقي فاتورة تسليم: ألغِ فاتورة التسليم نفسها حتى ترجع الدفعات والطرود معًا');
+      if (debt.manualClosure?.closedAt || ['lost', 'canceled'].includes(debt.status)) {
+        throw new ErrorHandler(400, 'هذا الدين أُغلق يدويًا وشُطب متبقيه؛ لا يمكن إلغاء دفعة منه');
+      }
+      if (await OrderPaymentHistory.exists({ 'debtPayments.historyId': payment._id }).session(session)) {
+        throw new ErrorHandler(400, 'هذه الدفعة سُجلت من صفحة الطلبية؛ ألغِها من تبويب الدفعات في الطلبية');
+      }
+      await assertOpenPeriod(req.user, payment.createdAt, { session });
+
+      const line = await statementOfDebtPayment(debt, payment, session);
+      if (!line) throw new ErrorHandler(400, 'لم يُعثر على حركة الخصم الخاصة بهذه الدفعة في كشف حساب العميل؛ راجع المحاسب');
+
+      // Off the debt first, only while the payment is still on it: two cancellations cannot both go through
+      const rate = Number(payment.rate) || 0;
+      const backOnDebt = payment.currency === debt.currency ? Number(payment.amount) : (rate > 0 ? Number(payment.amount) / rate : 0);
+      const amount = Math.min(Math.round((Number(debt.amount) + backOnDebt) * 100) / 100, Number(debt.initialAmount));
+      const updated = await Balance.findOneAndUpdate(
+        { _id: debt._id, 'paymentHistory._id': payment._id },
+        {
+          $set: { amount, ...(['waitingApproval', 'closed'].includes(debt.status) && amount > 0 && { status: 'open' }) },
+          $pull: { paymentHistory: { _id: payment._id } },
+        },
+        { new: true, session },
+      );
+      if (!updated) throw new ErrorHandler(409, 'تغيّر هذا الدين للتو. حدّث الصفحة وحاول مرة أخرى');
+
+      // Same steps as cancelling a wallet payment on an order; it also removes the order payment
+      // this debt payment made (invoice and received goods debts of an order)
+      const orderPayment = await OrderPaymentHistory.findOne({ statementId: line._id }).session(session).lean();
+      const debtKind = debt.debtType === 'invoice' ? 'فاتورة' : debt.debtType === 'receivedGoods' ? 'بضاعة مستلمة' : 'دين عام';
+      await require('../utils/helperApi').refundWalletPayment(req.user, {
+        _id: orderPayment?._id || new mongoose.Types.ObjectId(),
+        customer: line.user,
+        currency: line.currency,
+        receivedAmount: line.amount,
+        rate,
+        paymentType: 'wallet',
+        statementId: line._id,
+        order: orderPayment?.order,
+        category: orderPayment?.category,
+        list: orderPayment?.list,
+      },
+      `إلغاء دفعة دين (${debtKind}) ${debt.order?.orderId || ''} واسترجاع القيمة إلى المحفظة`.replace(/\s+/g, ' '),
+      'Debt payment cancellation refund', session);
+
+      await Activities.create([{
+        user: req.user,
+        details: { path: '/balances', status: 'updated', type: 'debt', actionId: String(debt._id) },
+        changedFields: [
+          { label: 'Payment cancelled', value: `${payment.amount} ${payment.currency}` },
+          { label: 'Debt left', value: `${amount} ${debt.currency}` },
+        ],
+      }], { session });
+      return updated;
+    });
+    res.status(200).json(result);
+  } catch (error) {
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+};
 
 module.exports.updateCompanyBalance = async (req, res, next) => {
   try {

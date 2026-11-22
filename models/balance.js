@@ -82,6 +82,9 @@ const balanceSchema = new mongoose.Schema({
         },
         reference: String
       },
+      // The customer statement line that took the money from the wallet, so the payment can be
+      // cancelled exactly (older payments have none and are matched through their event)
+      statementId: { type: mongoose.Schema.Types.ObjectId, ref: 'UserStatement' },
       attachments: [{
         filename: String,
         path: String,
