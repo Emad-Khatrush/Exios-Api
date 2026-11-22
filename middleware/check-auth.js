@@ -15,10 +15,16 @@ exports.protect = async (req, res, next) => {
   try {
     const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decodedToken.id, { password: 0 });
+    const user = await User.findById(decodedToken.id).select('+passwordChangedAt');
 
     if (!user) {
       return next(new ErrorHandler(404, errorMessages.USER_NOT_FOUND));
+    }
+
+    // A password changed after this token was issued ends the session (on every device): sign in again.
+    // iat is in whole seconds: a sign-in in the same second as the change keeps working.
+    if (user.passwordChangedAt && Number(decodedToken.iat) < Math.floor(user.passwordChangedAt.getTime() / 1000)) {
+      return next(new ErrorHandler(404, 'authorize-invalid'));
     }
 
     if (user.isCanceled) {

@@ -50,6 +50,8 @@ const userSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  // When the password last changed: a session token issued before it no longer works (check-auth.protect)
+  passwordChangedAt: { type: Date, select: false },
   // Wrong passwords in a row (counted from the first one in the current window), and until when
   // sign-in is paused after too many. Never sent out with the account.
   failedLoginCount: { type: Number, default: 0, select: false },
@@ -192,6 +194,7 @@ userSchema.index({ 'referral.by': 1 }, { partialFilterExpression: { 'referral.by
 userSchema.set('toJSON', {
   transform(doc, ret) {
     delete ret.password;
+    delete ret.passwordChangedAt;
     if (ret.loyaltyOff) ret.loyaltyOff = ret.loyaltyOff.at ? { at: ret.loyaltyOff.at } : undefined;
     // Why a referral was cancelled is a staff note
     if (ret.referral) delete ret.referral.cancelReason;

@@ -64,7 +64,8 @@ module.exports.resetNewPassword = async (req, res, next) => {
     await User.updateOne(
       { _id: userId },
       // a new password also lifts any sign-in pause from wrong passwords
-      { $set: { password: hash, failedLoginCount: 0 }, $unset: { failedLoginSince: '', loginLockedUntil: '' } },
+      // and ends every session opened with the old one (check-auth.protect)
+      { $set: { password: hash, failedLoginCount: 0, passwordChangedAt: new Date() }, $unset: { failedLoginSince: '', loginLockedUntil: '' } },
       { new: true }
     );
 

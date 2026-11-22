@@ -612,8 +612,6 @@ async function historyOf(inviterId, { friendId, status, page = 1, now = new Date
   const slice = shown.slice((at - 1) * HISTORY_SIZE, at * HISTORY_SIZE);
   const orders = new Map((await Order.find({ _id: { $in: slice.map((s) => s.r.sourceOrder).filter(Boolean) } }).setOptions({ withDeleted: true })
     .select('orderId').lean()).map((o) => [String(o._id), o.orderId]));
-  const earns = new Map((await LoyaltyPoint.find({ _id: { $in: slice.map((s) => s.r.sourceEarn).filter(Boolean) } }).select('basePoints points').lean())
-    .map((e) => [String(e._id), baseOf(e) * USD_PER_BASE_POINT]));
   const items = slice.map(({ r, state, note, releaseAt, revoked }) => ({
     id: String(r._id),
     kind: r.kind,
@@ -628,20 +626,18 @@ async function historyOf(inviterId, { friendId, status, page = 1, now = new Date
     canceledAt: r.canceledAt || null,
     friend: r.friend ? { id: String(r.friend), name: fullName(friends.get(String(r.friend))) } : null,
     orderNumber: r.sourceOrder ? orders.get(String(r.sourceOrder)) || null : null,
-    paidUsd: r.sourceEarn ? earns.get(String(r.sourceEarn)) || 0 : null,
     step: r.kind === 'step' ? { friends: r.step?.friends, usd: r.step?.usd, title: r.step?.title || null } : null,
   }));
   let friend = null;
   if (friendDoc) {
-    const paid = (await paidUsdOf([friendDoc._id])).get(String(friendDoc._id)) || 0;
     const ref = friendDoc.referral;
     friend = {
       id: String(friendDoc._id),
       name: fullName(friendDoc),
       joinedAt: ref.at || friendDoc.createdAt,
       status: friendStatus(ref, now),
-      paidUsd: paid,
-      leftUsd: ref.qualifiedAt ? 0 : Math.max(QUALIFY_USD - paid, 0),
+      // What the friend brought the inviter (given), never what the friend paid: that is the friend's own business
+      points: totals.granted,
       qualifiedAt: ref.qualifiedAt || null,
       shareEndsAt: shareEndsAt(ref.qualifiedAt),
       // Orders that brought something that stands (given or waiting), not what was cancelled or taken back
@@ -675,9 +671,6 @@ async function mine(userId, { now = new Date() } = {}) {
     heldPoints: held.get(String(f._id)) || 0,
     // Why this friend's rewards wait beyond the 24 hours: their passport, or the office's review
     waiting: f.referral.review?.status === 'pending' ? 'review' : f.passportVerification?.status !== 'verified' ? 'passport' : null,
-    paidUsd: paid.get(String(f._id)) || 0,
-    // What is left to pay before the inviter's big reward (0 once reached)
-    leftUsd: f.referral.qualifiedAt ? 0 : Math.max(QUALIFY_USD - (paid.get(String(f._id)) || 0), 0),
   }));
   return {
     off: false,
@@ -694,7 +687,9 @@ async function mine(userId, { now = new Date() } = {}) {
     sharePerUsd: SHARE_PER_USD,
     months: Math.round(SHARE_DAYS / 30.4),
     qualified,
-    friendsPaidUsd,
+    // What all friends paid together, shown only from the first step's number of friends: with one or two
+    // friends the total would tell what each of them paid
+    friendsPaidUsd: qualified >= STEPS[0].friends ? friendsPaidUsd : null,
     steps: STEPS.map((s) => ({ ...s, reached: qualified >= s.friends && friendsPaidUsd >= s.usd })),
     friends: rows,
     totalPoints: rows.reduce((sum, r) => sum + r.points, 0) + steps.reduce((sum, s) => sum + s.points, 0),

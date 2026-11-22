@@ -675,10 +675,17 @@ module.exports.login = async (req, res, next) => {
 module.exports.verifyToken = async (req, res, next) => {
   const { token } = req.body;
 
-  if (!token) next(new ErrorHandler(404, errorMessages.TOKEN_NOT_FOUND));
+  if (!token || typeof token !== 'string') return next(new ErrorHandler(404, errorMessages.TOKEN_NOT_FOUND));
 
   try {
     const tokenConfig = await jwt.verify(token, process.env.JWT_SECRET);
+    // The apps ask this when they open: a session ended by a password change (or a cancelled account)
+    // is refused here, so the app signs out instead of failing on every request
+    const user = await User.findById(tokenConfig.id).select('isCanceled +passwordChangedAt').lean();
+    if (!user || user.isCanceled) return next(new ErrorHandler(401, errorMessages.INVALID_TOKEN));
+    if (user.passwordChangedAt && Number(tokenConfig.iat) < Math.floor(new Date(user.passwordChangedAt).getTime() / 1000)) {
+      return next(new ErrorHandler(401, errorMessages.INVALID_TOKEN));
+    }
 
     res.status(200).json({
       token,
