@@ -48,6 +48,10 @@ router.route('/orders/tracking')
 router.route('/orders/tracking/:id/packages')
       .get(protect, allow(['tracking'], allowAdminsAndEmployee), xTracking.packages)
 
+// Where the tracking numbers typed on an order already are (a warning only, never a block)
+router.route('/orders/trackingMatches')
+      .get(protect, allow(['invoices_create', 'invoices_edit'], allowAdminsAndEmployee), orders.getTrackingMatches)
+
 router.route('/unsureOrder/add')
       .post(protect, allow(['invoices_create'], allowAdminsAndEmployee), orders.createUnsureOrder);
 

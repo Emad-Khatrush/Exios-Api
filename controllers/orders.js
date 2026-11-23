@@ -819,6 +819,9 @@ module.exports.createOrder = async (req, res, next) => {
         }), session });
       }
 
+      // The customer's waiting packages (طرود منتظرة) with the same tracking numbers join this order
+      await require('../utils/trackingLinks').linkWaitingPackages(order, { user: req.user, session });
+
       return order;
     });
     res.status(200).json(outcome);
@@ -1130,6 +1133,8 @@ module.exports.updateOrder = async (req, res, next) => {
       // Saving the order rewrites its packages; their trip links are worked out again
       await refreshPackageTrips((newOrder.paymentList || []).map((pkg) => pkg._id), { session });
       await emitAccountingEvent('order', newOrder._id, {}, req.user, { session });
+      // The customer's waiting packages (طرود منتظرة) with the same tracking numbers join this order
+      await require('../utils/trackingLinks').linkWaitingPackages(await Orders.findById(newOrder._id).session(session), { user: req.user, session });
       return newOrder;
     });
     res.status(200).json(outcome);
@@ -2598,4 +2603,19 @@ const calculateTotalInvoice = (items) => {
     total += amount;
   })
   return total;
+}
+
+// Where else the tracking numbers being typed on an order already are: a customer's waiting package
+// or another order's package. Staff are only warned (owner's request 2026-11-24).
+module.exports.getTrackingMatches = async (req, res, next) => {
+  try {
+    const { findMatches, MAX_NUMBERS } = require('../utils/trackingLinks');
+    const raw = req.query.numbers;
+    const numbers = (Array.isArray(raw) ? raw : String(raw || '').split(',')).slice(0, MAX_NUMBERS);
+    const exclude = mongoose.Types.ObjectId.isValid(req.query.exclude) ? req.query.exclude : undefined;
+    res.status(200).json({ matches: await findMatches(numbers, { excludeOrderId: exclude }) });
+  } catch (error) {
+    console.log(error);
+    return next(new ErrorHandler(400, error.message));
+  }
 }
