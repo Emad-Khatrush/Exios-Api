@@ -1592,6 +1592,16 @@ module.exports.getClientHomeData = async (req, res, next) => {
   }
 }
 
+// The page of a customer's order list the app asked for: limit 1-100 (0 = the whole list), skip >= 0
+const CLIENT_PAGE_MAX = 100;
+const clientPage = (q = {}) => {
+  const limit = Math.min(Math.max(parseInt(q.limit, 10) || 0, 0), CLIENT_PAGE_MAX);
+  const skip = limit ? Math.min(Math.max(parseInt(q.skip, 10) || 0, 0), 100000) : 0;
+  return { limit, skip };
+};
+// Search answers at most this many orders (the newest)
+const CLIENT_SEARCH_MAX = 50;
+
 // The customer's lists that a stopped shipment must leave (it shows under "blocked" instead)
 const CLIENT_TABS_WITHOUT_BLOCKED = ['active', 'arrivedWarehouse', 'readyForPickup'];
 const notBlocked = { $ne: ['$shippingBlocked', true] };
@@ -1601,16 +1611,32 @@ module.exports.getOrdersForUser = async (req, res, next) => {
     const { type } = req.params;
     const query = buildClientOrderProjection(req.query, ['images']);
 
-    let orders;
+    let filter;
     if (type === 'all') {
-      orders = await Orders.find({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false }, query).sort({ createdAt: -1 });
+      filter = { user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false };
     } else if (type === 'blocked') {
       // Shipments the office stopped (prohibited goods): their own list, out of the active ones
-      orders = await Orders.find({ user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false, shippingBlocked: true }, query).sort({ createdAt: -1 });
+      filter = { user: req.user._id, isCanceled: false, unsureOrder: false, isFinished: false, shippingBlocked: true };
     } else {
       const queryType = getTapTypeQuery(type);
       if (CLIENT_TABS_WITHOUT_BLOCKED.includes(type)) queryType.shippingBlocked = { $ne: true };
-      orders = await Orders.find({ ...queryType, user: req.user._id, isCanceled: false }, query).sort({ createdAt: -1 });
+      filter = { ...queryType, user: req.user._id, isCanceled: false };
+    }
+
+    // A page of the list when the app asks for one (limit, skip): a customer with a thousand received
+    // orders gets them a batch at a time. Without a limit the whole list, as older app versions expect.
+    const { limit, skip } = clientPage(req.query);
+    let orders;
+    let page;
+    if (limit) {
+      const [found, total] = await Promise.all([
+        Orders.find(filter, query).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit + 1),
+        Orders.countDocuments(filter),
+      ]);
+      orders = found.slice(0, limit);
+      page = { skip, limit, total, hasMore: found.length > limit };
+    } else {
+      orders = await Orders.find(filter, query).sort({ createdAt: -1 });
     }
 
     let ordersCountList = (await Orders.aggregate([
@@ -1774,7 +1800,8 @@ module.exports.getOrdersForUser = async (req, res, next) => {
     res.status(200).json({
       results: {
         orders,
-        countList: ordersCountList || []
+        countList: ordersCountList || [],
+        ...(page && { page })
       }
     });
   } catch (error) {
@@ -1800,8 +1827,10 @@ module.exports.getOrdersClientBySearch= async (req, res, next) => {
 
   // sort newest order to top
   query.push({
-    $sort: { createdAt: -1 }
+    $sort: { createdAt: -1, _id: -1 }
   })
+
+  query.push({ $limit: CLIENT_SEARCH_MAX });
 
   // show only the important fields
   const orderedList = buildClientOrderProjection(req.query, ['images']);
