@@ -22,7 +22,7 @@ const findMatches = async (numbers, { excludeOrderId, session } = {}) => {
   const filter = { 'paymentList.deliveredPackages.trackingNumber': { $in: wanted.map(pattern) } };
   if (excludeOrderId) filter._id = { $ne: excludeOrderId };
   const orders = await Orders.find(filter)
-    .select('orderId user unsureOrder isCanceled isFinished isPayment customerInfo.fullName paymentList._id paymentList.deliveredPackages.trackingNumber paymentList.status.received')
+    .select('orderId user unsureOrder isCanceled isFinished isPayment customerInfo.fullName paymentList._id paymentList.deliveredPackages.trackingNumber paymentList.deliveredPackages.shipmentMethod paymentList.status.received')
     .populate('user', 'customerId firstName lastName')
     .limit(50)
     .session(session || null)
@@ -41,6 +41,8 @@ const findMatches = async (numbers, { excludeOrderId, session } = {}) => {
         isFinished: !!order.isFinished,
         isPayment: !!order.isPayment,
         received: !!pkg.status?.received,
+        // For a waiting package, the method the customer chose when reporting it (air, sea, unknown)
+        shipmentMethod: pkg.deliveredPackages?.shipmentMethod || null,
         customer: order.user ? {
           _id: String(order.user._id),
           customerId: order.user.customerId,
