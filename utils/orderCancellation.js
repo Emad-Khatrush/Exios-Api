@@ -138,6 +138,9 @@ async function returnOrderPayments(order, user, { session } = {}) {
     await takeBackRefunds(order, user, refunded, refunds, session);
     returned.push({ amount: -refunded, currency: 'USD', paymentType: 'refundTakenBack' });
   }
+  // Money given back from the payments (posting/paymentReturn.js): every payment just came back
+  // whole, so what went back before is taken back, once
+  returned.push(...await require('../accounting/services/posting/paymentReturn').cancelOrderReturns(order, user, session));
   for (const refund of allRefunds.filter(r => r.legacyWalletStatementId && r.legacyWalletUsd > 0)) {
     returned.push(await takeBackLegacyRefund(order, user, refund, session));
   }

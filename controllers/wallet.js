@@ -389,6 +389,10 @@ module.exports.cancelPayment = async (req, res, next) => {
     if (invoice) {
       throw new ErrorHandler(400, `هذه دفعة فاتورة التسليم رقم #0${invoice.referenceId}. ألغِ الفاتورة نفسها من صفحة الفواتير، فترجع القيمة للمحفظة مرة واحدة ويعود الطرد غير مستلم.`);
     }
+    // Money already given back to the wallet from this currency must be cancelled first (paid twice otherwise)
+    await require('../accounting/services/posting/paymentReturn').assertReturnsStayCovered({
+      orderId: savedPayment.order, category: savedPayment.category || 'invoice', currency: savedPayment.currency, removing: Number(savedPayment.receivedAmount || 0),
+    }, session);
     // Serialize cancellations on this payment and trust only its persisted monetary fields.
     await OrderPaymentHistory.deleteOne({ _id: savedPayment._id }, { session });
     if (savedPayment.paymentType !== 'wallet') {

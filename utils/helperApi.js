@@ -626,6 +626,9 @@ async function cancelInvoicePackages(user, invoice, session) {
       }
 
       for (const payment of payments) {
+        await require('../accounting/services/posting/paymentReturn').assertReturnsStayCovered({
+          orderId: order._id, category: 'receivedGoods', currency: payment.currency, removing: Number(payment.receivedAmount || 0),
+        }, session);
         const amount = await refundWalletPayment(
           user,
           payment,
