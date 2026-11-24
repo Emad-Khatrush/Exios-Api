@@ -185,12 +185,53 @@ module.exports.summary = handle(async (req) => {
   return { currencies, debts, upcoming, netAfterUpcomingUsd: round2(currencies.USD.net - upcoming.usd) };
 });
 
-// GET /client/wallet/statement?currency=USD: the wallet's movements of that currency, oldest first
+// The part of the statement the app asked for (owner's request 2026-11-24: a customer with many
+// movements should not download them all). Every balance is worked out from the whole history first,
+// so a part's balances are the same as in the full statement. Lines are oldest first.
+// - a period ({ from, to }, two instants): its lines and the balance before its first one
+// - a page ({ limit, before }): the `limit` lines just older than the line `before` (or the newest
+//   `limit` lines), whether older ones are left, and how many lines there are in all
+// - nothing: every line, as the app before this asked
+const MAX_PAGE = 100;
+function partOf(lines, query = {}) {
+  const start = lines.length ? round2(lines[0].balance - (lines[0].direction === 'out' ? -1 : 1) * lines[0].amount) : 0;
+  const instant = (value) => {
+    if (!value) return null;
+    const date = new Date(String(value));
+    if (Number.isNaN(date.getTime())) throw new ErrorHandler(400, 'التاريخ غير صحيح');
+    return date.getTime();
+  };
+  const from = instant(query.from);
+  const to = instant(query.to);
+  if (from !== null || to !== null) {
+    const time = (line) => new Date(line.at).getTime();
+    const before = from === null ? [] : lines.filter((line) => time(line) < from);
+    return {
+      rows: lines.filter((line) => (from === null || time(line) >= from) && (to === null || time(line) <= to)),
+      opening: before.length ? before[before.length - 1].balance : start,
+    };
+  }
+  if (query.limit !== undefined) {
+    const limit = Math.min(MAX_PAGE, Math.max(1, Math.floor(Number(query.limit)) || 30));
+    let end = lines.length;
+    if (query.before) {
+      const at = lines.findIndex((line) => line.id === String(query.before));
+      // The line is gone (a debt cancelled since): nothing older can be placed after it
+      end = at < 0 ? 0 : at;
+    }
+    const begin = Math.max(0, end - limit);
+    return { rows: lines.slice(begin, end), hasMore: begin > 0, total: lines.length };
+  }
+  return { rows: lines };
+}
+
+// GET /client/wallet/statement?currency=USD: the wallet's movements of that currency, oldest first;
+// &limit=30[&before=<id>] for a page, &from=<ISO>&to=<ISO> for a period
 module.exports.statement = handle(async (req) => {
   const currency = String(req.query.currency || 'USD').toUpperCase();
   if (!CURRENCIES.includes(currency)) throw new ErrorHandler(400, 'العملة غير معروفة');
   const userId = new mongoose.Types.ObjectId(String(req.user._id));
-  return { currency, rows: await movementsOf(userId, currency) };
+  return { currency, ...partOf(await movementsOf(userId, currency), req.query) };
 });
 
-module.exports._test = { movementsOf, debtsOf, upcomingOf, kindOf, plainText };
+module.exports._test = { movementsOf, partOf, debtsOf, upcomingOf, kindOf, plainText };
