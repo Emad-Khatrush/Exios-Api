@@ -2,11 +2,14 @@
 // - GET  /pricing         public: only what is visible, shipping prices merged in from ShipmentPrice.
 //                          ?parts=shipping,fcl sends only those sections (each prices page asks for its own)
 // - GET  /pricing/config  staff with settings_prices: everything, hidden parts included
-// - PUT  /pricing/config  same: saves the page and the shipping price of each route
+// - PUT  /pricing/config  same: saves the page, the shipping price of each route, the text of the
+//                          "arrived at the warehouse" message of each route, and the exchange rate.
+// Since 2026-11-24 this is the only prices page in the admin (the old Pricing page was merged in).
 const PricingConfig = require('../models/pricingConfig');
 const ShipmentPrices = require('../models/shipmentPrices');
 const ExchangeRate = require('../models/exchangeRate');
 const ErrorHandler = require('../utils/errorHandler');
+const { recordSettingsRate } = require('../accounting/services/settingsRate');
 
 const COUNTRY_LABELS = { china: 'الصين', uae: 'الإمارات', turkey: 'تركيا', usa: 'أمريكا', uk: 'بريطانيا' };
 const METHOD_LABELS = { air: 'شحن جوي', sea: 'شحن بحري' };
@@ -154,6 +157,8 @@ async function shippingRoutes(config, prices = null) {
         note: cleanNote(display.note ?? price.priceDescription ?? ''),
         minCharge: Number(display.minCharge) || 0,
         minWeight: Number(display.minWeight) || 0,
+        // The route's part of the "arrived at the warehouse" message staff send (ShipmentPrice.priceDescription)
+        message: cleanNote(price.priceDescription || ''),
         carrier: display.carrier || '',
         // The last time any price of the route changed, for "updated on" in the app
         updatedAt: latest(price.updatedAt, display.pricesUpdatedAt),
@@ -192,7 +197,7 @@ module.exports.getPublic = async (req, res, next) => {
       ...section('shipping', () => (visible('shipping') && routes.length ? {
         note: config.shipping.note || '',
         volumetricDivisor: config.shipping.volumetricDivisor || 6000,
-        routes: routes.map(({ visible: _v, ...route }) => ({ ...route, updatedAt: updated(route.updatedAt), categories: route.categories.filter((c) => c.price > 0) })),
+        routes: routes.map(({ visible: _v, message: _m, ...route }) => ({ ...route, updatedAt: updated(route.updatedAt), categories: route.categories.filter((c) => c.price > 0) })),
         updatedAt: updated(latest(...routes.map((r) => r.updatedAt))),
       } : null)),
       ...section('purchase', () => (visible('purchase') ? {
@@ -293,9 +298,18 @@ module.exports.saveConfig = async (req, res, next) => {
     const stamp = (before, after, previous) => (canon(before) !== canon(after) ? now : (previous || current.updatedAt || now));
 
     if (body.exchangeRate) update.exchangeRate = { visible: bool(body.exchangeRate.visible) };
+    // The rate itself is the accounting rate: written (with today's accounting rate) only when it changed
+    let newRate = null;
+    if (body.exchangeRate && body.exchangeRate.rate !== undefined && body.exchangeRate.rate !== null) {
+      const rate = Number(body.exchangeRate.rate);
+      if (!(rate > 0 && rate < 1000)) throw fail('سعر الصرف يجب أن يكون أكبر من صفر');
+      const now = await currentRate();
+      if (!now || Number(now.rate) !== rate) newRate = rate;
+    }
 
     // Shipping: how each route is shown here, its price in ShipmentPrice
     let priceUpdates = [];
+    let messageUpdates = [];
     if (body.shipping) {
       const known = new Map((await ShipmentPrices.find({}).lean()).map((p) => [routeKey(p), p]));
       const before = new Map((current.shipping?.routes || []).map((r) => [r.key, r]));
@@ -324,6 +338,11 @@ module.exports.saveConfig = async (req, res, next) => {
         if (!(price > 0)) throw fail(`ضع سعر «${categories[0]?.label || 'البضائع العادية'}» لخط ${r.label || r.key}: هو السعر الذي تقرؤه الفواتير`);
         return { country, shippingType, price };
       }).filter((p) => Number(known.get(`${p.country}-${p.shippingType}`)?.sellingPrice) !== p.price);
+      // The message text: written only when it was edited, so an untouched older text keeps its form
+      messageUpdates = routes
+        .filter((r) => typeof r.message === 'string')
+        .map((r) => ({ key: r.key, message: text(r.message, 2000) }))
+        .filter((m) => m.message !== cleanNote(known.get(m.key)?.priceDescription || ''));
     }
 
     if (body.purchase) {
@@ -403,6 +422,11 @@ module.exports.saveConfig = async (req, res, next) => {
     for (const p of priceUpdates) {
       await ShipmentPrices.updateOne({ country: p.country, shippingType: p.shippingType }, { $set: { sellingPrice: p.price } });
     }
+    for (const m of messageUpdates) {
+      const [country, shippingType] = m.key.split('-');
+      await ShipmentPrices.updateOne({ country, shippingType }, { $set: { priceDescription: m.message } });
+    }
+    if (newRate) await recordSettingsRate(newRate, { req });
     await PricingConfig.updateOne({ _id: current._id }, { $set: { ...update, updatedBy: req.user?._id } });
     return module.exports.getConfig(req, res, next);
   } catch (error) {
