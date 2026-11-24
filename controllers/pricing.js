@@ -90,9 +90,18 @@ const canon = (value) => JSON.stringify(value, (_k, v) => (v && typeof v === 'ob
   ? Object.keys(v).sort().reduce((o, k) => { o[k] = v[k]; return o; }, {})
   : v));
 
+// A shopping site as the app reads it; sites saved before their own commission existed use the brackets
+const SITE_COMMISSIONS = ['default', 'none', 'percent', 'fixed'];
+const siteOf = (s) => ({
+  key: s.key, label: s.label, feePercent: Number(s.feePercent) || 0,
+  commission: SITE_COMMISSIONS.includes(s.commission) ? s.commission : 'default',
+  commissionValue: Number(s.commissionValue) || 0,
+  freeShipping: !!s.freeShipping,
+});
+
 // What counts as a price change, per part: notes, durations and visibility do not
 const PRICE_FIELDS = {
-  purchase: (s) => ({ minCommission: s?.minCommission ?? 0, tiers: s?.tiers || [], sites: s?.sites || [] }),
+  purchase: (s) => ({ minCommission: s?.minCommission ?? 0, tiers: s?.tiers || [], sites: (s?.sites || []).map(siteOf) }),
   alipay: (s) => ({ tiers: s?.tiers || [] }),
   swift: (s) => ({ tiers: swiftTiers(s), fixedFee: s?.fixedFee ?? 0, minFee: s?.minFee ?? 0 }),
 };
@@ -100,6 +109,7 @@ const PRICE_FIELDS = {
 // minimum and the carrier (a new line usually means a new price) here
 const routePrices = (r) => ({
   minCharge: Number(r?.minCharge) || 0,
+  minWeight: Number(r?.minWeight) || 0,
   carrier: r?.carrier || '',
   kinds: (r?.categories || []).map((c, i) => ({ label: c.label || '', price: i === 0 ? 0 : Number(c.price) || 0 })),
 });
@@ -143,6 +153,7 @@ async function shippingRoutes(config, prices = null) {
         // The free text the office wrote for this route before (ShipmentPrice.priceDescription)
         note: cleanNote(display.note ?? price.priceDescription ?? ''),
         minCharge: Number(display.minCharge) || 0,
+        minWeight: Number(display.minWeight) || 0,
         carrier: display.carrier || '',
         // The last time any price of the route changed, for "updated on" in the app
         updatedAt: latest(price.updatedAt, display.pricesUpdatedAt),
@@ -189,7 +200,7 @@ module.exports.getPublic = async (req, res, next) => {
         note: config.purchase.note || '',
         minCommission: config.purchase.minCommission || 0,
         tiers: config.purchase.tiers || [],
-        sites: config.purchase.sites || [],
+        sites: (config.purchase.sites || []).map(siteOf),
       } : null)),
       ...section('alipay', () => (visible('alipay') && (config.alipay.tiers || []).some((t) => t.rate > 0) ? {
         updatedAt: updated(config.alipay.pricesUpdatedAt),
@@ -226,6 +237,7 @@ module.exports.getConfig = async (req, res, next) => {
       ...config,
       shipping: { ...config.shipping, routes: await shippingRoutes(config) },
       swift: { ...config.swift, tiers: swiftTiers(config.swift) },
+      purchase: { ...config.purchase, sites: (config.purchase?.sites || []).map(siteOf) },
       // Rows saved before shipping lines and ports existed get them empty
       fcl: { ...config.fcl, containers: (config.fcl?.containers || []).map((c) => ({ carrier: '', fromPort: '', toPort: '', route: '', duration: '', ...c })) },
       exchangeRate: { visible: config.exchangeRate?.visible !== false, current: await currentRate() },
@@ -294,7 +306,7 @@ module.exports.saveConfig = async (req, res, next) => {
         volumetricDivisor: num(body.shipping.volumetricDivisor, { min: 1000, max: 10000 }) || 6000,
         routes: routes.map((r) => {
           const route = {
-            key: r.key, visible: bool(r.visible), duration: text(r.duration, 60), note: text(r.note, 1500), minCharge: num(r.minCharge), carrier: text(r.carrier, 60),
+            key: r.key, visible: bool(r.visible), duration: text(r.duration, 60), note: text(r.note, 1500), minCharge: num(r.minCharge), minWeight: num(r.minWeight, { max: 100000 }), carrier: text(r.carrier, 60),
             categories: cleanCategories(r),
           };
           const old = before.get(r.key);
@@ -316,7 +328,15 @@ module.exports.saveConfig = async (req, res, next) => {
 
     if (body.purchase) {
       const sites = (Array.isArray(body.purchase.sites) ? body.purchase.sites : []).slice(0, 12)
-        .map((s, i) => ({ key: text(s.key, 40) || `site-${i + 1}`, label: text(s.label, 40), feePercent: num(s.feePercent, { max: 100 }) }))
+        .map((s, i) => {
+          const commission = SITE_COMMISSIONS.includes(s.commission) ? s.commission : 'default';
+          return {
+            key: text(s.key, 40) || `site-${i + 1}`, label: text(s.label, 40), feePercent: num(s.feePercent, { max: 100 }),
+            commission,
+            commissionValue: commission === 'percent' ? num(s.commissionValue, { max: 100 }) : commission === 'fixed' ? num(s.commissionValue, { max: 1e5 }) : 0,
+            freeShipping: bool(s.freeShipping),
+          };
+        })
         .filter((s) => s.label);
       update.purchase = {
         visible: bool(body.purchase.visible),

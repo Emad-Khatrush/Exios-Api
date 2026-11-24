@@ -37,6 +37,8 @@ const pricingConfigSchema = new Schema({
       // Who carries this shared (consolidated) shipping: the shipping line or airline, e.g. COSCO
       carrier: { type: String, default: '' },
       minCharge: { type: Number, default: 0 },
+      // The least weight (kg, air) or volume (CBM, sea) billed for a shipment; 0 = none
+      minWeight: { type: Number, default: 0 },
       // When a price of this route (a kind's price or the minimum charge) last changed. The base
       // price's own change time is ShipmentPrice.updatedAt; customers see the later of the two.
       pricesUpdatedAt: Date,
@@ -56,8 +58,16 @@ const pricingConfigSchema = new Schema({
     pricesUpdatedAt: Date,
     // { upTo, type: 'fixed' | 'percent', value }
     tiers: { type: [tier], default: undefined },
-    // Fees the shopping site itself adds, e.g. Alibaba 3%
-    sites: [{ _id: false, key: String, label: String, feePercent: { type: Number, default: 0 } }],
+    // Fees the shopping site itself adds, e.g. Alibaba 3%. A site can also have its own commission
+    // in place of the brackets (owner's request 2026-11-24, e.g. Shein: no commission, free shipping):
+    // 'default' = the brackets, 'none' = no commission, 'percent' / 'fixed' = commissionValue.
+    // freeShipping is shown to customers beside the site.
+    sites: [{
+      _id: false, key: String, label: String, feePercent: { type: Number, default: 0 },
+      commission: { type: String, enum: ['default', 'none', 'percent', 'fixed'], default: 'default' },
+      commissionValue: { type: Number, default: 0 },
+      freeShipping: { type: Boolean, default: false },
+    }],
   },
 
   alipay: {
