@@ -85,17 +85,20 @@ async function overpaidProfitOf(orderId, category, accountId, session) {
 async function byCurrency(orderId, category, refunds, session) {
   const payments = await OrderPaymentHistory.find({ order: orderId, category }).select('receivedAmount currency rate').session(session || null).lean();
   let usdPaid = 0; let lydPaid = 0; let lydPaidUsd = 0;
+  // The dollars the dinars counted for, unrounded: the rate is worked from them (2026-11-25: from the
+  // rounded cents, 105 LYD at 10.32 came back at 10.3245)
+  let lydExactUsd = 0;
   for (const p of payments) {
     const amount = Number(p.receivedAmount || 0);
     if (p.currency === 'USD') usdPaid += Math.round(amount * 100);
-    else if (p.currency === 'LYD' && Number(p.rate) > 0) { lydPaid += amount; lydPaidUsd += Math.round((amount / Number(p.rate)) * 100); }
+    else if (p.currency === 'LYD' && Number(p.rate) > 0) { lydPaid += amount; lydPaidUsd += Math.round((amount / Number(p.rate)) * 100); lydExactUsd += amount / Number(p.rate); }
   }
   // Old invoice payments the books know of but the order does not: dollars
   if (category === 'invoice') usdPaid += Math.max((await moneyPaid(orderId, category, session)) - usdPaid - lydPaidUsd, 0);
   const rows = await PaymentReturn.find({ orderId, status: 'posted', category }).select('currency amount usd').session(session || null).lean();
   const usdBack = rows.filter((r) => (r.currency || 'USD') === 'USD').reduce((sum, r) => sum + (r.usd || 0), 0);
   const lydBack = rows.filter((r) => r.currency === 'LYD').reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const rate = lydPaid > 0 && lydPaidUsd > 0 ? Math.round((lydPaid / (lydPaidUsd / 100)) * 10000) / 10000 : 0;
+  const rate = lydPaid > 0 && lydExactUsd > 0 ? Math.round((lydPaid / lydExactUsd) * 10000) / 10000 : 0;
   return {
     USD: { paid: usdPaid, available: Math.max(usdPaid - usdBack - refunds, 0) },
     LYD: { paid: Math.round(lydPaid * 1000) / 1000, available: Math.max(Math.round((lydPaid - lydBack) * 1000) / 1000, 0), rate },
