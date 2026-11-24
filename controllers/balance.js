@@ -210,6 +210,37 @@ module.exports.createBalance = async (req, res, next) => {
   }
 }
 
+// ---- Paying a debt with loyalty points (owner 2026-11-24) ----
+// Points pay a debt opened on an order for its purchase invoice or its shipping (received goods), in
+// dollars, under the same rules as any payment with points: at most 20% of what that invoice billed,
+// less the points already used on it (loyalty.redeem). A general debt, or a debt in dinars, is not
+// paid with points. The points credit the order's receivable, which the debt stands for.
+const loyaltyService = () => require('../accounting/services/loyalty');
+function debtPointsTarget(debt) {
+  const orderId = debt.order?._id || debt.order;
+  if (!orderId || !['invoice', 'receivedGoods'].includes(debt.debtType)) return { reason: 'النقاط تسدد فقط ديون الطلبيات: متبقي الشراء أو الشحن' };
+  if (debt.currency !== 'USD') return { reason: 'النقاط تسدد الديون بالدولار فقط' };
+  return { target: { orderId: String(orderId), category: debt.debtType, ...(debt.deliveryPackageId && { packageIds: [String(debt.deliveryPackageId)] }) } };
+}
+
+// GET /balances/:id/points: what the customer's points can pay on this debt. The same shape as the
+// order's quote, with the most points held to what is left of the debt.
+module.exports.debtPointsQuote = async (req, res, next) => {
+  try {
+    const debt = await Balance.findById(req.params.id).select('owner order debtType currency amount deliveryPackageId status').lean();
+    if (!debt) return next(new ErrorHandler(404, errorMessages.BALANCE_NOT_FOUND));
+    const { target, reason } = debtPointsTarget(debt);
+    const debtCents = Math.round(Number(debt.amount || 0) * 100);
+    if (!target || !(debtCents > 0)) return res.status(200).json({ quote: null, reason: reason || 'لا يوجد متبقي على هذا الدين' });
+    const { settings } = await require('../accounting/services/config').getConfig();
+    const quote = await loyaltyService().redeemQuote({ userId: debt.owner, target });
+    const maxPoints = settings?.liveEnabled ? Math.max(0, Math.min(quote.maxPoints, debtCents)) : 0;
+    res.status(200).json({ quote: { ...quote, maxPoints, owedCents: Math.min(quote.owedCents, debtCents) } });
+  } catch (error) {
+    return next(new ErrorHandler(error.statusCode || 500, error.message));
+  }
+};
+
 module.exports.createPaymentHistory = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -217,11 +248,21 @@ module.exports.createPaymentHistory = async (req, res, next) => {
 
     const roundToTwo = (num) => Math.round(num * 100) / 100;
 
+    // Loyalty points sent with the payment: they pay first, the money (if any) pays the rest. Points
+    // alone (no amount) are a payment of their own.
+    let points;
+    try {
+      points = loyaltyService().pointsOfPayment(req.body.points);
+    } catch (error) {
+      return next(error);
+    }
+    const pointsOnly = points > 0 && (amount === undefined || amount === null || amount === '' || Number(amount) === 0);
+
     const rateValue = rate === undefined || rate === null || rate === '' ? 0 : Number(rate);
-    if (!createdAt || !amount || !currency) {
+    if (!createdAt || (!pointsOnly && (!amount || !currency))) {
       return next(new ErrorHandler(400, errorMessages.FIELDS_EMPTY));
     }
-    if (!Number.isFinite(Number(amount)) || roundToTwo(Number(amount)) <= 0) {
+    if (!pointsOnly && (!Number.isFinite(Number(amount)) || roundToTwo(Number(amount)) <= 0)) {
       return next(new ErrorHandler(400, 'Payment amount must be a positive number'));
     }
     if (typeof rate === 'boolean' || !Number.isFinite(rateValue) || rateValue < 0) {
@@ -268,12 +309,45 @@ module.exports.createPaymentHistory = async (req, res, next) => {
         }
       }
 
-      if (existingBalance.currency === 'LYD' && currency === 'USD') {
+      if (!pointsOnly && existingBalance.currency === 'LYD' && currency === 'USD') {
         throw new ErrorHandler(400, errorMessages.BALANCE_CURRENCY_NOT_ACCEPTED);
       }
 
       if (existingBalance.amount === 0) {
         throw new ErrorHandler(400, errorMessages.BALANCE_ALREADY_PAID);
+      }
+
+      if (points > 0) {
+        if (existingBalance.manualClosure?.closedAt || ['lost', 'canceled', 'closed'].includes(existingBalance.status)) {
+          throw new ErrorHandler(400, 'هذا الدين مغلق؛ لا يُسدد بالنقاط');
+        }
+        const { target, reason } = debtPointsTarget(existingBalance);
+        if (!target) throw new ErrorHandler(400, reason);
+        const pointsUsd = points / 100;
+        // The money in the debt's currency (dollars): with the points, never more than is left
+        const moneyOnDebt = pointsOnly ? 0 : (currency !== existingBalance.currency ? (rateValue > 0 ? roundToTwo(Number(amount) / rateValue) : 0) : roundToTwo(Number(amount)));
+        if (roundToTwo(moneyOnDebt + pointsUsd) > Number(existingBalance.amount) + 0.000001) {
+          throw new ErrorHandler(400, `النقاط مع المبلغ أكثر من المتبقي على الدين (${existingBalance.amount} $)`);
+        }
+        const moneyUsdCents = pointsOnly ? 0 : loyaltyService().moneyUsdCents(Number(amount), currency, rateValue);
+        const redeemed = await loyaltyService().redeemInPayment({ userId: existingBalance.owner._id, target, points, pointsOnly: false, moneyUsdCents }, { session, req });
+        const movement = await require('../models/loyaltyPoint').findOne({ kind: 'redeem', journalEntryId: redeemed.journalEntryId }).sort({ _id: 1 }).select('_id').session(session).lean();
+        const left = Math.max(0, roundToTwo(Number(existingBalance.amount) - pointsUsd));
+        const paidWithPoints = await Balance.findOneAndUpdate({ _id: id, amount: existingBalance.amount }, {
+          $set: { amount: left, ...(left === 0 && { status: 'waitingApproval' }) },
+          $push: { paymentHistory: {
+            _id: new mongoose.Types.ObjectId(), createdAt, amount: pointsUsd, currency: 'USD', rate: 0, paymentType: 'points', points,
+            ...(movement && { redemptionId: movement._id }), ...(req.body.notes && { notes: String(req.body.notes).slice(0, 500) }),
+          } },
+        }, { new: true, session });
+        if (!paidWithPoints) throw new ErrorHandler(409, 'This debt was just changed by someone else. Refresh and try again.');
+        // The money below pays what the points left
+        existingBalance.amount = left;
+        if (pointsOnly) {
+          if (existingBalance.deliveryInvoiceId) await require('../utils/partialDelivery').refresh(existingBalance.deliveryInvoiceId, session);
+          return paidWithPoints;
+        }
+        if (!(left > 0)) throw new ErrorHandler(400, 'النقاط سددت كامل الدين؛ لا حاجة لمبلغ من المحفظة');
       }
 
       if (currency !== existingBalance.currency && rateValue <= 0) {
@@ -322,7 +396,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
 
       // Its own id, to keep on it the statement line made below (never taken from the request)
       const historyId = new mongoose.Types.ObjectId();
-      const { statementId: _ignored, _id: _ignoredId, ...paymentFields } = req.body;
+      const { statementId: _ignored, _id: _ignoredId, points: _points, paymentType: _type, redemptionId: _redemption, ...paymentFields } = req.body;
       let updateQuery = {
         $set: { amount: updatedAmount },
         $push: { "paymentHistory": { ...paymentFields, _id: historyId, amount: roundToTwo(Number(amount)), rate: rateValue, currency } },
@@ -463,6 +537,30 @@ module.exports.cancelDebtPayment = async (req, res, next) => {
         throw new ErrorHandler(400, 'هذه الدفعة سُجلت من صفحة الطلبية؛ ألغِها من تبويب الدفعات في الطلبية');
       }
       await assertOpenPeriod(req.user, payment.createdAt, { session });
+
+      if (payment.paymentType === 'points') {
+        if (!payment.redemptionId || !debt.order?._id) throw new ErrorHandler(400, 'لم يُعثر على النقاط الخاصة بهذه الدفعة؛ راجع المحاسب');
+        await require('../accounting/services/loyalty').cancelRedemption(
+          { orderId: debt.order._id, redemptionId: payment.redemptionId, reason: `إلغاء دفعة دين بالنقاط ${debt.order.orderId || ''}`.trim() },
+          { session, req, fromDebt: true },
+        );
+        const back = Math.min(Math.round((Number(debt.amount) + Number(payment.amount)) * 100) / 100, Number(debt.initialAmount));
+        const restored = await Balance.findOneAndUpdate(
+          { _id: debt._id, 'paymentHistory._id': payment._id },
+          { $set: { amount: back, ...(['waitingApproval', 'closed'].includes(debt.status) && back > 0 && { status: 'open' }) }, $pull: { paymentHistory: { _id: payment._id } } },
+          { new: true, session },
+        );
+        if (!restored) throw new ErrorHandler(409, 'تغيّر هذا الدين للتو. حدّث الصفحة وحاول مرة أخرى');
+        await Activities.create([{
+          user: req.user,
+          details: { path: '/balances', status: 'updated', type: 'debt', actionId: String(debt._id) },
+          changedFields: [
+            { label: 'Points payment cancelled', value: `${payment.points || Math.round(payment.amount * 100)} points (${payment.amount} USD)` },
+            { label: 'Debt left', value: `${back} ${debt.currency}` },
+          ],
+        }], { session });
+        return restored;
+      }
 
       const line = await statementOfDebtPayment(debt, payment, session);
       if (!line) throw new ErrorHandler(400, 'لم يُعثر على حركة الخصم الخاصة بهذه الدفعة في كشف حساب العميل؛ راجع المحاسب');

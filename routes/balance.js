@@ -19,6 +19,9 @@ router.route('/balances')
 router.route('/balances/:id')
       .delete(protect, isAdmin, balance.deleteBalance);
 
+// What the customer's points can pay on a debt (the points field of the payment form)
+router.get('/balances/:id/points', protect, allow(['debts'], allowAdminsAndEmployee), balance.debtPointsQuote);
+
 router.route('/balances/:id/paymentHistory')
       .post(protect, allow(['debts'], allowAdminsAndEmployee), upload.array('files'), balance.createPaymentHistory)
       .put(protect, allow(['debts'], allowAdminsAndEmployee), balance.updateCompanyBalance);

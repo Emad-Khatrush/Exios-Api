@@ -869,7 +869,9 @@ async function orderRedemptions(orderId) {
 // Staff undo a redemption of an order with a required reason: its whole entry is reversed (every
 // claim it paid is owed again) and the points come back with their lots' original expiry, as when
 // the order is cancelled. Needs live accounting, like redeeming. Returns { restored, usd }.
-async function cancelRedemption({ orderId, redemptionId, reason } = {}, { session, req } = {}) {
+// `fromDebt`: the debts screen cancels a payment it made with points (the points paid that debt, not
+// the delivery invoice, so the invoice does not hold them)
+async function cancelRedemption({ orderId, redemptionId, reason } = {}, { session, req, fromDebt = false } = {}) {
   assertInTransaction(session);
   if (!mongoose.isValidObjectId(orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
   const order = await Order.findById(orderId).setOptions({ withDeleted: true }).select('user orderId paymentList._id paymentList.status.received').session(session).lean();
@@ -891,7 +893,7 @@ async function cancelRedemption({ orderId, redemptionId, reason } = {}, { sessio
     || await JournalEntry.exists({ eventKey }).session(session)
     || await LoyaltyPoint.exists({ $or: movements.map((m) => ({ eventKey: { $regex: `^${restorePrefix(m._id)}` } })) }).session(session);
   if (done) throw new ErrorHandler(400, 'تم إلغاء هذه النقاط من قبل');
-  const invoice = invoiceOfMovements(movements, await deliveryInvoicesOf(order, movements, session));
+  const invoice = fromDebt ? null : invoiceOfMovements(movements, await deliveryInvoicesOf(order, movements, session));
   if (invoice) {
     throw new ErrorHandler(400, `هذه النقاط مستعملة في فاتورة التسليم رقم #0${invoice.referenceId}؛ تُلغى من فواتير العميل (Created Invoices) بإلغاء الفاتورة أو الشحنة`);
   }

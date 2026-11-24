@@ -61,7 +61,7 @@ async function debtLinesOf(userId, currency) {
         ? (rate > 0 ? Number(payment.amount || 0) / rate : 0)
         : Number(payment.amount || 0);
       if (!(inDebtCurrency > 0)) return;
-      lines.push({ id: `P${payment._id || `${debt._id}-${i}`}`, at: payment.createdAt || debt.createdAt, description: `سداد المتبقي${order}`,
+      lines.push({ id: `P${payment._id || `${debt._id}-${i}`}`, at: payment.createdAt || debt.createdAt, description: `${payment.paymentType === 'points' ? 'سداد المتبقي بالنقاط' : 'سداد المتبقي'}${order}`,
         amount: round2(inDebtCurrency), direction: 'in', kind: 'debtPayment' });
     });
     const writtenOff = Number(debt.manualClosure?.writtenOffAmount || 0);

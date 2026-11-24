@@ -85,6 +85,11 @@ const balanceSchema = new mongoose.Schema({
       // The customer statement line that took the money from the wallet, so the payment can be
       // cancelled exactly (older payments have none and are matched through their event)
       statementId: { type: mongoose.Schema.Types.ObjectId, ref: 'UserStatement' },
+      // Paid with loyalty points (owner 2026-11-24): amount is their dollars (USD), no wallet line;
+      // redemptionId is a redeem movement of them, so cancelling the payment gives them back
+      paymentType: { type: String, enum: ['wallet', 'points'] },
+      points: Number,
+      redemptionId: { type: mongoose.Schema.Types.ObjectId, ref: 'LoyaltyPoint' },
       attachments: [{
         filename: String,
         path: String,
