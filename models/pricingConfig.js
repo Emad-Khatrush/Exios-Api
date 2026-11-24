@@ -18,9 +18,13 @@ const tier = new Schema({
 const pricingConfigSchema = new Schema({
   key: { type: String, default: 'main', unique: true },
 
-  // The rate itself is the accounting/settings rate (ExchangeRate); this only shows or hides it
+  // The dollar rate customers see on the Prices page (owner 2026-11-24: for customers only; the
+  // accounting rate is set in accounting and is not touched from here). Until one is set, the
+  // accounting rate (ExchangeRate) is shown.
   exchangeRate: {
     visible: { type: Boolean, default: true },
+    rate: { type: Number, default: 0 },
+    rateUpdatedAt: Date,
   },
 
   shipping: {

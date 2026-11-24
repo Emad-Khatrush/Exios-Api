@@ -3,13 +3,13 @@
 //                          ?parts=shipping,fcl sends only those sections (each prices page asks for its own)
 // - GET  /pricing/config  staff with settings_prices: everything, hidden parts included
 // - PUT  /pricing/config  same: saves the page, the shipping price of each route, the text of the
-//                          "arrived at the warehouse" message of each route, and the exchange rate.
+//                          "arrived at the warehouse" message of each route, and the customers'
+//                          dollar rate (only shown to customers; the accounting rate is not touched).
 // Since 2026-11-24 this is the only prices page in the admin (the old Pricing page was merged in).
 const PricingConfig = require('../models/pricingConfig');
 const ShipmentPrices = require('../models/shipmentPrices');
 const ExchangeRate = require('../models/exchangeRate');
 const ErrorHandler = require('../utils/errorHandler');
-const { recordSettingsRate } = require('../accounting/services/settingsRate');
 
 const COUNTRY_LABELS = { china: 'الصين', uae: 'الإمارات', turkey: 'تركيا', usa: 'أمريكا', uk: 'بريطانيا' };
 const METHOD_LABELS = { air: 'شحن جوي', sea: 'شحن بحري' };
@@ -167,6 +167,12 @@ async function shippingRoutes(config, prices = null) {
     .sort((a, b) => orderOf(a.key) - orderOf(b.key));
 }
 
+// The rate customers see: the one set on this page, else the accounting rate
+function customerRate(config, accounting) {
+  const own = Number(config.exchangeRate?.rate) || 0;
+  return own > 0 ? { rate: own, updatedAt: config.exchangeRate.rateUpdatedAt || config.updatedAt || null } : accounting;
+}
+
 async function currentRate() {
   const rate = await ExchangeRate.findOne({ fromCurrency: 'usd' }).lean();
   return rate ? { rate: rate.rate, updatedAt: rate.updatedAt } : null;
@@ -193,7 +199,7 @@ module.exports.getPublic = async (req, res, next) => {
     const updated = (value) => latest(value) || config.updatedAt || null;
     const section = (part, build) => (want(part) ? { [part]: build() } : {});
     res.status(200).json({
-      exchangeRate: config.exchangeRate?.visible ? rate : null,
+      exchangeRate: config.exchangeRate?.visible ? customerRate(config, rate) : null,
       ...section('shipping', () => (visible('shipping') && routes.length ? {
         note: config.shipping.note || '',
         volumetricDivisor: config.shipping.volumetricDivisor || 6000,
@@ -245,7 +251,11 @@ module.exports.getConfig = async (req, res, next) => {
       purchase: { ...config.purchase, sites: (config.purchase?.sites || []).map(siteOf) },
       // Rows saved before shipping lines and ports existed get them empty
       fcl: { ...config.fcl, containers: (config.fcl?.containers || []).map((c) => ({ carrier: '', fromPort: '', toPort: '', route: '', duration: '', ...c })) },
-      exchangeRate: { visible: config.exchangeRate?.visible !== false, current: await currentRate() },
+      exchangeRate: await (async () => {
+        const accounting = await currentRate();
+        // current: what customers see; own: whether this page set it; accounting: for reference only
+        return { visible: config.exchangeRate?.visible !== false, current: customerRate(config, accounting), own: Number(config.exchangeRate?.rate) > 0, accounting };
+      })(),
     });
   } catch (error) {
     return next(new ErrorHandler(500, error.message));
@@ -297,14 +307,19 @@ module.exports.saveConfig = async (req, res, next) => {
     // were kept gets the previous save time, so later saves of other parts do not move it.
     const stamp = (before, after, previous) => (canon(before) !== canon(after) ? now : (previous || current.updatedAt || now));
 
-    if (body.exchangeRate) update.exchangeRate = { visible: bool(body.exchangeRate.visible) };
-    // The rate itself is the accounting rate: written (with today's accounting rate) only when it changed
-    let newRate = null;
-    if (body.exchangeRate && body.exchangeRate.rate !== undefined && body.exchangeRate.rate !== null) {
-      const rate = Number(body.exchangeRate.rate);
-      if (!(rate > 0 && rate < 1000)) throw fail('سعر الصرف يجب أن يكون أكبر من صفر');
-      const now = await currentRate();
-      if (!now || Number(now.rate) !== rate) newRate = rate;
+    // The customers' rate. Sent unchanged while none was set (the accounting rate is shown), it is
+    // not stored, so the page keeps following accounting until the office types its own.
+    if (body.exchangeRate) {
+      const before = current.exchangeRate || {};
+      let rate = Number(before.rate) || 0;
+      let rateUpdatedAt = before.rateUpdatedAt || null;
+      if (body.exchangeRate.rate !== undefined && body.exchangeRate.rate !== null) {
+        const typed = Number(body.exchangeRate.rate);
+        if (!(typed > 0 && typed < 1000)) throw fail('سعر الصرف يجب أن يكون أكبر من صفر');
+        const shown = customerRate(current, await currentRate());
+        if (typed !== Number(shown?.rate)) { rate = typed; rateUpdatedAt = now; }
+      }
+      update.exchangeRate = { visible: bool(body.exchangeRate.visible), rate, rateUpdatedAt };
     }
 
     // Shipping: how each route is shown here, its price in ShipmentPrice
@@ -426,7 +441,6 @@ module.exports.saveConfig = async (req, res, next) => {
       const [country, shippingType] = m.key.split('-');
       await ShipmentPrices.updateOne({ country, shippingType }, { $set: { priceDescription: m.message } });
     }
-    if (newRate) await recordSettingsRate(newRate, { req });
     await PricingConfig.updateOne({ _id: current._id }, { $set: { ...update, updatedBy: req.user?._id } });
     return module.exports.getConfig(req, res, next);
   } catch (error) {
