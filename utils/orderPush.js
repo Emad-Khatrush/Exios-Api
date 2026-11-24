@@ -1,5 +1,6 @@
-// Tells customers on their phones when a shipment moves on: bought, at our warehouse, on the way
-// to Libya, ready for pickup.
+// Tells customers on their phones when a shipment moves on: bought, on the way to Libya, ready for
+// pickup. Reaching our warehouse is not announced on its own (owner 2026-11-24): the "on the way"
+// message says it arrived and was shipped, one notification instead of two.
 //
 // Every screen that moves an order sets orderStatus, and the order model stamps
 // orderStatusChangedAt whichever way it was written (save, updateOne, updateMany, pipelines). So
@@ -27,6 +28,8 @@ const stageOf = (order) => {
 };
 
 const STAGE_RANK = { waiting: 0, bought: 1, warehouse: 2, onTheWay: 3, ready: 4 };
+// Stages with no message of their own
+const SILENT = new Set(['waiting', 'warehouse']);
 
 const officeName = async (code) => {
   if (OFFICE_NAMES[code]) return OFFICE_NAMES[code];
@@ -65,7 +68,10 @@ const messageFor = async (stage, orders) => {
     case 'warehouse':
       return { title: `📦 ${countText(n)} وصلت مخزننا${from ? ` في ${from}` : ''}`, body: body('ستُشحن إلى ليبيا مع أقرب رحلة.') };
     case 'onTheWay':
-      return { title: `${sea ? '🚢' : '✈️'} ${countText(n)} في الطريق إلى ليبيا`, body: body('نبلغك عندما تصبح جاهزة للاستلام.') };
+      return {
+        title: `${sea ? '🚢' : '✈️'} ${countText(n)} في الطريق إلى ليبيا`,
+        body: body(`وصلت مخزننا${from ? ` في ${from}` : ''} وشحنّاها. نبلغك عندما تصبح جاهزة للاستلام.`),
+      };
     case 'ready': {
       const offices = [...new Set(orders.map((o) => o.placedAt))];
       const where = offices.length === 1 ? await officeName(offices[0]) : 'المكتب';
@@ -93,7 +99,8 @@ async function tick() {
     // status announced). A stage is news once: moving back and forward again sends nothing.
     const before = order.pushedRank ?? (order.pushedStatus == null ? -1 : STAGE_RANK[stageOf({ ...order, orderStatus: order.pushedStatus })]);
     const quiet = !order.user || order.isCanceled || order.unsureOrder || order.isFinished || order.shippingBlocked;
-    const announce = !quiet && stage !== 'waiting' && STAGE_RANK[stage] > before;
+    // A silent stage (the warehouse) is not marked announced, so "on the way" still goes out after it
+    const announce = !quiet && !SILENT.has(stage) && STAGE_RANK[stage] > before;
 
     // Claim the change first: whoever sets pushedStatus is the one who announces it
     const claim = await Order.updateOne(
