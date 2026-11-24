@@ -435,18 +435,19 @@ async function releaseDue({ now = new Date() } = {}) {
         }
         const moved = reward.levelPoints > 0 ? await require('./levels').refreshLevel(reward.inviter, { now, session }) : null;
         const friend = reward.friend ? await users().findOne({ _id: reward.friend }, { projection: { firstName: 1, lastName: 1 }, session }) : null;
-        return { reward, friendName: shortName(friend), movedTo: moved?.to || null };
+        return { reward, friendName: shortName(friend), movedTo: moved?.to || null, gift: moved?.gift || 0 };
       });
       if (!out) continue;
       if (out.canceled) { canceled += 1; continue; }
       if (out.waiting) { waiting += 1; continue; }
       granted += 1;
       const key = String(out.reward.inviter);
-      const theirs = told.get(key) || { firsts: [], share: 0, steps: [], level: null };
+      const theirs = told.get(key) || { firsts: [], share: 0, steps: [], level: null, gift: 0 };
       if (out.reward.kind === 'first') theirs.firsts.push(out.friendName);
       if (out.reward.kind === 'share') theirs.share += out.reward.points;
       if (out.reward.kind === 'step') theirs.steps.push({ ...out.reward.step, points: out.reward.points });
       if (out.movedTo) theirs.level = out.movedTo;
+      theirs.gift += out.gift || 0;
       told.set(key, theirs);
     } catch (error) {
       failed += 1;

@@ -85,7 +85,8 @@ async function giveUpgradeGift(userId, level, now, session) {
 // ---- Reaching the next level (right after an earn, in its transaction) ----
 
 // Moves the customer up when their level points reach a higher level: the new level from now for a
-// year, and its gift (once ever). Never moves anyone down. Returns { from, to } or null.
+// year, and its gift (once ever). Never moves anyone down. Returns { from, to, gift } or null; gift is
+// the points actually given now (0 when every level passed had given its gift before).
 async function refreshLevel(userId, { now = new Date(), session } = {}) {
   assertInTransaction(session);
   const user = await users().findOne({ _id: oid(userId) }, { projection: { 'loyaltyTier.level': 1 }, session });
@@ -95,8 +96,12 @@ async function refreshLevel(userId, { now = new Date(), session } = {}) {
   if (reached.rank <= tiers.rankOf(current)) return null;
   await saveLevel(userId, { level: reached.key, now, why: 'upgrade' }, current, session);
   // The gift of every level passed on the way (a big order can pass two), each once ever
-  for (let rank = tiers.rankOf(current) + 1; rank <= reached.rank; rank += 1) await giveUpgradeGift(userId, tiers.TIERS[rank].key, now, session);
-  return { from: current, to: reached.key };
+  let gift = 0;
+  for (let rank = tiers.rankOf(current) + 1; rank <= reached.rank; rank += 1) {
+    const lot = await giveUpgradeGift(userId, tiers.TIERS[rank].key, now, session);
+    if (lot) gift += Number(lot.points) || 0;
+  }
+  return { from: current, to: reached.key, gift };
 }
 
 // ---- An order that brought the level cancelled (owner, 2026-11-21) ----

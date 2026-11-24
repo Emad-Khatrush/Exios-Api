@@ -35,11 +35,13 @@ async function pointsEarned(userId, points) {
   });
 }
 
-// A customer moved up to a higher level (reached by points, or raised by staff)
-async function levelUp(userId, levelKey) {
+// A customer moved up to a higher level (reached by points, or raised by staff). `giftPoints`: the
+// upgrade gift really given with it. A level raised by staff gives none, and a level reached again
+// does not give its gift twice: the message only speaks of a gift that was added.
+async function levelUp(userId, levelKey, giftPoints = 0) {
   return safely('level', async () => {
     const tier = require('../accounting/services/loyalty/tiers').tierOf(levelKey);
-    const gift = tier.upgradeGift > 0 ? `أضفنا لك هدية ${pointsText(tier.upgradeGift)} نقطة. ` : '';
+    const gift = giftPoints > 0 ? `أضفنا لك هدية ${pointsText(giftPoints)} نقطة. ` : '';
     const more = tier.multiplierPct > 100 ? `ونقاطك صارت تزيد ${tier.multiplierPct - 100}% على كل طلبية.` : 'اكتشف مزايا مستواك.';
     return sendToUsers([userId], {
       title: `🏅 مبروك! صرت في المستوى ${tier.name}`,
@@ -182,7 +184,7 @@ async function referralRewards(inviterId, got) {
   const text = referralRewardsText(got);
   if (!text) return { sent: 0 };
   const sent = await safely('referral', () => sendToUsers([inviterId], { ...text, url: '/invite', tag: 'referral' }));
-  if (got.level) await levelUp(inviterId, got.level);
+  if (got.level) await levelUp(inviterId, got.level, got.gift || 0);
   return sent;
 }
 

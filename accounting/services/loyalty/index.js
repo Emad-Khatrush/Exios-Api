@@ -207,9 +207,10 @@ async function awardDue({ now = new Date() } = {}) {
         const earned = await runInTransaction((session) => earnClaim(arKey, now, session));
         if (earned) {
           awarded += 1;
-          const mine = earnedBy.get(earned.userId) || { points: 0, level: null };
+          const mine = earnedBy.get(earned.userId) || { points: 0, level: null, gift: 0 };
           mine.points += earned.points;
           if (earned.movedTo) mine.level = earned.movedTo;
+          mine.gift += earned.gift || 0;
           earnedBy.set(earned.userId, mine);
           const ref = earned.referral;
           if (ref) {
@@ -230,9 +231,9 @@ async function awardDue({ now = new Date() } = {}) {
   // After every earn has committed: one notification per customer for the points, and one for a
   // new level reached on the way
   const customerPush = require('../../../utils/customerPush');
-  for (const [userId, { points, level }] of earnedBy) {
+  for (const [userId, { points, level, gift }] of earnedBy) {
     await customerPush.pointsEarned(userId, points);
-    if (level) await customerPush.levelUp(userId, level);
+    if (level) await customerPush.levelUp(userId, level, gift);
   }
   for (const [inviterId, got] of invitedBy) await customerPush.referralRewards(inviterId, got);
   const { settings } = await getConfig();
@@ -272,7 +273,8 @@ async function postMovementEntry(movement, session) {
 }
 
 // Earns one claim if it is still due, read again inside the transaction. When it earned:
-// { userId, points, movedTo } (movedTo: the new level when the customer moved up), else false.
+// { userId, points, movedTo, gift } (movedTo: the new level when the customer moved up; gift: the
+// upgrade gift points given with it), else false.
 async function earnClaim(arKey, now, session) {
   const eventKey = earnKey(arKey);
   if (await LoyaltyPoint.exists({ eventKey }).session(session)) return false;
@@ -302,7 +304,7 @@ async function earnClaim(arKey, now, session) {
   const moved = await require('./levels').refreshLevel(order.user, { now, session });
   // The friend's inviter: the big reward at $50 paid, then the share for 12 months (spec 2026-11-20)
   const referral = await require('./referrals').afterEarn(movement.toObject(), { now, session });
-  return { userId: String(order.user), points, movedTo: moved?.to || null, referral };
+  return { userId: String(order.user), points, movedTo: moved?.to || null, gift: moved?.gift || 0, referral };
 }
 
 // An earn still stands as it was made: its order neither cancelled nor "no points", its claim fully
