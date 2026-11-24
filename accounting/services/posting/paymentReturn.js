@@ -4,8 +4,10 @@
 // Before this the only way was to cancel the whole payment and pay again, which left two strange
 // lines in the customer's statement.
 //
-// In dollars, or in dinars at a rate (never above the accountant's rate plus the tolerance: a
-// higher rate would give more dinars than the dollars owed). The books carry the dollar value.
+// In the currency the customer paid in, never more than they paid in it (owner 2026-11-25): dollars
+// paid come back as dollars, dinars paid as dinars, at the rate those dinars were counted at (their
+// average when paid at several rates), so they are worth what they paid. The books carry the dollar
+// value. Old invoice payments known to the books only (no order payment) count as dollars.
 // One entry, Cr the wallet, and the debit from where the extra money sits, in this order:
 // 1. the credit left on the order's claims of that part (the invoice, or the packages' shipping)
 // 2. the dollar overpayment of that part kept as other revenue at payment time (rule 119: paid more
@@ -78,6 +80,28 @@ async function overpaidProfitOf(orderId, category, accountId, session) {
   return { cents: Math.max(net - taken, 0), office };
 }
 
+// What can still go back in each currency, for one part of the order. Dinars paid without a rate
+// cannot be valued and are left out. Supplier refunds (to the dollar wallet) come off the dollars.
+async function byCurrency(orderId, category, refunds, session) {
+  const payments = await OrderPaymentHistory.find({ order: orderId, category }).select('receivedAmount currency rate').session(session || null).lean();
+  let usdPaid = 0; let lydPaid = 0; let lydPaidUsd = 0;
+  for (const p of payments) {
+    const amount = Number(p.receivedAmount || 0);
+    if (p.currency === 'USD') usdPaid += Math.round(amount * 100);
+    else if (p.currency === 'LYD' && Number(p.rate) > 0) { lydPaid += amount; lydPaidUsd += Math.round((amount / Number(p.rate)) * 100); }
+  }
+  // Old invoice payments the books know of but the order does not: dollars
+  if (category === 'invoice') usdPaid += Math.max((await moneyPaid(orderId, category, session)) - usdPaid - lydPaidUsd, 0);
+  const rows = await PaymentReturn.find({ orderId, status: 'posted', category }).select('currency amount usd').session(session || null).lean();
+  const usdBack = rows.filter((r) => (r.currency || 'USD') === 'USD').reduce((sum, r) => sum + (r.usd || 0), 0);
+  const lydBack = rows.filter((r) => r.currency === 'LYD').reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const rate = lydPaid > 0 && lydPaidUsd > 0 ? Math.round((lydPaid / (lydPaidUsd / 100)) * 10000) / 10000 : 0;
+  return {
+    USD: { paid: usdPaid, available: Math.max(usdPaid - usdBack - refunds, 0) },
+    LYD: { paid: Math.round(lydPaid * 1000) / 1000, available: Math.max(Math.round((lydPaid - lydBack) * 1000) / 1000, 0), rate },
+  };
+}
+
 // Where the money of a return can come from, for one part of the order (all in USD cents):
 // credits: the claims paid beyond what they bill; profit: the overpayment kept; left: the money
 // paid, less supplier refunds (invoice) and earlier returns; max: what may go back now
@@ -98,7 +122,8 @@ async function roomOf(orderId, category, session) {
   const extra = Math.min(left, creditCents + profit.cents);
   const max = category === 'invoice' ? left : extra;
   const points = category === 'invoice' ? (await require('../loyalty').redeemedByPart(orderId)).invoice || 0 : 0;
-  return { keys, credits, profit, profitAccount, paid, refunds, returned, left, extra, max, points };
+  const currencies = await byCurrency(orderId, category, refunds, session);
+  return { keys, credits, profit, profitAccount, paid, refunds, returned, left, extra, max, points, currencies };
 }
 
 async function createPaymentReturn(input, { session, req }) {
@@ -114,18 +139,6 @@ async function createPaymentReturn(input, { session, req }) {
   const amount = Math.round(Number(input.amount) * 1000) / 1000;
   if (!Number.isFinite(amount) || amount <= 0) throw fail('اكتب المبلغ المراد إرجاعه');
   const day = today();
-  let rate = 0;
-  if (currency === 'LYD') {
-    rate = Number(input.rate);
-    if (!(rate > 0)) throw fail('اكتب سعر الصرف الذي يُحسب به الدينار');
-    const limits = await require('../walletRate').lydRateLimits(day);
-    if (limits && rate > limits.rate + limits.tolerance + 1e-9) {
-      throw fail(`سعر الصرف ${rate} أعلى من المسموح للإرجاع: سعر المحاسب ${limits.rate}، وأعلى سعر ${Math.round((limits.rate + limits.tolerance) * 10000) / 10000}`);
-    }
-  }
-  // The dollar value, what is checked against the limit and carried by the books
-  const usd = currency === 'USD' ? Math.round(amount * 100) : Math.round((amount / rate) * 100);
-  if (!(usd > 0)) throw fail('المبلغ صغير جداً بعد التحويل');
   const description = String(input.description || '').trim();
   if (!description) throw fail('اكتب بيان الإرجاع (سببه)');
   if (description.length > 300) throw fail('البيان 300 حرف على الأكثر');
@@ -133,6 +146,21 @@ async function createPaymentReturn(input, { session, req }) {
   const locked = await Order.updateOne({ _id: order._id }, { $inc: { customerRefundVersion: 1 } }, { session });
   if (locked.modifiedCount !== 1) throw fail('الطلب غير متاح للإرجاع الآن');
   const room = await roomOf(order._id, category, session);
+  // Back in the currency paid, never more than was paid in it
+  const own = room.currencies[currency];
+  const name = currency === 'USD' ? 'بالدولار' : 'بالدينار';
+  if (!(own.paid > 0)) {
+    throw fail(`العميل لم يدفع ${name} على ${NAMES[category]}؛ يُرجع المبلغ بالعملة التي دفع بها`);
+  }
+  if (currency === 'USD' ? Math.round(amount * 100) > own.available : amount > own.available + 1e-9) {
+    const left = currency === 'USD' ? `${own.available / 100}$` : `${own.available} د.ل`;
+    const points = room.points > 0 ? `. ودفع ${room.points / 100}$ بالنقاط: النقاط لا تُرجع فلوساً، ألغِها من نقاط الطلبية فترجع لرصيد نقاطه` : '';
+    throw fail(`أقصى ما يُرجع ${name} من ${NAMES[category]} ${left}، وهو ما دفعه ${name} ولم يُرجع له${points}`);
+  }
+  // Dinars at the rate they were paid at: worth what the customer paid
+  const rate = currency === 'LYD' ? own.rate : 0;
+  const usd = currency === 'USD' ? Math.round(amount * 100) : Math.round((amount / rate) * 100);
+  if (!(usd > 0)) throw fail('المبلغ صغير جداً بعد التحويل');
   if (usd > room.max) {
     const before = room.refunds + room.returned ? `، وأُرجع له قبل ${(room.refunds + room.returned) / 100}$` : '';
     const points = room.points > 0 ? `. ودفع ${room.points / 100}$ بالنقاط: النقاط لا تُرجع فلوساً، ألغِها من نقاط الطلبية فترجع لرصيد نقاطه` : '';
@@ -193,14 +221,19 @@ async function listPaymentReturns(orderId) {
   const parts = {};
   for (const category of CATEGORIES) {
     const room = await roomOf(orderId, category);
-    parts[category] = { maxUsd: room.max / 100, extraUsd: room.extra / 100, pointsUsd: room.points / 100 };
+    parts[category] = {
+      maxUsd: room.max / 100, extraUsd: room.extra / 100, pointsUsd: room.points / 100,
+      // In each currency: what was paid in it and what can still go back in it (dinars at `rate`)
+      currencies: {
+        USD: { paid: room.currencies.USD.paid / 100, available: room.currencies.USD.available / 100 },
+        LYD: { paid: room.currencies.LYD.paid, available: room.currencies.LYD.available, rate: room.currencies.LYD.rate },
+      },
+    };
   }
-  const limits = await require('../walletRate').lydRateLimits(today());
   return {
     results, parts,
     // Kept for the order page before shipping returns (the invoice's figures)
     returnableUsd: parts.invoice.maxUsd, extraUsd: parts.invoice.extraUsd, pointsUsd: parts.invoice.pointsUsd,
-    lyd: limits ? { rate: limits.rate, maximum: Math.round((limits.rate + limits.tolerance) * 10000) / 10000 } : null,
   };
 }
 
