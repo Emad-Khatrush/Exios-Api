@@ -2259,9 +2259,16 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
       .map((w) => ({ _id: w._id, number: w.number, day: w.day, reason: w.reason, usd: Number(w.amountUsd || 0) / 100,
         kind: String(w.arKey).startsWith('PUR:') ? 'invoice' : 'receivedGoods', packageId: String(w.arKey).split(':')[2] || null })) : [];
 
+    // Money given back from the invoice's payments to the wallet (posting/paymentReturn.js): the
+    // order page takes it off what was paid
+    const returns = ObjectId.isValid(id) ? (await require('../accounting/models/documents').PaymentReturn.find({ orderId: id, status: 'posted' }).sort({ createdAt: 1 })
+      .populate('createdBy', 'firstName lastName').lean())
+      .map((r) => ({ _id: r._id, number: r.number, day: r.day, usd: Number(r.usd || 0) / 100, description: r.description, category: r.category, createdAt: r.createdAt, createdBy: r.createdBy })) : [];
+
     res.status(200).json({
       results: updatedPaymentList,
       writeOffs,
+      returns,
     });
   } catch (error) {
     console.log(error);

@@ -103,6 +103,14 @@ router.route('/acc/orders/:orderId/refunds')
     const { createCustomerRefund } = require('./services/posting/customerRefund');
     res.json(await runInTransaction((session) => createCustomerRefund({ ...(req.body || {}), orderId: req.params.orderId }, { session, req })));
   }));
+// Part of the invoice's payments given back to the wallet, with a description (owner 2026-11-25)
+router.route('/acc/orders/:orderId/payment-returns')
+  .get(STAFF, handle(async (req, res) => res.json(await require('./services/posting/paymentReturn').listPaymentReturns(req.params.orderId))))
+  .post(protect, require('../middleware/permissions').allow(['invoices_payments'], allowAdminsAndEmployee), handle(async (req, res) => {
+    const { runInTransaction } = require('./services/transaction');
+    const { createPaymentReturn } = require('./services/posting/paymentReturn');
+    res.json(await runInTransaction((session) => createPaymentReturn({ ...(req.body || {}), orderId: req.params.orderId }, { session, req })));
+  }));
 router.get('/acc/orders/:orderId/pending-refunds', STAFF, handle(async (req, res) => {
   res.json({ results: await require('./services/posting/pendingRefund').candidates(req.query, null, { allDates: true, suggestFractions: true }) });
 }));

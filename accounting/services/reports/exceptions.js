@@ -409,6 +409,13 @@ const CHECKS = {
       const key = `${row._id.order}|${row._id.kind}`;
       paid.set(key, (paid.get(key) || 0) + Math.max(row.cents, 0));
     });
+    // Money given back from the invoice's payments to the wallet (posting/paymentReturn.js): the order
+    // page takes it off what was paid, as the books do
+    const { PaymentReturn } = require('../../models/documents');
+    (await PaymentReturn.find({ orderId: { $in: ids }, status: 'posted' }).select('orderId usd').lean()).forEach((r) => {
+      const key = `${r.orderId}|PUR`;
+      paid.set(key, (paid.get(key) || 0) - (r.usd || 0));
+    });
     const items = [];
     orders.forEach((order) => {
       const books = byOrder.get(String(order._id));

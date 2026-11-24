@@ -149,6 +149,24 @@ const RULES = {
       await require('./posting/alipayReconciliation').releaseDocumentMatches('AccountingYuanPurchase', purchase._id, context);
     },
   },
+  // Money given back from an order's payments (posting/paymentReturn.js): taken off the wallet again
+  AccountingPaymentReturn: {
+    Model: docs.PaymentReturn,
+    async check(ret, { session, confirmNegative }) {
+      const wallet = await Wallet.findOne({ user: ret.partnerId, currency: 'USD' }).session(session);
+      if ((wallet?.balance || 0) < ret.usd / 100 && !confirmNegative) {
+        throw fail(`محفظة العميل ستصبح سالبة (الرصيد ${wallet?.balance || 0}$). أكّد الإلغاء للمتابعة.`);
+      }
+    },
+    async cascade(ret, { session, req, reason }) {
+      const statement = await moveWallet({
+        userId: ret.partnerId, currency: 'USD', amount: -ret.usd / 100,
+        description: `إلغاء إرجاع المبلغ ${ret.number}${reason ? ` - ${reason}` : ''}`, note: ret.number,
+        createdBy: req?.user?._id, source: { model: 'AccountingPaymentReturn', id: ret._id },
+      }, session);
+      await require('../../models/userStatement').updateOne({ _id: statement._id }, { $set: { actionType: 'refund' } }, { session });
+    },
+  },
   AccountingCustomerRefund: {
     Model: docs.CustomerRefund,
     async check(refund, { session, confirmNegative }) {

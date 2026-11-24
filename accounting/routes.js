@@ -286,7 +286,7 @@ Object.entries(DOCUMENT_KINDS).forEach(([kind, permission]) => {
   router.route(`/${kind}`).get(can(permission), documents.listDocuments(kind)).post(can(permission), documents.createDocument(kind));
 });
 const MODEL_PERMISSIONS = {
-  AccountingSupplierBill: 'purchases', AccountingSupplierPayment: 'payments', AccountingSupplierReceipt: 'payments', AccountingYuanPurchase: 'treasury', AccountingCustomerRefund: 'treasury', AccountingClaimWriteOff: 'entries', AccountingTreasuryTransfer: 'treasury', AccountingCashCount: 'treasury',
+  AccountingSupplierBill: 'purchases', AccountingSupplierPayment: 'payments', AccountingSupplierReceipt: 'payments', AccountingYuanPurchase: 'treasury', AccountingCustomerRefund: 'treasury', AccountingPaymentReturn: 'treasury', AccountingClaimWriteOff: 'entries', AccountingTreasuryTransfer: 'treasury', AccountingCashCount: 'treasury',
   AccountingSalaryPayment: 'payroll', AccountingFixedAsset: 'assets', AccountingPrepaidExpense: 'assets', AccountingEquityTransaction: 'assets', AccountingNetting: 'assets',
 };
 const byModel = (req, res, next) => can(MODEL_PERMISSIONS[req.params.model] || 'setup')(req, res, next);

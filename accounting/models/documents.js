@@ -226,6 +226,21 @@ const YuanPurchase = mongoose.model('AccountingYuanPurchase', withLifecycle({
   rate: Number,
 }));
 
+// Part of what a customer paid on a purchase invoice given back to the wallet (owner 2026-11-25):
+// the invoice lowered after it was paid. `usd` in cents; services/posting/paymentReturn.js
+const PaymentReturn = mongoose.model('AccountingPaymentReturn', withLifecycle({
+  day: { type: String, required: true },
+  orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true },
+  partnerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  category: { type: String, enum: ['invoice'], default: 'invoice' },
+  usd: { type: Number, required: true },
+  // Of it: taken back from the dollar overpayment kept as revenue, and what made the invoice owed again
+  fromProfit: Number,
+  reopened: Number,
+  description: { type: String, required: true },
+  userStatementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
+}));
+
 // Money a supplier gave back on a purchase, part of it added to the customer's wallet (spec 19.6)
 const CustomerRefund = mongoose.model('AccountingCustomerRefund', withLifecycle({
   legacyWalletStatementId: { type: Schema.Types.ObjectId, ref: 'UserStatement' },
@@ -511,6 +526,7 @@ const BankRule = mongoose.model('AccountingBankRule', new Schema({
 }, { timestamps: true }));
 
 module.exports = {
+  PaymentReturn,
   BankRule,
   Vendor,
   SupplierBill,
