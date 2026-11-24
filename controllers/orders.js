@@ -2263,7 +2263,8 @@ module.exports.getPaymentsOfOrder = async (req, res, next) => {
     // order page takes it off what was paid
     const returns = ObjectId.isValid(id) ? (await require('../accounting/models/documents').PaymentReturn.find({ orderId: id, status: 'posted' }).sort({ createdAt: 1 })
       .populate('createdBy', 'firstName lastName').lean())
-      .map((r) => ({ _id: r._id, number: r.number, day: r.day, usd: Number(r.usd || 0) / 100, description: r.description, category: r.category, createdAt: r.createdAt, createdBy: r.createdBy })) : [];
+      .map((r) => ({ _id: r._id, number: r.number, day: r.day, usd: Number(r.usd || 0) / 100, currency: r.currency || 'USD', amount: r.amount ?? Number(r.usd || 0) / 100, rate: r.rate || 0,
+        description: r.description, category: r.category, createdAt: r.createdAt, createdBy: r.createdBy })) : [];
 
     res.status(200).json({
       results: updatedPaymentList,

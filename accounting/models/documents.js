@@ -232,7 +232,11 @@ const PaymentReturn = mongoose.model('AccountingPaymentReturn', withLifecycle({
   day: { type: String, required: true },
   orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true },
   partnerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  category: { type: String, enum: ['invoice'], default: 'invoice' },
+  category: { type: String, enum: ['invoice', 'receivedGoods'], default: 'invoice' },
+  // What went to the wallet, in its currency (dinars at `rate`), and its dollar value in cents
+  currency: { type: String, enum: ['USD', 'LYD'], default: 'USD' },
+  amount: Number,
+  rate: Number,
   usd: { type: Number, required: true },
   // Of it: taken back from the dollar overpayment kept as revenue, and what made the invoice owed again
   fromProfit: Number,

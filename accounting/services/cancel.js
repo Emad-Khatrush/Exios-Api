@@ -153,14 +153,16 @@ const RULES = {
   AccountingPaymentReturn: {
     Model: docs.PaymentReturn,
     async check(ret, { session, confirmNegative }) {
-      const wallet = await Wallet.findOne({ user: ret.partnerId, currency: 'USD' }).session(session);
-      if ((wallet?.balance || 0) < ret.usd / 100 && !confirmNegative) {
-        throw fail(`محفظة العميل ستصبح سالبة (الرصيد ${wallet?.balance || 0}$). أكّد الإلغاء للمتابعة.`);
+      const currency = ret.currency || 'USD';
+      const amount = ret.amount ?? ret.usd / 100;
+      const wallet = await Wallet.findOne({ user: ret.partnerId, currency }).session(session);
+      if ((wallet?.balance || 0) < amount && !confirmNegative) {
+        throw fail(`محفظة العميل ستصبح سالبة (الرصيد ${wallet?.balance || 0} ${currency}). أكّد الإلغاء للمتابعة.`);
       }
     },
     async cascade(ret, { session, req, reason }) {
       const statement = await moveWallet({
-        userId: ret.partnerId, currency: 'USD', amount: -ret.usd / 100,
+        userId: ret.partnerId, currency: ret.currency || 'USD', amount: -(ret.amount ?? ret.usd / 100),
         description: `إلغاء إرجاع المبلغ ${ret.number}${reason ? ` - ${reason}` : ''}`, note: ret.number,
         createdBy: req?.user?._id, source: { model: 'AccountingPaymentReturn', id: ret._id },
       }, session);
