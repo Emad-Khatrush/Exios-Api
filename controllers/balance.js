@@ -330,7 +330,7 @@ module.exports.createPaymentHistory = async (req, res, next) => {
           throw new ErrorHandler(400, `النقاط مع المبلغ أكثر من المتبقي على الدين (${existingBalance.amount} $)`);
         }
         const moneyUsdCents = pointsOnly ? 0 : loyaltyService().moneyUsdCents(Number(amount), currency, rateValue);
-        const redeemed = await loyaltyService().redeemInPayment({ userId: existingBalance.owner._id, target, points, pointsOnly: false, moneyUsdCents }, { session, req });
+        const redeemed = await loyaltyService().redeemInPayment({ userId: existingBalance.owner._id, target, points, pointsOnly: false, moneyUsdCents }, { session, req, applyToDebts: false });
         const movement = await require('../models/loyaltyPoint').findOne({ kind: 'redeem', journalEntryId: redeemed.journalEntryId }).sort({ _id: 1 }).select('_id').session(session).lean();
         const left = Math.max(0, roundToTwo(Number(existingBalance.amount) - pointsUsd));
         const paidWithPoints = await Balance.findOneAndUpdate({ _id: id, amount: existingBalance.amount }, {
@@ -539,18 +539,16 @@ module.exports.cancelDebtPayment = async (req, res, next) => {
       await assertOpenPeriod(req.user, payment.createdAt, { session });
 
       if (payment.paymentType === 'points') {
+        if (payment.fromOrder) throw new ErrorHandler(400, 'هذه النقاط استُعملت من صفحة الطلبية؛ ألغِها من نقاط الطلبية');
         if (!payment.redemptionId || !debt.order?._id) throw new ErrorHandler(400, 'لم يُعثر على النقاط الخاصة بهذه الدفعة؛ راجع المحاسب');
+        // Gives the points back and, with them, puts the amount back on this debt (restoreDebtsOfRedemption)
         await require('../accounting/services/loyalty').cancelRedemption(
           { orderId: debt.order._id, redemptionId: payment.redemptionId, reason: `إلغاء دفعة دين بالنقاط ${debt.order.orderId || ''}`.trim() },
           { session, req, fromDebt: true },
         );
-        const back = Math.min(Math.round((Number(debt.amount) + Number(payment.amount)) * 100) / 100, Number(debt.initialAmount));
-        const restored = await Balance.findOneAndUpdate(
-          { _id: debt._id, 'paymentHistory._id': payment._id },
-          { $set: { amount: back, ...(['waitingApproval', 'closed'].includes(debt.status) && back > 0 && { status: 'open' }) }, $pull: { paymentHistory: { _id: payment._id } } },
-          { new: true, session },
-        );
-        if (!restored) throw new ErrorHandler(409, 'تغيّر هذا الدين للتو. حدّث الصفحة وحاول مرة أخرى');
+        const restored = await Balance.findById(debt._id).session(session);
+        if (!restored || restored.paymentHistory.id(payment._id)) throw new ErrorHandler(409, 'تغيّر هذا الدين للتو. حدّث الصفحة وحاول مرة أخرى');
+        const back = restored.amount;
         await Activities.create([{
           user: req.user,
           details: { path: '/balances', status: 'updated', type: 'debt', actionId: String(debt._id) },

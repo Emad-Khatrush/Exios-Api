@@ -496,8 +496,18 @@ async function packagesQuote({ userId, packageIds }, { session } = {}) {
 // Pays `points` of the target with the customer's points, oldest lots first: one redeem movement
 // per claim paid, and one entry Dr loyalty_points (the customer) / Cr customer_receivable (the
 // claims, by what is still owed on each). At most 20% of the invoice, what is owed and the balance.
-async function redeem({ userId, target, points }, { session, req } = {}) {
-  return redeemOn(userId, points, (now) => quoteOf({ userId, target }, session, now), { session, req });
+// `applyToDebts`: the points also pay down the order's debts for the same thing (the order page).
+// The debts screen pays its own debt and passes false.
+async function redeem({ userId, target, points }, { session, req, applyToDebts = true } = {}) {
+  const result = await redeemOn(userId, points, (now) => quoteOf({ userId, target }, session, now), { session, req });
+  if (applyToDebts) {
+    const first = await LoyaltyPoint.findOne({ kind: 'redeem', journalEntryId: result.journalEntryId }).sort({ _id: 1 }).select('_id').session(session).lean();
+    const order = await Order.findById(target.orderId).select('orderId').session(session).lean();
+    await require('../../../utils/debts').payOrderDebtsWithPoints({
+      orderId: target.orderId, category: target.category, usd: points / 100, redemptionId: first?._id, packageIds: target.packageIds, orderNumber: order?.orderId,
+    }, { session });
+  }
+  return result;
 }
 
 // The same over the shipping of some packages of the customer, possibly of several orders (the
@@ -601,7 +611,7 @@ async function owedOnTarget(target, session) {
 // `moneyUsdCents`: the money paid with the points, in US cents (owner's rule 2026-11-19): points only
 // cover what that money leaves, so a payment never pays more than is owed. Unknown (another
 // currency without a usable rate): not checked here.
-async function redeemInPayment({ userId, target, points, pointsOnly = false, moneyUsdCents }, { session, req } = {}) {
+async function redeemInPayment({ userId, target, points, pointsOnly = false, moneyUsdCents }, { session, req, applyToDebts = true } = {}) {
   if (!['invoice', 'receivedGoods'].includes(target?.category)) throw new ErrorHandler(400, 'النقاط تُستعمل فقط مع دفعة فاتورة الشراء أو الشحن');
   if (Number.isFinite(moneyUsdCents) && moneyUsdCents > 0) {
     const room = Math.max(0, (await owedOnTarget(target, session)) - Math.round(moneyUsdCents));
@@ -611,7 +621,7 @@ async function redeemInPayment({ userId, target, points, pointsOnly = false, mon
         : 'هذه الدفعة تغطي كامل المستحق، فلا تُستعمل معها نقاط. النقاط تُستعمل فقط لتغطية المتبقي.');
     }
   }
-  const result = await redeem({ userId, target, points }, { session, req });
+  const result = await redeem({ userId, target, points }, { session, req, applyToDebts });
   if (pointsOnly && await owedOnTarget(target, session) > 0) {
     throw new ErrorHandler(400, 'النقاط لا تغطي كامل المستحق؛ أدخل مبلغ الدفع للباقي');
   }
@@ -788,6 +798,8 @@ async function restoreRedemption(redemption, now, session, { reason, reverse } =
     }], { session });
     if (lot.expiresAt <= now) await takeBackLot(back._id, 'expire', session);
   }
+  // The debts these points paid are owed again
+  await require('../../../utils/debts').restoreDebtsOfRedemption(redemption._id, { session });
   return true;
 }
 

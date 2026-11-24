@@ -2351,6 +2351,11 @@ module.exports.addPaymentToOrder = async (req, res, next) => {
           // }
         }
       }
+      // A debt opened on this order for the same thing is paid down by this cash too, as a wallet
+      // payment does (2026-11-25: cash used to leave the debt as it was); cancelling the payment puts it back
+      if (category) {
+        data.debtPayments = await require('../utils/debts').payOrderDebts({ orderId: order._id, category, amount: data.receivedAmount, currency, rate: data.rate, createdAt, orderNumber: order.orderId }, { session });
+      }
       const [payment] = await OrderPaymentHistory.create([data], { session });
       if (payment.paymentType === 'cash') await emitAccountingEvent('cashPayment', payment._id, { office: req.body.office }, req.user, { session });
 

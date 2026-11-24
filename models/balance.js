@@ -90,6 +90,8 @@ const balanceSchema = new mongoose.Schema({
       paymentType: { type: String, enum: ['wallet', 'points'] },
       points: Number,
       redemptionId: { type: mongoose.Schema.Types.ObjectId, ref: 'LoyaltyPoint' },
+      // Points used on the order page that paid this debt down: cancelled there, not here
+      fromOrder: Boolean,
       attachments: [{
         filename: String,
         path: String,
