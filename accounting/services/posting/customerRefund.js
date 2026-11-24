@@ -20,7 +20,9 @@ const { moveWallet } = require('./people');
 // What the customer paid on the purchase invoice, in USD cents: the larger of the order's own
 // payments (the Payments tab, dinars at the rate each was taken at; a payment just made may still
 // be waiting for live posting) and what the books credited to the invoice (old payments that are
-// a wallet line only)
+// a wallet line only). Money only: loyalty points paid on the invoice are not counted (owner
+// 2026-11-25), so a refund never turns points into wallet money. Points come back as points, by
+// cancelling them on the order page.
 async function paidOnInvoice(orderId, session) {
   const OrderPaymentHistory = require('../../../models/orderPaymentHistory');
   const { JournalEntry } = require('../../models');
@@ -34,12 +36,16 @@ async function paidOnInvoice(orderId, session) {
   const receivable = await resolveAccount('customer_receivable');
   const key = purchaseKey(orderId);
   const [row] = await JournalEntry.aggregate([
-    { $match: { 'lines.arKey': key, eventType: { $nin: [...CLAIM_EVENTS, 'REFUND', 'CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY', 'ROUNDING'] } } }, { $unwind: '$lines' },
+    { $match: { 'lines.arKey': key, eventType: { $nin: [...CLAIM_EVENTS, 'REFUND', 'CLAIM_WRITEOFF', 'WRITEOFF_RECOVERY', 'ROUNDING'], $not: /^LOYALTY_/ } } }, { $unwind: '$lines' },
     { $match: { 'lines.arKey': key, 'lines.accountId': receivable._id } },
     { $group: { _id: null, net: { $sum: { $subtract: ['$lines.credit', '$lines.debit'] } } } },
   ]).session(session || null);
   return Math.max(Math.round(system * 100), row?.net || 0, 0);
 }
+
+// The points still paid on the invoice (cents), named in a refusal so staff know what to do instead
+const pointsOnInvoice = async (orderId) => (await require('../loyalty').redeemedByPart(orderId)).invoice || 0;
+const pointsHint = (cents) => (cents > 0 ? `. ودفع ${cents / 100}$ بالنقاط (${cents} نقطة): النقاط لا تُرجع فلوساً، ألغِها من نقاط الطلبية فترجع لرصيد نقاطه` : '');
 
 async function createCustomerRefund(input, { session, req }) {
   if (input.existingRefundId) return allocateWallet(input, { session, req });
@@ -86,7 +92,7 @@ async function createCustomerRefund(input, { session, req }) {
     const left = Math.max(paid - earlier, 0);
     if (walletUsd > left) {
       const before = earlier ? ` وأُرجع له بالريفاند ${earlier / 100}$` : '';
-      throw fail(`العميل دفع على الفاتورة ${paid / 100}$${before}؛ أقصى ما يُضاف لمحفظته الآن ${left / 100}$`);
+      throw fail(`العميل دفع على الفاتورة ${paid / 100}$${before}؛ أقصى ما يُضاف لمحفظته الآن ${left / 100}$${pointsHint(await pointsOnInvoice(order._id))}`);
     }
   }
 
@@ -158,7 +164,7 @@ async function allocateWallet(input, { session, req }) {
   if (!(walletUsd > 0) || !Number.isFinite(walletUsd)) throw fail('أدخل المبلغ المراد إضافته لمحفظة العميل');
   const earlier = await CustomerRefund.find({ orderId: order._id, status: 'posted' }).select('walletUsd legacyWalletUsd').session(session).lean();
   const left = Math.max(0, await paidOnInvoice(order._id, session) - earlier.reduce((sum, r) => sum + (r.walletUsd || 0) + (r.legacyWalletUsd || 0), 0));
-  if (walletUsd > left) throw fail(`أقصى ما يُضاف لمحفظته الآن ${left / 100}$`);
+  if (walletUsd > left) throw fail(`أقصى ما يُضاف لمحفظته الآن ${left / 100}$${pointsHint(await pointsOnInvoice(order._id))}`);
   const day = input.day || refund.day;
   if (!isDay(day) || day < refund.day) throw fail('تاريخ إضافة مبلغ العميل غير صالح');
   await postEntry({ eventType: 'REFUND', eventKey: `CUSTOMER_REFUND_WALLET:${refund._id}`, date: day,
