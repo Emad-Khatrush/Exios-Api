@@ -102,11 +102,14 @@ const siteOf = (s) => ({
   freeShipping: !!s.freeShipping,
 });
 
+// The qirsh per dollar added by where the customer pays (Libya / Turkey); missing = 0
+const deliveryOf = (s) => ({ libya: Number(s?.delivery?.libya) || 0, turkey: Number(s?.delivery?.turkey) || 0 });
+
 // What counts as a price change, per part: notes, durations and visibility do not
 const PRICE_FIELDS = {
-  purchase: (s) => ({ minCommission: s?.minCommission ?? 0, tiers: s?.tiers || [], sites: (s?.sites || []).map(siteOf) }),
-  alipay: (s) => ({ tiers: s?.tiers || [] }),
-  swift: (s) => ({ tiers: swiftTiers(s), fixedFee: s?.fixedFee ?? 0, minFee: s?.minFee ?? 0 }),
+  purchase: (s) => ({ minCommission: s?.minCommission ?? 0, tiers: s?.tiers || [], sites: (s?.sites || []).map(siteOf), delivery: deliveryOf(s) }),
+  alipay: (s) => ({ tiers: s?.tiers || [], delivery: deliveryOf(s) }),
+  swift: (s) => ({ tiers: swiftTiers(s), fixedFee: s?.fixedFee ?? 0, minFee: s?.minFee ?? 0, delivery: deliveryOf(s) }),
 };
 // A route's base price lives in ShipmentPrice (its own updatedAt), so only the other kinds, the
 // minimum and the carrier (a new line usually means a new price) here
@@ -202,6 +205,7 @@ module.exports.getPublic = async (req, res, next) => {
       exchangeRate: config.exchangeRate?.visible ? customerRate(config, rate) : null,
       ...section('shipping', () => (visible('shipping') && routes.length ? {
         note: config.shipping.note || '',
+        delivery: deliveryOf(config.shipping),
         volumetricDivisor: config.shipping.volumetricDivisor || 6000,
         routes: routes.map(({ visible: _v, message: _m, ...route }) => ({ ...route, updatedAt: updated(route.updatedAt), categories: route.categories.filter((c) => c.price > 0) })),
         updatedAt: updated(latest(...routes.map((r) => r.updatedAt))),
@@ -209,6 +213,7 @@ module.exports.getPublic = async (req, res, next) => {
       ...section('purchase', () => (visible('purchase') ? {
         updatedAt: updated(config.purchase.pricesUpdatedAt),
         note: config.purchase.note || '',
+        delivery: deliveryOf(config.purchase),
         minCommission: config.purchase.minCommission || 0,
         tiers: config.purchase.tiers || [],
         sites: (config.purchase.sites || []).map(siteOf),
@@ -216,11 +221,13 @@ module.exports.getPublic = async (req, res, next) => {
       ...section('alipay', () => (visible('alipay') && (config.alipay.tiers || []).some((t) => t.rate > 0) ? {
         updatedAt: updated(config.alipay.pricesUpdatedAt),
         note: config.alipay.note || '',
+        delivery: deliveryOf(config.alipay),
         tiers: (config.alipay.tiers || []).filter((t) => t.rate > 0),
       } : null)),
       ...section('swift', () => (visible('swift') ? {
         updatedAt: updated(config.swift.pricesUpdatedAt),
         note: config.swift.note || '',
+        delivery: deliveryOf(config.swift),
         tiers: swiftTiers(config.swift),
         fixedFee: config.swift.fixedFee || 0,
         minFee: config.swift.minFee || 0,
@@ -246,9 +253,10 @@ module.exports.getConfig = async (req, res, next) => {
     const config = await loadConfig();
     res.status(200).json({
       ...config,
-      shipping: { ...config.shipping, routes: await shippingRoutes(config) },
-      swift: { ...config.swift, tiers: swiftTiers(config.swift) },
-      purchase: { ...config.purchase, sites: (config.purchase?.sites || []).map(siteOf) },
+      shipping: { ...config.shipping, delivery: deliveryOf(config.shipping), routes: await shippingRoutes(config) },
+      swift: { ...config.swift, delivery: deliveryOf(config.swift), tiers: swiftTiers(config.swift) },
+      purchase: { ...config.purchase, delivery: deliveryOf(config.purchase), sites: (config.purchase?.sites || []).map(siteOf) },
+      alipay: { ...config.alipay, delivery: deliveryOf(config.alipay) },
       // Rows saved before shipping lines and ports existed get them empty
       fcl: { ...config.fcl, containers: (config.fcl?.containers || []).map((c) => ({ carrier: '', fromPort: '', toPort: '', route: '', duration: '', ...c })) },
       exchangeRate: await (async () => {
@@ -283,6 +291,9 @@ function cleanTiers(list, clean, label) {
   if (new Set(bounded.map((t) => t.upTo)).size !== bounded.length) throw fail(`في ${label} شريحتان بنفس الحد الأعلى`);
   return [...bounded, open[0]];
 }
+
+// Qirsh per dollar, by where the customer pays: at most 1000 (10 LYD a dollar)
+const cleanDelivery = (value) => ({ libya: num(value?.libya, { max: 1000 }), turkey: num(value?.turkey, { max: 1000 }) });
 
 const digits = (value) => String(value ?? '').replace(/\D/g, '').slice(0, 15);
 
@@ -332,6 +343,7 @@ module.exports.saveConfig = async (req, res, next) => {
       update.shipping = {
         visible: bool(body.shipping.visible),
         note: text(body.shipping.note),
+        delivery: cleanDelivery(body.shipping.delivery),
         volumetricDivisor: num(body.shipping.volumetricDivisor, { min: 1000, max: 10000 }) || 6000,
         routes: routes.map((r) => {
           const route = {
@@ -375,6 +387,7 @@ module.exports.saveConfig = async (req, res, next) => {
       update.purchase = {
         visible: bool(body.purchase.visible),
         note: text(body.purchase.note),
+        delivery: cleanDelivery(body.purchase.delivery),
         minCommission: num(body.purchase.minCommission),
         tiers: cleanTiers(body.purchase.tiers, commissionTier, 'عمولات الشراء'),
         sites,
@@ -385,7 +398,7 @@ module.exports.saveConfig = async (req, res, next) => {
     if (body.alipay) {
       const tiers = cleanTiers(body.alipay.tiers, (t) => ({ rate: num(t.rate, { max: 100 }), fee: num(t.fee, { max: 1e5 }) }), 'حوالات علي باي');
       if (bool(body.alipay.visible) && tiers.some((t) => !(t.rate > 0))) throw fail('ضع سعر اليوان لكل شريحة في علي باي قبل إظهارها للعملاء');
-      update.alipay = { visible: bool(body.alipay.visible), note: text(body.alipay.note), tiers };
+      update.alipay = { visible: bool(body.alipay.visible), note: text(body.alipay.note), delivery: cleanDelivery(body.alipay.delivery), tiers };
       update.alipay.pricesUpdatedAt = stamp(PRICE_FIELDS.alipay(current.alipay), PRICE_FIELDS.alipay(update.alipay), current.alipay?.pricesUpdatedAt);
     }
 
@@ -393,6 +406,7 @@ module.exports.saveConfig = async (req, res, next) => {
       update.swift = {
         visible: bool(body.swift.visible),
         note: text(body.swift.note),
+        delivery: cleanDelivery(body.swift.delivery),
         tiers: cleanTiers(body.swift.tiers, commissionTier, 'حوالات سويفت'),
         fixedFee: num(body.swift.fixedFee, { max: 1e5 }),
         minFee: num(body.swift.minFee, { max: 1e5 }),

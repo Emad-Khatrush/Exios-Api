@@ -15,6 +15,14 @@ const tier = new Schema({
   fee: Number,
 }, { _id: false });
 
+// What a customer pays on top, in Libyan qirsh (1/100 dinar) for each dollar of the total, by where
+// they pay: at the office in Libya or in Turkey (owner 2026-11-25). E.g. a $100 invoice at 10 qirsh
+// = $100 + 10 LYD. Each section has its own two; 0 = nothing added.
+const delivery = new Schema({
+  libya: { type: Number, default: 0 },
+  turkey: { type: Number, default: 0 },
+}, { _id: false });
+
 const pricingConfigSchema = new Schema({
   key: { type: String, default: 'main', unique: true },
 
@@ -30,6 +38,7 @@ const pricingConfigSchema = new Schema({
   shipping: {
     visible: { type: Boolean, default: true },
     note: { type: String, default: '' },
+    delivery: { type: delivery, default: () => ({}) },
     // Air volumetric weight = L x W x H (cm) / divisor. 6000 is CBM x 167, as accounting bills it
     volumetricDivisor: { type: Number, default: 6000 },
     routes: [{
@@ -56,6 +65,7 @@ const pricingConfigSchema = new Schema({
   purchase: {
     visible: { type: Boolean, default: true },
     note: { type: String, default: '' },
+    delivery: { type: delivery, default: () => ({}) },
     minCommission: { type: Number, default: 10 },
     // When its prices (not the note or visibility) last changed, shown to customers. Same in
     // alipay and swift.
@@ -77,6 +87,7 @@ const pricingConfigSchema = new Schema({
   alipay: {
     visible: { type: Boolean, default: false },
     note: { type: String, default: '' },
+    delivery: { type: delivery, default: () => ({}) },
     // { upTo (yuan), rate (yuan for 1 USD), fee (USD added to the transfer) }
     tiers: { type: [tier], default: undefined },
     pricesUpdatedAt: Date,
@@ -85,6 +96,7 @@ const pricingConfigSchema = new Schema({
   swift: {
     visible: { type: Boolean, default: false },
     note: { type: String, default: '' },
+    delivery: { type: delivery, default: () => ({}) },
     // Commission by transfer amount (USD): { upTo, type: 'fixed' | 'percent', value }, like purchases
     tiers: { type: [tier], default: undefined },
     // Older single-rate form, read only to build the first tiers
