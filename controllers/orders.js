@@ -675,14 +675,16 @@ module.exports.createOrder = async (req, res, next) => {
     const images = [];
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
-        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoices");
+        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoices", { variants: true });
         images.push({
           path: uploadedImg.publicUrl,
           filename: uploadedImg.filename,
           folder: uploadedImg.folder,
           bytes: uploadedImg.bytes,
           category: req.body.invoicesCount > i ? 'invoice' : 'receipts',
-          fileType: req.files[i].mimetype
+          fileType: req.files[i].mimetype,
+          ...(uploadedImg.thumb && { thumb: uploadedImg.thumb }),
+          ...(uploadedImg.preview && { preview: uploadedImg.preview }),
         });
       }
     }
@@ -1275,13 +1277,15 @@ module.exports.uploadFilesToLinks= async (req, res, next) => {
 
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
-        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoices");
+        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoices", { variants: true });
         images.push({
           path: uploadedImg.publicUrl,
           filename: uploadedImg.filename,
           folder: uploadedImg.folder,
           bytes: uploadedImg.bytes,
-          fileType: req.files[i].mimetype
+          fileType: req.files[i].mimetype,
+          ...(uploadedImg.thumb && { thumb: uploadedImg.thumb }),
+          ...(uploadedImg.preview && { preview: uploadedImg.preview }),
         });
         changedFields.push({
           label: 'image',
@@ -1322,14 +1326,16 @@ module.exports.uploadFiles= async (req, res, next) => {
 
     if (req.files) {
       for (let i = 0; i < req.files.length; i++) {
-        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoices");
+        const uploadedImg = await uploadToGoogleCloud(req.files[i], "exios-admin-invoices", { variants: true });
         images.push({
           path: uploadedImg.publicUrl,
           filename: uploadedImg.filename,
           folder: uploadedImg.folder,
           bytes: uploadedImg.bytes,
           category: req.body.type,
-          fileType: req.files[i].mimetype
+          fileType: req.files[i].mimetype,
+          ...(uploadedImg.thumb && { thumb: uploadedImg.thumb }),
+          ...(uploadedImg.preview && { preview: uploadedImg.preview }),
         });
         changedFields.push({
           label: 'image',

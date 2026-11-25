@@ -25,12 +25,41 @@ const storage = new Storage(isQa ? {} : {
 
 const bucket = isQa ? null : storage.bucket(process.env.GOOGLE_BUCKET_ID);
 
-const uploadToGoogleCloud = async (file, folderName) => {
-  if (isQa) return require('./qaFiles').upload(file, folderName);
+// Stores the light copies of an image (utils/imageVariants) beside the original; their links, or {}.
+// A failure here never fails the upload: the app then shows the original.
+const uploadVariants = async (file, folderName) => {
+  const { isImage, makeVariants } = require('./imageVariants');
+  if (!isImage(file?.mimetype, file?.originalname)) return {};
+  const variants = await makeVariants(file.buffer);
+  if (!variants) return {};
+  const base = String(file.originalname || 'image').replace(/\.[a-z0-9]+$/i, '').replace(/[\\/\r\n]/g, '_').slice(0, 80);
+  const links = {};
+  for (const [key, buffer] of Object.entries(variants)) {
+    try {
+      const copy = { buffer, originalname: `${base}-${key}.webp`, mimetype: 'image/webp' };
+      links[key] = isQa
+        ? (await require('./qaFiles').upload(copy, folderName)).publicUrl
+        : (await saveToGoogleCloud(copy, `${folderName}/${key}`)).publicUrl;
+    } catch (error) {
+      console.log('image variant upload:', error.message);
+    }
+  }
+  return links;
+};
+
+// options.variants: also store a thumbnail and a preview of an image (returned as thumb, preview)
+const uploadToGoogleCloud = async (file, folderName, options = {}) => {
+  if (isQa) {
+    const stored = await require('./qaFiles').upload(file, folderName);
+    return options.variants ? { ...stored, ...(await uploadVariants(file, folderName)) } : stored;
+  }
   try {
     const cloudFile  = await bucket.file(getRandomChars(10) + file.originalname);
+    // Its type and a long cache: the names are random, so a stored file never changes
     const blobStream = cloudFile.createWriteStream({
-      resumable: false
+      resumable: false,
+      contentType: file.mimetype || undefined,
+      metadata: { cacheControl: 'public, max-age=31536000, immutable' },
     });
 
     blobStream.on("finish", () => {
@@ -50,7 +79,8 @@ const uploadToGoogleCloud = async (file, folderName) => {
     return {
       publicUrl,  
       filename: uuidv4(),
-      folder: '/' + folderName
+      folder: '/' + folderName,
+      ...(options.variants ? await uploadVariants(file, folderName) : {}),
     };
   } catch (error) {
     console.log(error);

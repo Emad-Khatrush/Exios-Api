@@ -235,7 +235,10 @@ const orderSchema = new Schema({
       type: String,
       enum: ['invoice', 'receipts']
     },
-    fileType: String
+    fileType: String,
+    // Light WebP copies for the customer app (utils/imageVariants); absent on older or non-image files
+    thumb: String,
+    preview: String
   }],
   debt: {
     currency: String,
@@ -309,7 +312,10 @@ const orderSchema = new Schema({
       folder: String,
       bytes: String,
       fileType: String,
-      description: String
+      description: String,
+      // Light WebP copies for the customer app (utils/imageVariants); absent on older or non-image files
+      thumb: String,
+      preview: String
     }],
     deliveredPackages: {
       arrivedAt: {
