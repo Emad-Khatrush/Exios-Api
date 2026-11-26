@@ -7,6 +7,34 @@ const { saveToGoogleCloud } = require('../utils/googleClould');
 
 const { KINDS, STATUSES, PRIORITIES, TOPICS } = Feedback;
 
+// GET /reviews/unread: what is new for staff beside «Reviews» in the admin's menu (owner 2026-11-27):
+// complaints and suggestions with something unread (new, or a customer's reply), and ratings not
+// seen yet. Ratings from before this count started are not counted.
+const RATINGS_COUNTED_FROM = new Date('2026-11-27T00:00:00+02:00');
+module.exports.unreadCounts = async (req, res, next) => {
+  try {
+    const OrderRating = require('../models/orderRating');
+    const [feedback, ratings] = await Promise.all([
+      Feedback.countDocuments({ unreadByStaff: true }),
+      OrderRating.countDocuments({ staffSeenAt: { $exists: false }, createdAt: { $gte: RATINGS_COUNTED_FROM } }),
+    ]);
+    res.status(200).json({ feedback, ratings, total: feedback + ratings });
+  } catch (error) {
+    next(new ErrorHandler(500, error.message));
+  }
+};
+
+// POST /reviews/ratings/seen: the ratings list was opened, so every rating on it has been seen
+module.exports.ratingsSeen = async (req, res, next) => {
+  try {
+    const OrderRating = require('../models/orderRating');
+    const result = await OrderRating.updateMany({ staffSeenAt: { $exists: false } }, { $set: { staffSeenAt: new Date() } });
+    res.status(200).json({ seen: result.modifiedCount });
+  } catch (error) {
+    next(new ErrorHandler(500, error.message));
+  }
+};
+
 const MAX_IMAGES = 5;
 const MAX_ORDERS = 10;
 const text = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');

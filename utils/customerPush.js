@@ -154,7 +154,7 @@ function referralWelcomeText(inviterName, points) {
   return {
     title: `🎁 هدية ${pointsText(points)} نقطة من ${inviterName}`,
     // Held until the first invoice (owner 2026-11-27)
-    body: `تُضاف لرصيدك (${usdText(points)}) مع أول فاتورة شحن أو شراء خلال 60 يوماً، وتستعملها عليها.`,
+    body: `تُضاف لرصيدك (${usdText(points)}) مع أول فاتورة شحن أو شراء خلال 90 يوماً، وتستعملها عليها.`,
   };
 }
 async function referralWelcome(friendId, inviterName, points) {

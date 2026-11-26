@@ -31,6 +31,9 @@ router.post('/client/feedback/:id/seen', protect, isClient, feedback.seen);
 
 // Staff: the same permission as customer ratings (the page lives under Ratings)
 router.get('/feedback', protect, allow(['ratings'], isAdmin), feedback.list);
+// The count of new complaints and ratings beside «Reviews» in the menu, and ratings marked seen
+router.get('/reviews/unread', protect, allow(['ratings'], isAdmin), feedback.unreadCounts);
+router.post('/reviews/ratings/seen', protect, allow(['ratings'], isAdmin), feedback.ratingsSeen);
 router.post('/feedback/:id/messages', protect, allow(['ratings'], isAdmin), images, feedback.staffReply);
 router.route('/feedback/:id')
   .put(protect, allow(['ratings'], isAdmin), feedback.update)

@@ -4,7 +4,7 @@
 // order paid in full (accounting/services/loyalty, GIFT_HOLD_DAYS). Gifts given as points before that
 // (the launch day) are put on hold the same way, so the books show no liability for customers who
 // never ship: each such lot, still unspent, of a customer with no paid order is taken back (a revoke
-// with its reversing entry) and becomes a hold of the same points, lapsing 60 days after the gift.
+// with its reversing entry) and becomes a hold of the same points, lapsing GIFT_HOLD_DAYS (90) days after the gift.
 // A lot already spent, or of a customer who has a paid order, is left as it is (listed).
 // Without --apply it only lists what would change. Safe to run again.
 //

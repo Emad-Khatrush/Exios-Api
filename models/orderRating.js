@@ -23,7 +23,9 @@ const OrderRatingSchema = new Schema({
       type: Schema.Types.Mixed,
       required: true
     },
-  }]
+  }],
+  // When staff first saw it on the Reviews page (2026-11-27: a count of new ones beside «Reviews»)
+  staffSeenAt: { type: Date },
 }, 
 {
   timestamps: true

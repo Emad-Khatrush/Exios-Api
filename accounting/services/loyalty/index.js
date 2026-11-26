@@ -1040,7 +1040,7 @@ async function grantGift({ userId, points, reason, eventKey, levelPoints, now = 
 // order with something billed), so they can pay part of that very invoice with them, as the app
 // promises. Without one within GIFT_HOLD_DAYS they lapse, never booked. Many open an account and
 // never ship; booking the gift at sign-up was a liability nobody would claim.
-const GIFT_HOLD_DAYS = 60;
+const GIFT_HOLD_DAYS = 90;
 const heldGiftKey = (eventKey) => `${eventKey}:R`;
 
 // Puts a gift on hold (once per eventKey). A gift given before this rule (a lot with that eventKey)
