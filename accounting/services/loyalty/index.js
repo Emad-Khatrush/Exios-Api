@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 const moment = require('moment-timezone');
 const Order = require('../../../models/order');
 const LoyaltyPoint = require('../../../models/loyaltyPoint');
+const LoyaltyGiftHold = require('../../../models/loyaltyGiftHold');
 const PricingConfig = require('../../../models/pricingConfig');
 const { JournalEntry } = require('../../models');
 const { postEntry, reverseEntry } = require('../ledger');
@@ -346,6 +347,8 @@ async function summaryOf(userId) {
     usd: points / 100,
     expiringSoon,
     pending: off ? [] : await pendingOf(orders),
+    // Gifts waiting for the first order paid in full (not points yet)
+    giftsWaiting: off ? null : await giftsWaitingOf(userId),
     earnedTotal: (totals.get('earn') || 0) + (totals.get('add') || 0),
     redeemedTotal: Math.max((totals.get('redeem') || 0) - (totals.get('restore') || 0), 0),
   };
@@ -1028,6 +1031,76 @@ async function grantGift({ userId, points, reason, eventKey, levelPoints, now = 
   return created;
 }
 
+// ---- Gifts waiting for the first paid order (owner, 2026-11-27) ----
+// The sign-up gift and the invite welcome are not points yet: the customer sees them waiting, and
+// they become points (a normal 'add' lot, booked then) once the customer first earns points from an
+// order paid in full. Without such an order within GIFT_HOLD_DAYS they lapse, never booked. Many
+// open an account and never ship; booking the gift at sign-up was a liability nobody would claim.
+const GIFT_HOLD_DAYS = 60;
+const heldGiftKey = (eventKey) => `${eventKey}:R`;
+
+// Puts a gift on hold (once per eventKey). A gift given before this rule (a lot with that eventKey)
+// counts as given. Returns the hold, or null when nothing was held.
+async function holdGift({ userId, points, reason, eventKey, now = new Date() } = {}, session) {
+  assertInTransaction(session);
+  if (!(points > 0) || !eventKey) return null;
+  if (await LoyaltyGiftHold.exists({ eventKey }).session(session)) return null;
+  if (await LoyaltyPoint.exists({ eventKey: { $in: [eventKey, heldGiftKey(eventKey)] } }).session(session)) return null;
+  const [hold] = await LoyaltyGiftHold.create([{
+    user: oid(userId), points, reason, eventKey, expiresAt: new Date(now.getTime() + GIFT_HOLD_DAYS * DAY_MS),
+  }], { session });
+  return hold;
+}
+
+// Points a gift is worth for this customer, held or given (the welcome tops the sign-up gift up)
+async function giftPoints(eventKey, session) {
+  const hold = await LoyaltyGiftHold.findOne({ eventKey, status: { $in: ['pending', 'granted'] } }).select('points').session(session || null).lean();
+  if (hold) return hold.points;
+  const lot = await LoyaltyPoint.findOne({ eventKey: { $in: [eventKey, heldGiftKey(eventKey)] }, kind: 'add' }).select('points').session(session || null).lean();
+  return lot ? lot.points : 0;
+}
+
+// Has the customer an order paid in full that earned points (and still counts)?
+async function hasPaidOrder(userId, session) {
+  const earns = await LoyaltyPoint.find({ user: oid(userId), kind: 'earn' }).select('_id').sort({ _id: 1 }).limit(20).session(session || null).lean();
+  for (const earn of earns) if (await earnStillValid(earn._id, session)) return true;
+  return false;
+}
+
+// The hourly job: gifts whose customer now has a paid order become points; held past their date,
+// they lapse. One transaction per gift.
+async function giftsDue({ now = new Date() } = {}) {
+  const lapsed = (await LoyaltyGiftHold.updateMany({ status: 'pending', expiresAt: { $lte: now } }, { $set: { status: 'expired', endedAt: now } })).modifiedCount;
+  let granted = 0;
+  let failed = 0;
+  const holds = await LoyaltyGiftHold.find({ status: 'pending' }).select('_id user').sort({ _id: 1 }).lean();
+  for (const { _id, user } of holds) {
+    try {
+      if (await isOff(user) || !(await hasPaidOrder(user))) continue;
+      const done = await runInTransaction(async (session) => {
+        const hold = await LoyaltyGiftHold.findOne({ _id, status: 'pending' }).session(session);
+        if (!hold || hold.expiresAt <= now) return false;
+        const lot = await grantGift({ userId: hold.user, points: hold.points, reason: hold.reason, eventKey: heldGiftKey(hold.eventKey), now }, session);
+        Object.assign(hold, { status: 'granted', grantedAt: now, ...(lot && { lotId: lot._id }) });
+        await hold.save({ session });
+        return !!lot;
+      });
+      if (done) granted += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(`[loyalty] gift ${_id}: ${error.message}`);
+    }
+  }
+  return { granted, lapsed, failed };
+}
+
+// What waits for the customer: the gifts held, together, and until when
+async function giftsWaitingOf(userId) {
+  const holds = await LoyaltyGiftHold.find({ user: oid(userId), status: 'pending', expiresAt: { $gt: new Date() } }).select('points expiresAt').lean();
+  if (!holds.length) return null;
+  return { points: holds.reduce((sum, h) => sum + h.points, 0), until: new Date(Math.min(...holds.map((h) => h.expiresAt.getTime()))) };
+}
+
 // ---- A paid claim owed again (owner, 2026-11-20) ----
 // A claim earns once, when fully paid. If it becomes owed again (a payment cancelled, or its price
 // raised and not paid yet), what is left of its points is taken back; once it is fully paid again,
@@ -1468,5 +1541,5 @@ module.exports = {
   moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, holdGift, giftPoints, giftsDue, giftsWaitingOf, heldGiftKey, GIFT_HOLD_DAYS, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };

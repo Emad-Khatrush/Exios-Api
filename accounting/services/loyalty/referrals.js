@@ -135,10 +135,11 @@ async function attach({ friendId, code, source = 'code', by, now = new Date() } 
     },
   }, { session });
   if (!res.modifiedCount) throw new ErrorHandler(400, 'هذا العميل مسجّل بدعوة من قبل');
-  // A new account's gift already given (staff set the inviter later): the welcome tops it up to WELCOME_POINTS
-  const signup = await LoyaltyPoint.findOne({ eventKey: keys.signup(friend._id) }).select('points').session(session).lean();
-  const welcome = friend.loyaltyOff?.at ? null : await loyalty().grantGift({
-    userId: friend._id, points: WELCOME_POINTS - (signup?.points || 0), reason: 'هدية الانضمام بدعوة صديق', eventKey: keys.welcome(friend._id), now,
+  // A new account's gift already held or given (staff set the inviter later): the welcome tops it up
+  // to WELCOME_POINTS. Both wait for the friend's first order paid in full (owner 2026-11-27).
+  const signupPoints = await loyalty().giftPoints(keys.signup(friend._id), session);
+  const welcome = friend.loyaltyOff?.at ? null : await loyalty().holdGift({
+    userId: friend._id, points: WELCOME_POINTS - signupPoints, reason: 'هدية الانضمام بدعوة صديق', eventKey: keys.welcome(friend._id), now,
   }, session);
   return { inviterId: String(inviter._id), inviterName: shortName(inviter), friendName: shortName(friend), welcome: welcome ? WELCOME_POINTS : 0 };
 }
@@ -280,8 +281,9 @@ async function signupGift({ userId, now = new Date() } = {}, session) {
   assertInTransaction(session);
   const user = await users().findOne({ _id: oid(userId) }, { projection: { 'referral.by': 1, roles: 1, loyaltyOff: 1 }, session });
   if (!user || user.referral?.by || !user.roles?.isClient || isStaff(user) || user.loyaltyOff?.at) return 0;
-  const lot = await loyalty().grantGift({ userId: user._id, points: SIGNUP_POINTS, reason: 'هدية فتح الحساب', eventKey: keys.signup(user._id), now }, session);
-  return lot ? SIGNUP_POINTS : 0;
+  // Held until the first order paid in full (owner 2026-11-27): not points yet, nothing booked
+  const hold = await loyalty().holdGift({ userId: user._id, points: SIGNUP_POINTS, reason: 'هدية فتح الحساب', eventKey: keys.signup(user._id), now }, session);
+  return hold ? SIGNUP_POINTS : 0;
 }
 
 // Staff stop the rewards from one friend (what was given stays)

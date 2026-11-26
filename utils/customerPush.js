@@ -153,7 +153,8 @@ async function referralJoined(inviterId, friendName) {
 function referralWelcomeText(inviterName, points) {
   return {
     title: `🎁 هدية ${pointsText(points)} نقطة من ${inviterName}`,
-    body: `أضفناها لرصيدك (${usdText(points)}). استعملها في أول فاتورة شحن أو شراء.`,
+    // Held until the first order paid in full (owner 2026-11-27)
+    body: `تُضاف لرصيدك (${usdText(points)}) مع أول طلبية تدفعها كاملة خلال 60 يوماً.`,
   };
 }
 async function referralWelcome(friendId, inviterName, points) {
