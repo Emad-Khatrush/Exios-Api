@@ -105,6 +105,20 @@ let isInitializingWhatsApp = false; // guards against overlapping initialize() c
 // seen 2026-10-11 and 2026-11-26). After such a failed launch, WhatsApp retries in Chrome's normal
 // multi-process mode (still one renderer) instead of failing every 10 seconds forever.
 let whatsappSingleProcess = true;
+// The link must never stay stuck for long, and unlinking it from the phone must bring a new QR (owner
+// 2026-11-26). Every start gets a number: events and errors of an older client are ignored, so a
+// restart never runs twice.
+let whatsappGeneration = 0;
+let whatsappStartTimer = null; // a start that shows neither a QR nor 'ready' in time is restarted
+let whatsappHealthTimer = null; // while ready: is WhatsApp still connected?
+let whatsappStuckStarts = 0; // starts in a row that hung; after two the saved session is dropped
+let whatsappBadChecks = 0; // health checks in a row that were not CONNECTED
+let whatsappStatus = { state: 'starting', since: new Date() };
+const setWhatsAppStatus = (state) => { if (whatsappStatus.state !== state) whatsappStatus = { state, since: new Date() }; };
+const WHATSAPP_START_TIMEOUT_MS = 4 * 60 * 1000;
+const WHATSAPP_HEALTH_EVERY_MS = 2 * 60 * 1000;
+const WHATSAPP_BAD_CHECKS_LIMIT = 3; // ~6 minutes not connected, then a restart
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
 const app = express();
 // The host's router sits in front of the app: trust its X-Forwarded-For (one hop), so req.ip is the
@@ -267,6 +281,69 @@ function scheduleSnapshotRefresh() {
   }, SNAPSHOT_REFRESH_MS);
 }
 
+// Removes the saved session (local snapshot + MongoDB): the next start shows a new QR
+async function deleteWhatsAppSession(why) {
+  try {
+    clearTimeout(snapshotRefreshTimer);
+    if (whatsappStore) await whatsappStore.delete({ session: 'RemoteAuth' });
+    console.log(`WhatsApp saved session deleted (${why}) — the next start shows a new QR.`);
+  } catch (err) {
+    console.error('Failed to delete WhatsApp session:', err);
+  }
+}
+
+// Closes the current client, whatever state it is in, and starts a new one
+async function restartWhatsApp(why, { dropSession = false } = {}) {
+  if (isShuttingDown) return;
+  console.log(`Restarting WhatsApp: ${why}`);
+  whatsappGeneration += 1; // the old client's events and errors are ignored from here
+  clearTimeout(whatsappStartTimer);
+  clearInterval(whatsappHealthTimer);
+  isWhatsAppReady = false;
+  qrCodeData = null;
+  setWhatsAppStatus('restarting');
+  const old = client;
+  client = null;
+  if (old) await closeChromeCleanly(old).catch(() => {});
+  if (dropSession) await deleteWhatsAppSession(why);
+  isInitializingWhatsApp = false;
+  setTimeout(initializeWhatsAppClient, 3000);
+}
+
+// A start must reach a QR or 'ready' within WHATSAPP_START_TIMEOUT_MS (again after the QR is scanned)
+function armWhatsAppStartTimer(gen, startedWithSession) {
+  clearTimeout(whatsappStartTimer);
+  whatsappStartTimer = setTimeout(() => {
+    if (gen !== whatsappGeneration || isWhatsAppReady || qrCodeData) return;
+    whatsappStuckStarts += 1;
+    // Twice in a row from the saved session: that session is what hangs
+    const drop = startedWithSession && whatsappStuckStarts >= 2;
+    if (drop) whatsappStuckStarts = 0;
+    restartWhatsApp(`stuck: no QR and not ready after ${WHATSAPP_START_TIMEOUT_MS / 60000} minutes${drop ? ' (twice — dropping the saved session)' : ''}`, { dropSession: drop });
+  }, WHATSAPP_START_TIMEOUT_MS);
+}
+
+// While ready, asks WhatsApp every 2 minutes whether it is still connected: unlinked → new QR;
+// not connected (or no answer) for ~6 minutes → restart with the same session
+function startWhatsAppHealthCheck(gen) {
+  clearInterval(whatsappHealthTimer);
+  whatsappBadChecks = 0;
+  whatsappHealthTimer = setInterval(async () => {
+    if (gen !== whatsappGeneration || !isWhatsAppReady || !client || isBackupRestart) return;
+    let state = null;
+    try { state = await withTimeout(client.getState(), 30000); } catch (_) { state = null; }
+    if (gen !== whatsappGeneration || !isWhatsAppReady) return;
+    if (state === 'CONNECTED') { whatsappBadChecks = 0; return; }
+    if (WHATSAPP_UNLINKED_REASONS.includes(state)) {
+      restartWhatsApp(`device unlinked (${state})`, { dropSession: true });
+      return;
+    }
+    whatsappBadChecks += 1;
+    console.log(`WhatsApp health check: ${state || 'no answer'} (${whatsappBadChecks}/${WHATSAPP_BAD_CHECKS_LIMIT})`);
+    if (whatsappBadChecks >= WHATSAPP_BAD_CHECKS_LIMIT) restartWhatsApp(`not connected for ${whatsappBadChecks * WHATSAPP_HEALTH_EVERY_MS / 60000} minutes (${state || 'no answer'})`);
+  }, WHATSAPP_HEALTH_EVERY_MS);
+}
+
 // Builds a fresh Client and wires up all listeners. Safe to call repeatedly
 // (e.g. after a disconnect) — RemoteAuth pulls the saved session back from
 // Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
@@ -281,11 +358,18 @@ async function initializeWhatsAppClient() {
   isInitializingWhatsApp = true;
   isWhatsAppReady = false;
   shownQrThisClient = false;
+  const gen = ++whatsappGeneration;
+  clearInterval(whatsappHealthTimer);
+  setWhatsAppStatus('starting');
+  let startedWithSession = false;
+  let droppedDeadSession = false;
 
   try {
     if (!whatsappStore) {
       whatsappStore = new WhatsAppMongoStore({ mongoose, dataPath: WHATSAPP_DATA_PATH });
     }
+    try { startedWithSession = await whatsappStore.sessionExists({ session: 'RemoteAuth' }); } catch (_) { startedWithSession = false; }
+    armWhatsAppStartTimer(gen, startedWithSession);
 
     client = new Client({
       authStrategy: new SafeRemoteAuth({
@@ -358,19 +442,32 @@ async function initializeWhatsAppClient() {
     });
 
     client.on('qr', (qr) => {
+      if (gen !== whatsappGeneration) return;
       if (!shownQrThisClient) {
         console.log('No usable saved WhatsApp session — QR scan required.');
       }
+      // Started from a saved session and still asked for a QR: that session is no longer linked
+      // (removed from the phone while the server was off). Drop it, so a restart does not restore it again.
+      if (startedWithSession && !droppedDeadSession) {
+        droppedDeadSession = true;
+        deleteWhatsAppSession('the saved session asks for a QR');
+      }
       shownQrThisClient = true;
+      setWhatsAppStatus('qr');
       console.log('Scan the QR code below to connect WhatsApp:');
       qrCodeData = qr;
       qrcode.generate(qr, { small: true });
     });
 
     client.on('ready', () => {
+      if (gen !== whatsappGeneration) return;
       qrCodeData = null;
       isWhatsAppReady = true;
       isInitializingWhatsApp = false;
+      whatsappStuckStarts = 0;
+      clearTimeout(whatsappStartTimer);
+      setWhatsAppStatus('ready');
+      startWhatsAppHealthCheck(gen);
 
       if (shownQrThisClient) {
         console.log('WhatsApp client is ready (new QR link). Clean snapshot in 90s.');
@@ -396,7 +493,11 @@ async function initializeWhatsAppClient() {
     });
 
     client.on('authenticated', () => {
+      if (gen !== whatsappGeneration) return;
       console.log('WhatsApp authenticated');
+      // Scanned: the QR is used up, and loading the chats must also end in 'ready' in time
+      qrCodeData = null;
+      armWhatsAppStartTimer(gen, startedWithSession);
     });
 
     client.on('remote_session_saved', () => {
@@ -404,6 +505,7 @@ async function initializeWhatsAppClient() {
     });
 
     client.on('auth_failure', async (msg) => {
+      if (gen !== whatsappGeneration) return;
       console.error('AUTHENTICATION FAILURE', msg);
       isWhatsAppReady = false;
       isInitializingWhatsApp = false;
@@ -419,10 +521,14 @@ async function initializeWhatsAppClient() {
     });
 
     client.on('disconnected', async (reason) => {
+      if (gen !== whatsappGeneration) return;
       console.log('WhatsApp client disconnected:', reason);
       isWhatsAppReady = false;
       isInitializingWhatsApp = false;
+      clearInterval(whatsappHealthTimer);
+      clearTimeout(whatsappStartTimer);
       if (isShuttingDown || isBackupRestart) return;
+      setWhatsAppStatus('restarting');
 
       try {
         // Wipe the stored session only when WhatsApp itself says this device
@@ -450,6 +556,9 @@ async function initializeWhatsAppClient() {
 
     await client.initialize();
   } catch (error) {
+    // A client closed on purpose (restart, reset) ends its initialize() with an error: nothing to do
+    if (gen !== whatsappGeneration) return;
+    clearTimeout(whatsappStartTimer);
     console.error('Failed to initialize WhatsApp client:', error);
     isInitializingWhatsApp = false;
     if (whatsappSingleProcess && /Failed to launch the browser process/.test(String(error && error.message))) {
@@ -526,6 +635,24 @@ app.get('/api/get-qr-code', protect, staffOnly, (req, res) => {
   } else {
     res.status(404).json({ message: 'QR code not available yet' });
   }
+});
+
+// The link's state: 'ready', 'qr' (waiting for a scan), 'starting' or 'restarting', and since when
+app.get('/api/whatsapp/status', protect, staffOnly, (req, res) => {
+  res.status(200).json({ ...whatsappStatus, ready: isWhatsAppReady, hasQr: !!qrCodeData });
+});
+
+// Admins: unlink the company number and start over with a new QR (the linked device is removed from
+// the phone too). For a link that is stuck, or to link another phone.
+app.post('/api/whatsapp/reset', protect, isAdmin, async (req, res) => {
+  const current = client;
+  const wasReady = isWhatsAppReady;
+  whatsappGeneration += 1; // the logout's own 'disconnected' must not start a second client
+  if (current && wasReady) {
+    try { await withTimeout(current.logout(), 20000); } catch (_) { /* closed below anyway */ }
+  }
+  await restartWhatsApp(`reset by an admin (${req.user?.username || req.user?._id})`, { dropSession: true });
+  res.status(200).json({ success: true, message: 'WhatsApp is restarting; a new QR code will be ready in about a minute.' });
 });
 
 // Rejects WhatsApp requests up front when the client can't send, so the
