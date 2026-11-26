@@ -735,11 +735,149 @@ async function staffInfo(userId) {
     qualified,
     qualifyUsd: QUALIFY_USD,
     ambassadorAt: ref.ambassadorAt || null,
+    // Every friend they invited, with what the friend paid and what the inviter got from them (staff only)
+    friends: await staffFriends(user._id),
   };
+}
+
+// ---- What staff see of the programme (owner 2026-11-26: follow every invite in the admin) ----
+
+const personOf = (u) => (u ? { id: String(u._id), name: fullName(u), customerId: u.customerId || null } : null);
+// Why a reward still waits, said for staff
+function waitingOf(reward, friend, now) {
+  if (reward.kind === 'step' && !reward.approvedAt) return 'approval';
+  if (friend?.referral?.review?.status === 'pending') return 'review';
+  if (reward.friend && friend?.passportVerification?.status !== 'verified') return 'passport';
+  return new Date(reward.releaseAt) > now ? 'hold' : 'due';
+}
+const staffStatus = (ref, now) => (ref.review?.status === 'pending' ? 'review' : ref.review?.status === 'rejected' ? 'rejected' : friendStatus(ref, now));
+const usd2 = (value) => Math.round(Number(value || 0) * 100) / 100;
+
+// One inviter's friends, newest first: who, how they came, where they stand, what they paid, and the
+// points the inviter got (given and waiting) from each
+async function staffFriends(inviterId, now = new Date()) {
+  const friends = await users().find({ 'referral.by': oid(inviterId) },
+    { projection: { firstName: 1, lastName: 1, customerId: 1, referral: 1, createdAt: 1, 'passportVerification.status': 1 } })
+    .sort({ 'referral.at': -1 }).limit(500).toArray();
+  if (!friends.length) return [];
+  const ids = friends.map((f) => f._id);
+  const [{ given, held }, paid] = await Promise.all([pointsByFriend(inviterId, ids), paidUsdOf(ids)]);
+  return friends.map((f) => ({
+    ...personOf(f),
+    at: f.referral.at || f.createdAt,
+    source: f.referral.source || null,
+    status: staffStatus(f.referral, now),
+    qualifiedAt: f.referral.qualifiedAt || null,
+    canceledAt: f.referral.canceledAt || null,
+    passport: f.passportVerification?.status || null,
+    paidUsd: usd2(paid.get(String(f._id))),
+    points: given.get(String(f._id)) || 0,
+    heldPoints: held.get(String(f._id)) || 0,
+  }));
+}
+
+const REPORT_PAGE = 30;
+const STATUS_FILTERS = {
+  joined: { 'referral.qualifiedAt': { $exists: false }, 'referral.canceledAt': { $exists: false } },
+  qualified: { 'referral.qualifiedAt': { $exists: true }, 'referral.canceledAt': { $exists: false } },
+  canceled: { 'referral.canceledAt': { $exists: true } },
+  review: { 'referral.review.status': 'pending' },
+};
+const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// The whole programme for staff: totals, the top inviters, every referral (search + status filter, a
+// page at a time), the rewards still waiting and why, and the rewards cancelled or taken back
+async function staffReport({ search = '', status = '', page = 1 } = {}, now = new Date()) {
+  const all = { 'referral.by': { $exists: true } };
+  const [referrals, qualified, canceled, review, rewardSums] = await Promise.all([
+    users().countDocuments(all),
+    users().countDocuments({ ...all, ...STATUS_FILTERS.qualified }),
+    users().countDocuments({ ...all, ...STATUS_FILTERS.canceled }),
+    users().countDocuments({ ...all, ...STATUS_FILTERS.review }),
+    ReferralReward.aggregate([{ $group: { _id: '$status', points: { $sum: '$points' } } }]),
+  ]);
+  const sum = (st) => rewardSums.find((r) => r._id === st)?.points || 0;
+  const totals = {
+    referrals, qualified, canceled, review,
+    pointsGiven: sum('granted'), pointsHeld: sum('pending'), pointsRevoked: sum('revoked'), pointsCanceled: sum('canceled'),
+  };
+
+  // Top inviters by friends, with how many paid and the points they got
+  const top = await users().aggregate([
+    { $match: all },
+    { $group: { _id: '$referral.by', invited: { $sum: 1 },
+      qualified: { $sum: { $cond: [{ $and: [{ $gt: ['$referral.qualifiedAt', null] }, { $not: [{ $gt: ['$referral.canceledAt', null] }] }] }, 1, 0] } } } },
+    { $sort: { invited: -1, qualified: -1 } },
+    { $limit: 10 },
+  ]).toArray();
+  const topIds = top.map((t) => t._id);
+  const [topPeople, topPoints] = await Promise.all([
+    users().find({ _id: { $in: topIds } }, { projection: { firstName: 1, lastName: 1, customerId: 1, 'referral.ambassadorAt': 1 } }).toArray(),
+    ReferralReward.aggregate([{ $match: { inviter: { $in: topIds }, status: 'granted' } }, { $group: { _id: '$inviter', points: { $sum: '$points' } } }]),
+  ]);
+  const topInviters = top.map((t) => {
+    const u = topPeople.find((p) => String(p._id) === String(t._id));
+    return { ...personOf(u || { _id: t._id }), invited: t.invited, qualified: t.qualified, ambassador: !!u?.referral?.ambassadorAt,
+      points: topPoints.find((p) => String(p._id) === String(t._id))?.points || 0 };
+  });
+
+  // Every referral, a page at a time, searched by the friend's or the inviter's name or customer code
+  const filter = { ...all, ...(STATUS_FILTERS[status] || {}) };
+  const text = String(search || '').trim().slice(0, 60);
+  if (text) {
+    const rx = new RegExp(escapeRegex(text), 'i');
+    const matched = (await users().find({ $or: [{ customerId: rx }, { firstName: rx }, { lastName: rx }] }, { projection: { _id: 1 } }).limit(500).toArray()).map((u) => u._id);
+    filter.$or = [{ _id: { $in: matched } }, { 'referral.by': { $in: matched } }];
+  }
+  const at = Math.max(1, Math.floor(Number(page)) || 1);
+  const total = await users().countDocuments(filter);
+  const docs = await users().find(filter, { projection: { firstName: 1, lastName: 1, customerId: 1, referral: 1, createdAt: 1, 'passportVerification.status': 1 } })
+    .sort({ 'referral.at': -1 }).skip((at - 1) * REPORT_PAGE).limit(REPORT_PAGE).toArray();
+  const ids = docs.map((d) => d._id);
+  const [inviters, paid, points] = await Promise.all([
+    users().find({ _id: { $in: [...new Set(docs.map((d) => String(d.referral.by)))].map(oid) } }, { projection: { firstName: 1, lastName: 1, customerId: 1 } }).toArray(),
+    paidUsdOf(ids),
+    ReferralReward.aggregate([{ $match: { friend: { $in: ids }, status: { $in: ['granted', 'pending'] } } },
+      { $group: { _id: { friend: '$friend', status: '$status' }, points: { $sum: '$points' } } }]),
+  ]);
+  const pointsOf = (id, st) => points.find((g) => String(g._id.friend) === String(id) && g._id.status === st)?.points || 0;
+  const rows = docs.map((d) => ({
+    friend: personOf(d),
+    inviter: personOf(inviters.find((u) => String(u._id) === String(d.referral.by))),
+    at: d.referral.at || d.createdAt,
+    source: d.referral.source || null,
+    status: staffStatus(d.referral, now),
+    qualifiedAt: d.referral.qualifiedAt || null,
+    canceledAt: d.referral.canceledAt || null,
+    cancelReason: d.referral.cancelReason || null,
+    flags: d.referral.flags || [],
+    passport: d.passportVerification?.status || null,
+    paidUsd: usd2(paid.get(String(d._id))),
+    points: pointsOf(d._id, 'granted'),
+    heldPoints: pointsOf(d._id, 'pending'),
+  }));
+
+  // Rewards waiting (and why), and the latest cancelled or taken back (and why)
+  const [pendingDocs, lostDocs] = await Promise.all([
+    ReferralReward.find({ status: 'pending' }).sort({ releaseAt: 1 }).limit(100).lean(),
+    ReferralReward.find({ status: { $in: ['canceled', 'revoked'] } }).sort({ canceledAt: -1, _id: -1 }).limit(100).lean(),
+  ]);
+  const peopleIds = [...new Set([...pendingDocs, ...lostDocs].flatMap((r) => [r.inviter, r.friend]).filter(Boolean).map(String))];
+  const people = new Map((await users().find({ _id: { $in: peopleIds.map(oid) } },
+    { projection: { firstName: 1, lastName: 1, customerId: 1, referral: 1, 'passportVerification.status': 1 } }).toArray()).map((u) => [String(u._id), u]));
+  const rewardRow = (r) => ({
+    id: String(r._id), kind: r.kind, points: r.points,
+    inviter: personOf(people.get(String(r.inviter))), friend: r.friend ? personOf(people.get(String(r.friend))) : null,
+    step: r.step?.friends ? r.step : null, createdAt: r.createdAt, releaseAt: r.releaseAt,
+  });
+  const pending = pendingDocs.map((r) => ({ ...rewardRow(r), waiting: waitingOf(r, people.get(String(r.friend)), now) }));
+  const lost = lostDocs.map((r) => ({ ...rewardRow(r), status: r.status, at: r.canceledAt || null, reason: r.cancelReason || null }));
+
+  return { totals, topInviters, rows, page: at, pages: Math.max(1, Math.ceil(total / REPORT_PAGE)), total, pending, lost, qualifyUsd: QUALIFY_USD };
 }
 
 module.exports = {
   WELCOME_POINTS, FIRST_POINTS, HOLD_HOURS, QUALIFY_USD, SHARE_POINTS, AMBASSADOR_SHARE_POINTS, AMBASSADOR_TITLE, SHARE_PER_USD, SHARE_DAYS, STAFF_SET_DAYS, STEPS, CODE_LENGTH,
-  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, requalifyDue, runDue, mine, historyOf, staffInfo,
+  SIGNUP_POINTS, keys, normalizeCode, shortName, codeOf, check, attach, signupGift, cancel, afterEarn, releaseDue, takeBackDue, requalifyDue, runDue, mine, historyOf, staffInfo, staffFriends, staffReport,
   suspicionFlags, reviewQueue, approveReferral, rejectReferral, approveStep, rejectStep, manualReport,
 };

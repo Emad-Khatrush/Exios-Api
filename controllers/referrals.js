@@ -45,6 +45,7 @@ module.exports.staffSet = handle(async (req) => {
 // The review queue (suspicious referrals, step rewards) and the report of referrals set by hand
 module.exports.reviewQueue = handle(() => referrals.reviewQueue());
 module.exports.manualReport = handle(() => referrals.manualReport());
+module.exports.report = handle((req) => referrals.staffReport({ search: req.query.search, status: req.query.status, page: req.query.page }));
 module.exports.approveReferral = handle((req) => runInTransaction((session) => referrals.approveReferral({ friendId: customerId(req), by: req.user._id }, session)));
 module.exports.rejectReferral = handle((req) => runInTransaction((session) => referrals.rejectReferral({ friendId: customerId(req), reason: req.body?.reason, by: req.user._id }, session)));
 module.exports.approveStep = handle((req) => runInTransaction((session) => referrals.approveStep({ rewardId: customerId(req), by: req.user._id }, session)));

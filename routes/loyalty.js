@@ -65,6 +65,8 @@ router.delete('/user/:id/referral', protect, allow(['loyalty_adjust']), referral
 // Reviewing invites (owner, 2026-11-20): suspicious referrals and the big step rewards, and who set referrals by hand
 router.get('/loyalty/referrals/review', protect, allow(['loyalty']), referrals.reviewQueue);
 router.get('/loyalty/referrals/manual', protect, allow(['loyalty']), referrals.manualReport);
+// Every invite, the top inviters, the rewards waiting and the ones taken back (owner 2026-11-26)
+router.get('/loyalty/referrals/report', protect, allow(['loyalty']), referrals.report);
 router.post('/loyalty/referrals/friend/:id/approve', protect, allow(['loyalty_adjust']), referrals.approveReferral);
 router.post('/loyalty/referrals/friend/:id/reject', protect, allow(['loyalty_adjust']), referrals.rejectReferral);
 router.post('/loyalty/referrals/reward/:id/approve', protect, allow(['loyalty_adjust']), referrals.approveStep);
