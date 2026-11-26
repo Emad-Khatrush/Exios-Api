@@ -49,7 +49,7 @@
     "sharp": "^0.33.5",
     "util": "^0.12.5",
     "uuid": "^10.0.0",
-    "whatsapp-web.js": "^1.34.7"
+    "whatsapp-web.js": "1.34.8"
   },
   "devDependencies": {
     "jest": "^29.7.0",
