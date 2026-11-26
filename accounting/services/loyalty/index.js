@@ -462,6 +462,8 @@ async function quoteOf({ userId, target }, session, now = new Date()) {
   // every few seconds; the claim alone let points through just after the cancel)
   if (order.isCanceled) throw new ErrorHandler(400, 'الطلبية ملغاة؛ لا تُستعمل عليها النقاط');
   if (!userId || String(order.user) !== String(userId)) throw new ErrorHandler(400, 'هذه الطلبية ليست لهذا العميل');
+  // A gift waiting for the first invoice is given now, so it can pay part of this one
+  await releaseGiftsFor(order.user, session, now);
   const keys = await redeemKeys(target, session);
   const { lots, quote } = await quoteKeys(order.user, keys, session, now);
   return { orders: [order], keys, lots, quote };
@@ -485,6 +487,7 @@ async function packagesQuoteOf({ userId, packageIds }, session, now = new Date()
     if (found.pkg.status?.received) throw new ErrorHandler(400, 'بعض الطرود المحددة سُلّمت من قبل');
     return shipmentKey(found.order._id, id);
   });
+  await releaseGiftsFor(userId, session, now);
   const { lots, quote } = await quoteKeys(oid(userId), keys, session, now);
   return { orders: orders.map(({ paymentList, ...order }) => order), keys, lots, quote };
 }
@@ -1031,11 +1034,12 @@ async function grantGift({ userId, points, reason, eventKey, levelPoints, now = 
   return created;
 }
 
-// ---- Gifts waiting for the first paid order (owner, 2026-11-27) ----
+// ---- Gifts waiting for the first invoice (owner, 2026-11-27) ----
 // The sign-up gift and the invite welcome are not points yet: the customer sees them waiting, and
-// they become points (a normal 'add' lot, booked then) once the customer first earns points from an
-// order paid in full. Without such an order within GIFT_HOLD_DAYS they lapse, never booked. Many
-// open an account and never ship; booking the gift at sign-up was a liability nobody would claim.
+// they become points (a normal 'add' lot, booked then) once the customer has a first invoice (an
+// order with something billed), so they can pay part of that very invoice with them, as the app
+// promises. Without one within GIFT_HOLD_DAYS they lapse, never booked. Many open an account and
+// never ship; booking the gift at sign-up was a liability nobody would claim.
 const GIFT_HOLD_DAYS = 60;
 const heldGiftKey = (eventKey) => `${eventKey}:R`;
 
@@ -1060,11 +1064,39 @@ async function giftPoints(eventKey, session) {
   return lot ? lot.points : 0;
 }
 
-// Has the customer an order paid in full that earned points (and still counts)?
-async function hasPaidOrder(userId, session) {
+// Has the customer a first invoice: an order (not cancelled) with something billed on its purchase
+// invoice or a package's shipping? An order paid in full (an earn) counts too.
+async function hasInvoice(userId, session) {
+  const orders = await Order.find({ user: oid(userId), isCanceled: { $ne: true } }).select('_id paymentList._id').sort({ _id: -1 }).limit(50).session(session || null).lean();
+  const keys = orders.flatMap((o) => [purchaseKey(o._id), ...(o.paymentList || []).map((p) => shipmentKey(o._id, p._id))]);
+  if (keys.length) {
+    const ledger = await claimLedger({ $in: keys }, session);
+    if (keys.some((key) => (ledger.get(key)?.billed || 0) > 0)) return true;
+  }
   const earns = await LoyaltyPoint.find({ user: oid(userId), kind: 'earn' }).select('_id').sort({ _id: 1 }).limit(20).session(session || null).lean();
   for (const earn of earns) if (await earnStillValid(earn._id, session)) return true;
   return false;
+}
+
+// Gives the customer's waiting gifts once they have a first invoice. Inside `session` when given
+// (a payment's quote or redemption: the gift is then usable on that invoice at once), else in its
+// own transaction. Returns the points given.
+async function releaseGiftsFor(userId, session, now = new Date()) {
+  const pending = await LoyaltyGiftHold.find({ user: oid(userId), status: 'pending', expiresAt: { $gt: now } }).select('_id').session(session || null).lean();
+  if (!pending.length || await isOff(userId, session) || !(await hasInvoice(userId, session))) return 0;
+  const give = async (tx) => {
+    let points = 0;
+    for (const { _id } of pending) {
+      const hold = await LoyaltyGiftHold.findOne({ _id, status: 'pending' }).session(tx);
+      if (!hold) continue;
+      const lot = await grantGift({ userId: hold.user, points: hold.points, reason: hold.reason, eventKey: heldGiftKey(hold.eventKey), now }, tx);
+      Object.assign(hold, { status: 'granted', grantedAt: now, ...(lot && { lotId: lot._id }) });
+      await hold.save({ session: tx });
+      if (lot) points += lot.points;
+    }
+    return points;
+  };
+  return session ? give(session) : runInTransaction(give);
 }
 
 // The hourly job: gifts whose customer now has a paid order become points; held past their date,
@@ -1073,22 +1105,13 @@ async function giftsDue({ now = new Date() } = {}) {
   const lapsed = (await LoyaltyGiftHold.updateMany({ status: 'pending', expiresAt: { $lte: now } }, { $set: { status: 'expired', endedAt: now } })).modifiedCount;
   let granted = 0;
   let failed = 0;
-  const holds = await LoyaltyGiftHold.find({ status: 'pending' }).select('_id user').sort({ _id: 1 }).lean();
-  for (const { _id, user } of holds) {
+  const users = await LoyaltyGiftHold.distinct('user', { status: 'pending' });
+  for (const user of users) {
     try {
-      if (await isOff(user) || !(await hasPaidOrder(user))) continue;
-      const done = await runInTransaction(async (session) => {
-        const hold = await LoyaltyGiftHold.findOne({ _id, status: 'pending' }).session(session);
-        if (!hold || hold.expiresAt <= now) return false;
-        const lot = await grantGift({ userId: hold.user, points: hold.points, reason: hold.reason, eventKey: heldGiftKey(hold.eventKey), now }, session);
-        Object.assign(hold, { status: 'granted', grantedAt: now, ...(lot && { lotId: lot._id }) });
-        await hold.save({ session });
-        return !!lot;
-      });
-      if (done) granted += 1;
+      if (await releaseGiftsFor(user, null, now) > 0) granted += 1;
     } catch (error) {
       failed += 1;
-      console.error(`[loyalty] gift ${_id}: ${error.message}`);
+      console.error(`[loyalty] gifts of ${user}: ${error.message}`);
     }
   }
   return { granted, lapsed, failed };
@@ -1541,5 +1564,5 @@ module.exports = {
   moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, holdGift, giftPoints, giftsDue, giftsWaitingOf, heldGiftKey, GIFT_HOLD_DAYS, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, holdGift, giftPoints, giftsDue, giftsWaitingOf, releaseGiftsFor, heldGiftKey, GIFT_HOLD_DAYS, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };
