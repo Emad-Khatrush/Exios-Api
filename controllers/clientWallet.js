@@ -47,11 +47,15 @@ const DEBT_NAMES = { invoice: 'متبقي من قيمة الشراء', receivedG
 
 async function debtLinesOf(userId, currency) {
   const debts = await Balance.find({ owner: userId, balanceType: 'debt', currency, status: { $in: DEBT_LINE_STATUSES } })
-    .select('_id order initialAmount currency debtType createdAt paymentHistory manualClosure')
+    .select('_id order amount status initialAmount currency debtType createdAt paymentHistory manualClosure')
     .populate('order', 'orderId')
     .lean();
   const lines = [];
   for (const debt of debts) {
+    // Closed with money still on it and not by hand: our side settled it (a claim write-off). The
+    // customer is not shown it (owner 2026-11-26): the debt and its payments stay off the statement,
+    // so it ends at the net; what was paid from the wallet stays as the wallet's own line.
+    if (debt.status === 'closed' && Number(debt.amount || 0) > 0.001 && !(Number(debt.manualClosure?.writtenOffAmount || 0) > 0)) continue;
     const order = debt.order?.orderId ? ` - طلبية ${debt.order.orderId}` : '';
     lines.push({ id: `D${debt._id}`, at: debt.createdAt, description: `${DEBT_NAMES[debt.debtType] || DEBT_NAMES.general}${order}`,
       amount: round2(debt.initialAmount), direction: 'out', kind: 'debt' });
