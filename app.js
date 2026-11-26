@@ -168,6 +168,23 @@ function logMemory(when) {
   console.log(`[memory] ${when}: api rss ${mb(m.rss)} MB (heap ${mb(m.heapUsed)}/${mb(m.heapTotal)}, external ${mb(m.external)}, buffers ${mb(m.arrayBuffers)})${chrome}`);
 }
 setInterval(() => logMemory('every 5 min'), 5 * 60 * 1000).unref();
+
+// WhatsApp may never take the API down (2026-11-26: after a QR scan the new WhatsApp Web loaded the
+// chats into Chrome, past 1 GB, and Heroku killed the whole dyno with R15, twice).
+// - WHATSAPP_DISABLED=1: WhatsApp is not started at all
+// - while running, Chrome's memory is checked every 5 seconds; above WHATSAPP_CHROME_MAX_MB (650 by
+//   default) WhatsApp is stopped and stays stopped (the saved session is kept) until an admin presses
+//   «New QR» or the server restarts. Sending then answers "WhatsApp is connecting" instead of crashing.
+const WHATSAPP_DISABLED = process.env.WHATSAPP_DISABLED === '1';
+const WHATSAPP_CHROME_MAX_MB = Number(process.env.WHATSAPP_CHROME_MAX_MB) || 650;
+let whatsappStoppedForMemory = false;
+function whatsappChromeMb() {
+  if (process.platform !== 'linux') return 0;
+  try {
+    const out = require('child_process').execSync("ps -eo rss=,args= | grep '[w]webjs_auth' || true", { encoding: 'utf8', timeout: 3000 });
+    return Math.round(out.split('\n').filter(Boolean).reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0) / 1024);
+  } catch (_) { return 0; }
+}
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
 const app = express();
@@ -398,6 +415,30 @@ function startWhatsAppHealthCheck(gen) {
   }, WHATSAPP_HEALTH_EVERY_MS);
 }
 
+// Stops WhatsApp (keeping the saved session) when its Chrome grows past the limit
+if (!WHATSAPP_DISABLED && process.platform === 'linux') {
+  setInterval(async () => {
+    if (whatsappStoppedForMemory || isShuttingDown || !client) return;
+    const mb = whatsappChromeMb();
+    if (mb <= WHATSAPP_CHROME_MAX_MB) return;
+    whatsappStoppedForMemory = true;
+    console.error(`WhatsApp stopped: its Chrome uses ${mb} MB, over the ${WHATSAPP_CHROME_MAX_MB} MB limit (WHATSAPP_CHROME_MAX_MB). The API keeps running; WhatsApp needs a bigger dyno or its own server.`);
+    logMemory('WhatsApp stopped for memory');
+    whatsappGeneration += 1; // its events and errors are ignored from here
+    clearTimeout(whatsappStartTimer);
+    clearInterval(whatsappHealthTimer);
+    clearTimeout(snapshotRefreshTimer);
+    isWhatsAppReady = false;
+    qrCodeData = null;
+    setWhatsAppStatus('stopped-memory');
+    const old = client;
+    client = null;
+    killChromeTree(old);
+    killLeftoverWhatsAppChromes();
+    isInitializingWhatsApp = false;
+  }, 5000).unref();
+}
+
 // Builds a fresh Client and wires up all listeners. Safe to call repeatedly
 // (e.g. after a disconnect) — RemoteAuth pulls the saved session back from
 // Mongo, so restarts / redeploys on Heroku's ephemeral filesystem don't
@@ -405,6 +446,8 @@ function startWhatsAppHealthCheck(gen) {
 async function initializeWhatsAppClient() {
   if (isLocalAccountingTrial || isQa) return;
   if (isShuttingDown) return;
+  if (WHATSAPP_DISABLED) { setWhatsAppStatus('disabled'); return; }
+  if (whatsappStoppedForMemory) return;
   if (isInitializingWhatsApp) {
     console.log('WhatsApp client initialization already in progress, skipping.');
     return;
@@ -717,6 +760,7 @@ app.get('/api/whatsapp/status', protect, staffOnly, (req, res) => {
 app.post('/api/whatsapp/reset', protect, isAdmin, async (req, res) => {
   const current = client;
   const wasReady = isWhatsAppReady;
+  whatsappStoppedForMemory = false; // an admin asks to try again
   whatsappGeneration += 1; // the logout's own 'disconnected' must not start a second client
   if (current && wasReady) {
     try { await withTimeout(current.logout(), 20000); } catch (_) { /* closed below anyway */ }
@@ -731,9 +775,13 @@ app.post('/api/whatsapp/reset', protect, isAdmin, async (req, res) => {
 // to "You need to scan QR"; the other message is shown to the user as-is.
 function requireWhatsApp(req, res, next) {
   if (client && isWhatsAppReady) return next();
-  const message = qrCodeData
-    ? 'whatsup-auth-not-found'
-    : 'WhatsApp is connecting, please try again in a few minutes.';
+  const message = whatsappStatus.state === 'stopped-memory'
+    ? 'WhatsApp is stopped: it needs more memory than this server has. Ask the admin.'
+    : whatsappStatus.state === 'disabled'
+      ? 'WhatsApp is turned off on this server.'
+      : qrCodeData
+        ? 'whatsup-auth-not-found'
+        : 'WhatsApp is connecting, please try again in a few minutes.';
   return res.status(503).json({ success: false, message });
 }
 
