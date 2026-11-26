@@ -453,8 +453,11 @@ async function quoteKeys(user, keys, session, now) {
 
 async function quoteOf({ userId, target }, session, now = new Date()) {
   if (!target?.orderId || !mongoose.isValidObjectId(target.orderId)) throw new ErrorHandler(400, 'حدد الطلبية');
-  const order = await Order.findById(target.orderId).select('orderId user placedAt').session(session || null).lean();
+  const order = await Order.findById(target.orderId).select('orderId user placedAt isCanceled').session(session || null).lean();
   if (!order) throw new ErrorHandler(404, 'الطلبية غير موجودة');
+  // A cancelled order takes no points, even before its claim is updated (the events worker runs
+  // every few seconds; the claim alone let points through just after the cancel)
+  if (order.isCanceled) throw new ErrorHandler(400, 'الطلبية ملغاة؛ لا تُستعمل عليها النقاط');
   if (!userId || String(order.user) !== String(userId)) throw new ErrorHandler(400, 'هذه الطلبية ليست لهذا العميل');
   const keys = await redeemKeys(target, session);
   const { lots, quote } = await quoteKeys(order.user, keys, session, now);
@@ -973,7 +976,7 @@ async function postAdjustEntry(movement, session, user) {
 }
 
 // Staff add (points > 0: a new lot expiring 365 days later) or deduct (points < 0: oldest lots
-// first, never below zero) with a required reason, shown to the customer in their history
+// first, never below zero) with a required reason, for staff only (the app shows the customer a line to contact us)
 async function adjust({ userId, points, reason } = {}, { session, req } = {}) {
   assertInTransaction(session);
   const why = String(reason || '').trim();

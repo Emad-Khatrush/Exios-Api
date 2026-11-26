@@ -90,7 +90,7 @@ async function inviterOf(code, session) {
   const clean = normalizeCode(code);
   if (clean.length !== CODE_LENGTH) return null;
   const user = await users().findOne({ 'referral.code': clean },
-    { projection: { firstName: 1, lastName: 1, roles: 1, loyaltyOff: 1, termsAcceptance: 1 }, session });
+    { projection: { firstName: 1, lastName: 1, roles: 1, loyaltyOff: 1, termsAcceptance: 1, 'referral.by': 1 }, session });
   if (!user || !user.roles?.isClient || isStaff(user)) return null;
   return user;
 }
@@ -119,6 +119,12 @@ async function attach({ friendId, code, source = 'code', by, now = new Date() } 
   if (!inviter) throw new ErrorHandler(400, 'كود الدعوة غير صحيح');
   if (String(inviter._id) === String(friend._id)) throw new ErrorHandler(400, 'لا يمكنك استعمال كود دعوتك');
   if (inviter.loyaltyOff?.at) throw new ErrorHandler(400, 'كود الدعوة غير متاح');
+  // Never a circle: the inviter must not have been invited by this customer, directly or down a chain
+  let up = inviter.referral?.by;
+  for (let hop = 0; up && hop < 50; hop += 1) {
+    if (String(up) === String(friend._id)) throw new ErrorHandler(400, 'هذا الكود لعميل دعاه هذا العميل؛ لا تكون الدعوة متبادلة');
+    up = (await users().findOne({ _id: up }, { projection: { 'referral.by': 1 }, session }))?.referral?.by;
+  }
   // Signs that the friend may be the inviter, or the inviter's family shipping under another name: the
   // rewards from this friend then wait for staff to approve them (owner, 2026-11-20)
   const flags = suspicionFlags(inviter, friend);
@@ -660,7 +666,8 @@ async function mine(userId, { now = new Date() } = {}) {
   const friendsPaidUsd = friends.filter((f) => !f.referral.canceledAt).reduce((sum, f) => sum + (paid.get(String(f._id)) || 0), 0);
   const steps = await ReferralReward.find({ inviter: oid(userId), kind: 'step', status: 'granted' }).select('points').lean();
   const heldTotal = (await ReferralReward.find({ inviter: oid(userId), status: 'pending' }).select('points').lean()).reduce((sum, r) => sum + r.points, 0);
-  const qualified = friends.filter((f) => f.referral.qualifiedAt && !f.referral.canceledAt).length;
+  // Counted the way the rewards are given (stepsReached): passport verified, not waiting for or refused by staff
+  const qualified = await qualifiedCount(userId);
   const rows = friends.map((f) => ({
     id: String(f._id),
     name: fullName(f),

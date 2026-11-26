@@ -220,6 +220,9 @@ function debtPointsTarget(debt) {
   const orderId = debt.order?._id || debt.order;
   if (!orderId || !['invoice', 'receivedGoods'].includes(debt.debtType)) return { reason: 'النقاط تسدد فقط ديون الطلبيات: متبقي الشراء أو الشحن' };
   if (debt.currency !== 'USD') return { reason: 'النقاط تسدد الديون بالدولار فقط' };
+  // A shipping debt names its package; an old one made by hand does not, and its points could land on
+  // the shipping of another package, one not delivered yet
+  if (debt.debtType === 'receivedGoods' && !debt.deliveryPackageId) return { reason: 'دين شحن قديم لا يحدد الطرد؛ يُسدد بالمال فقط' };
   return { target: { orderId: String(orderId), category: debt.debtType, ...(debt.deliveryPackageId && { packageIds: [String(debt.deliveryPackageId)] }) } };
 }
 

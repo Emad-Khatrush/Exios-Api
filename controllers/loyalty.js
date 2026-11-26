@@ -62,18 +62,27 @@ const handle = (fn) => async (req, res, next) => {
 
 // ---- Customers (their own data only) ----
 
+// What staff type (why an order earns no points, why points were added, taken off or given back) is
+// for staff only (owner 2026-11-26): the customer reads a line asking them to contact us instead
+const ASK_US = 'للاستفسار تواصل مع الشركة';
+const NO_POINTS_TEXT = `لا تُحتسب نقاط على هذه الطلبية. ${ASK_US}.`;
+const forCustomerRow = (row) => (row.source === 'staff' ? { ...row, reason: ASK_US }
+  : row.kind === 'restore' ? { ...row, reason: undefined } : row);
+const forCustomerHistory = (history) => (history?.rows ? { ...history, rows: history.rows.map(forCustomerRow) } : history);
+
 // A customer whose points are switched off gets nothing but { off: true }: the app hides the points
 // The customer's own points: why and by whom the office set their level are staff notes, kept out
 module.exports.mine = handle(async (req) => {
   if (await loyalty.isOff(req.user._id)) return { off: true };
   const data = await customerPoints(req.user._id);
+  data.history = forCustomerHistory(data.history);
   if (data.level) delete data.level.manual;
   return data;
 });
 
 module.exports.myHistory = handle(async (req) => (await loyalty.isOff(req.user._id)
   ? { rows: [], total: 0 }
-  : loyalty.historyOf(req.user._id, { page: req.query.page, type: req.query.type, ...HISTORY })));
+  : forCustomerHistory(await loyalty.historyOf(req.user._id, { page: req.query.page, type: req.query.type, ...HISTORY }))));
 
 module.exports.myOrders = handle((req) => loyalty.ordersPointsOf(req.user._id));
 
@@ -86,7 +95,8 @@ module.exports.levelSeen = handle((req) => levels.markSeen(req.user._id));
 module.exports.myOrder = handle(async (req) => {
   const order = await findOrder(req.params.id, { user: req.user._id });
   if (await loyalty.isOff(req.user._id)) return { off: true };
-  return orderPoints(order, wholeOrderTarget(order));
+  const data = await orderPoints(order, wholeOrderTarget(order));
+  return data.noPoints ? { ...data, noPoints: { reason: NO_POINTS_TEXT } } : data;
 });
 
 // ---- Staff ----
@@ -163,6 +173,11 @@ module.exports.levelsReport = handle(() => levels.report());
 
 module.exports.adjust = handle(async (req) => {
   const user = await findCustomer(req.params.id);
+  // Points are for customers only, never a staff account (not even one's own)
+  const roles = (await User.findById(user._id).select('roles').lean())?.roles || {};
+  if (!roles.isClient || roles.isAdmin || roles.isEmployee || roles.isAccountant) throw new ErrorHandler(400, 'النقاط للعملاء فقط');
+  // Adding points by hand is rare: admins only (owner 2026-11-26); taking off stays with 'loyalty_adjust'
+  if (Number(req.body?.points) > 0 && !req.user?.roles?.isAdmin) throw new ErrorHandler(403, 'إضافة النقاط يدوياً للمدير فقط');
   await runInTransaction((session) => loyalty.adjust({ userId: user._id, points: asPoints(req.body?.points), reason: req.body?.reason }, { session, req }));
   return customerPoints(user._id);
 });
