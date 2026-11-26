@@ -1036,9 +1036,11 @@ async function grantGift({ userId, points, reason, eventKey, levelPoints, now = 
 
 // ---- Gifts waiting for the first invoice (owner, 2026-11-27) ----
 // The sign-up gift and the invite welcome are not points yet: the customer sees them waiting, and
-// they become points (a normal 'add' lot, booked then) once the customer has a first invoice (an
-// order with something billed), so they can pay part of that very invoice with them, as the app
-// promises. Without one within GIFT_HOLD_DAYS they lapse, never booked. Many open an account and
+// they become points (a normal 'add' lot, booked then) at the first proof the customer really ships
+// (owner 2026-11-27): staff open a purchase invoice for them, a package of theirs arrives at our
+// warehouse abroad, or something is billed to them. A request made in the app alone (an "unsure"
+// order) is not proof. Sea freight takes months to be invoiced; the arrival abroad comes within days.
+// Without any proof within GIFT_HOLD_DAYS the gift lapses, never booked. Many open an account and
 // never ship; booking the gift at sign-up was a liability nobody would claim.
 const GIFT_HOLD_DAYS = 90;
 const heldGiftKey = (eventKey) => `${eventKey}:R`;
@@ -1064,9 +1066,17 @@ async function giftPoints(eventKey, session) {
   return lot ? lot.points : 0;
 }
 
-// Has the customer a first invoice: an order (not cancelled) with something billed on its purchase
-// invoice or a package's shipping? An order paid in full (an earn) counts too.
+// Does the customer really ship? A purchase invoice staff opened for them, a package of theirs that
+// arrived at our warehouse abroad (or later), something billed on an order, or an order paid in full.
 async function hasInvoice(userId, session) {
+  const proof = await Order.exists({
+    user: oid(userId), isCanceled: { $ne: true },
+    $or: [
+      { isPayment: true, unsureOrder: { $ne: true } },
+      { 'paymentList.status.arrived': true }, { 'paymentList.status.arrivedLibya': true }, { 'paymentList.status.received': true },
+    ],
+  }).session(session || null);
+  if (proof) return true;
   const orders = await Order.find({ user: oid(userId), isCanceled: { $ne: true } }).select('_id paymentList._id').sort({ _id: -1 }).limit(50).session(session || null).lean();
   const keys = orders.flatMap((o) => [purchaseKey(o._id), ...(o.paymentList || []).map((p) => shipmentKey(o._id, p._id))]);
   if (keys.length) {
