@@ -118,6 +118,23 @@ const setWhatsAppStatus = (state) => { if (whatsappStatus.state !== state) whats
 const WHATSAPP_START_TIMEOUT_MS = 4 * 60 * 1000;
 const WHATSAPP_HEALTH_EVERY_MS = 2 * 60 * 1000;
 const WHATSAPP_BAD_CHECKS_LIMIT = 3; // ~6 minutes not connected, then a restart
+// Failed starts in a row: the next try waits 10s, 20s, 40s ... up to 5 minutes (2026-11-26: retrying
+// every 10s while each failed start left a Chrome running filled the dyno, 1.9 GB of 1 GB)
+let whatsappFailedStarts = 0;
+const whatsappRetryDelay = () => Math.min(10000 * 2 ** Math.max(0, whatsappFailedStarts - 1), 5 * 60 * 1000);
+// Kills a WhatsApp Chrome and every process it started (puppeteer starts it as a process group leader
+// on Linux). A start that fails after Chrome is up used to leave it running.
+function killChromeTree(waClient) {
+  const proc = waClient && waClient.pupBrowser && waClient.pupBrowser.process && waClient.pupBrowser.process();
+  if (!proc || !proc.pid) return;
+  try { process.kill(-proc.pid, 'SIGKILL'); } catch (_) { try { proc.kill('SIGKILL'); } catch (__) { /* already gone */ } }
+}
+// Chromes of WhatsApp left from earlier starts (their profile is in .wwebjs_auth), killed before a new
+// one starts so they never pile up. No other Chrome runs on this server.
+function killLeftoverWhatsAppChromes() {
+  if (process.platform === 'win32') return;
+  try { require('child_process').execSync("pkill -9 -f 'wwebjs[_]auth' || true", { stdio: 'ignore', timeout: 5000 }); } catch (_) { /* none */ }
+}
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
 const app = express();
@@ -304,7 +321,10 @@ async function restartWhatsApp(why, { dropSession = false } = {}) {
   setWhatsAppStatus('restarting');
   const old = client;
   client = null;
-  if (old) await closeChromeCleanly(old).catch(() => {});
+  if (old) {
+    await closeChromeCleanly(old).catch(() => {});
+    killChromeTree(old);
+  }
   if (dropSession) await deleteWhatsAppSession(why);
   isInitializingWhatsApp = false;
   setTimeout(initializeWhatsAppClient, 3000);
@@ -363,6 +383,7 @@ async function initializeWhatsAppClient() {
   setWhatsAppStatus('starting');
   let startedWithSession = false;
   let droppedDeadSession = false;
+  killLeftoverWhatsAppChromes();
 
   try {
     if (!whatsappStore) {
@@ -385,6 +406,8 @@ async function initializeWhatsAppClient() {
       // instead of treating the conflict as a disconnect.
       takeoverOnConflict: true,
       takeoverTimeoutMs: 0,
+      // How long to wait for WhatsApp Web to load (the default 30s timed out on Heroku, 2026-11-26)
+      authTimeoutMs: 120000,
       puppeteer: {
         executablePath: process.env.NODE_ENV === 'production'
           ? '/app/.chrome-for-testing/chrome-linux64/chrome' // Heroku Linux production path
@@ -465,6 +488,7 @@ async function initializeWhatsAppClient() {
       isWhatsAppReady = true;
       isInitializingWhatsApp = false;
       whatsappStuckStarts = 0;
+      whatsappFailedStarts = 0;
       clearTimeout(whatsappStartTimer);
       setWhatsAppStatus('ready');
       startWhatsAppHealthCheck(gen);
@@ -560,12 +584,22 @@ async function initializeWhatsAppClient() {
     if (gen !== whatsappGeneration) return;
     clearTimeout(whatsappStartTimer);
     console.error('Failed to initialize WhatsApp client:', error);
+    // Chrome may be up (the page failed, not the launch): close it, or every retry adds one more
+    const failed = client;
+    client = null;
+    if (failed) {
+      await closeChromeCleanly(failed).catch(() => {});
+      killChromeTree(failed);
+    }
     isInitializingWhatsApp = false;
     if (whatsappSingleProcess && /Failed to launch the browser process/.test(String(error && error.message))) {
       whatsappSingleProcess = false;
       console.log('Chrome failed to start in --single-process mode; retrying WhatsApp in multi-process mode.');
     }
-    setTimeout(initializeWhatsAppClient, 10000);
+    whatsappFailedStarts += 1;
+    const delay = whatsappRetryDelay();
+    console.log(`WhatsApp start failed ${whatsappFailedStarts} time(s) in a row; next try in ${Math.round(delay / 1000)}s.`);
+    setTimeout(initializeWhatsAppClient, delay);
   }
 }
 
