@@ -5,6 +5,10 @@
 // sharp cannot read HEIC: such a file (and anything that is not a readable image) gets no copies, and
 // the app keeps showing the original.
 const sharp = require('sharp');
+// The API shares a 1 GB dyno with WhatsApp's Chrome: no image cache kept in memory, and one image
+// thread (sharp's default is one per CPU core, each with its own buffers)
+sharp.cache(false);
+sharp.concurrency(1);
 
 const SIZES = {
   thumb: { width: 480, quality: 68 },

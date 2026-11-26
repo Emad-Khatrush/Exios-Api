@@ -135,6 +135,39 @@ function killLeftoverWhatsAppChromes() {
   if (process.platform === 'win32') return;
   try { require('child_process').execSync("pkill -9 -f 'wwebjs[_]auth' || true", { stdio: 'ignore', timeout: 5000 }); } catch (_) { /* none */ }
 }
+// An error from WhatsApp's Chrome that nothing awaited (e.g. 'Target closed' when the phone unlinks the
+// device while the library is still talking to the page) must never stop the whole server: it crashed
+// PROD on 2026-11-26. Only these are swallowed; any other unhandled rejection still stops the process.
+const isChromeNoise = (reason) => {
+  const name = reason && reason.name;
+  const text = String((reason && (reason.message || reason)) || '');
+  return ['TargetCloseError', 'ProtocolError'].includes(name)
+    || /Target closed|Session closed|Execution context was destroyed|Navigating frame was detached|Connection closed|Protocol error/i.test(text);
+};
+process.on('unhandledRejection', (reason) => {
+  if (isChromeNoise(reason)) {
+    console.error('WhatsApp/Chrome error ignored (the server keeps running):', String((reason && reason.message) || reason).slice(0, 300));
+    return;
+  }
+  throw reason;
+});
+// Where the dyno's memory goes, every 5 minutes and at WhatsApp's steps (2026-11-26: the dyno ran at
+// 1.5-2 GB of 1 GB): the API itself (rss, V8 heap, native buffers) and the WhatsApp Chromes (Linux)
+function logMemory(when) {
+  const mb = (bytes) => Math.round(bytes / 1048576);
+  const m = process.memoryUsage();
+  let chrome = '';
+  if (process.platform === 'linux') {
+    try {
+      const out = require('child_process').execSync("ps -eo rss=,args= | grep '[w]webjs_auth' || true", { encoding: 'utf8', timeout: 5000 });
+      const lines = out.split('\n').filter(Boolean);
+      const kb = lines.reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
+      chrome = ` | chrome ${lines.length} processes ${Math.round(kb / 1024)} MB`;
+    } catch (_) { chrome = ' | chrome ?'; }
+  }
+  console.log(`[memory] ${when}: api rss ${mb(m.rss)} MB (heap ${mb(m.heapUsed)}/${mb(m.heapTotal)}, external ${mb(m.external)}, buffers ${mb(m.arrayBuffers)})${chrome}`);
+}
+setInterval(() => logMemory('every 5 min'), 5 * 60 * 1000).unref();
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
 const app = express();
@@ -268,6 +301,7 @@ let snapshotRefreshTimer = null;
 async function cleanBackupAndReconnect() {
   if (isShuttingDown || !isWhatsAppReady || !client) return;
   console.log('Taking clean WhatsApp session snapshot (reconnecting in a few seconds)...');
+  logMemory('before snapshot');
   isBackupRestart = true;
   isWhatsAppReady = false;
   const oldClient = client;
@@ -468,6 +502,7 @@ async function initializeWhatsAppClient() {
       if (gen !== whatsappGeneration) return;
       if (!shownQrThisClient) {
         console.log('No usable saved WhatsApp session — QR scan required.');
+        logMemory('WhatsApp QR');
       }
       // Started from a saved session and still asked for a QR: that session is no longer linked
       // (removed from the phone while the server was off). Drop it, so a restart does not restore it again.
@@ -492,6 +527,7 @@ async function initializeWhatsAppClient() {
       clearTimeout(whatsappStartTimer);
       setWhatsAppStatus('ready');
       startWhatsAppHealthCheck(gen);
+      logMemory('WhatsApp ready');
 
       if (shownQrThisClient) {
         console.log('WhatsApp client is ready (new QR link). Clean snapshot in 90s.');
