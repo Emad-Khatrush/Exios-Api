@@ -94,6 +94,10 @@ class WhatsAppMongoStore {
     this.mongoose = mongoose;
     this.dataPath = path.resolve(dataPath);
     this.cachedSessions = new Set();
+    // While the saved session is being downloaded, and when the last download ended: the start
+    // timer counts from there, not from the start (utils/whatsappStart.js)
+    this.restoring = false;
+    this.restoredAt = 0;
     // Bumped by delete(), so an upload that was already running when the
     // device got unlinked doesn't bring the dead session back afterwards.
     this.deletions = 0;
@@ -164,6 +168,16 @@ class WhatsAppMongoStore {
   }
 
   async extract({ session, path: outPath }) {
+    this.restoring = true;
+    try {
+      await this.extractNow({ session, path: outPath });
+    } finally {
+      this.restoring = false;
+      this.restoredAt = Date.now();
+    }
+  }
+
+  async extractNow({ session, path: outPath }) {
     // Fresh Heroku dynos start without .wwebjs_auth, and RemoteAuth only
     // creates it when there's no remote session to restore.
     await fs.promises.mkdir(path.dirname(outPath), { recursive: true });

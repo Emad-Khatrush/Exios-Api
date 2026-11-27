@@ -93,6 +93,7 @@ redisClient?.on('error', (err) => {
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const { WhatsAppMongoStore, SafeRemoteAuth } = require('./utils/whatsappStore');
 const { chromeArgs, readChromeMemory } = require('./utils/whatsappChrome');
+const { startTimerCheck } = require('./utils/whatsappStart');
 const { isAdmin, protect } = require('./middleware/check-auth');
 const { allow } = require('./middleware/permissions');
 const { generatePDF } = require('./utils/sender');
@@ -391,16 +392,34 @@ function watchMemoryAfterScan(gen) {
 }
 
 // A start must reach a QR or 'ready' within WHATSAPP_START_TIMEOUT_MS (again after the QR is scanned)
+// The time is counted from the end of the saved session's download, never during it (2026-11-27: the
+// download took 6 minutes on throttled Atlas, the start was called stuck twice and the good session
+// was deleted)
 function armWhatsAppStartTimer(gen, startedWithSession) {
   clearTimeout(whatsappStartTimer);
-  whatsappStartTimer = setTimeout(() => {
+  const armedAt = Date.now();
+  let toldDownloading = false;
+  const check = () => {
     if (gen !== whatsappGeneration || isWhatsAppReady || qrCodeData) return;
+    const { due, waitMs } = startTimerCheck({
+      armedAt, now: Date.now(), timeoutMs: WHATSAPP_START_TIMEOUT_MS,
+      restoring: !!whatsappStore?.restoring, restoredAt: whatsappStore?.restoredAt || 0,
+    });
+    if (!due) {
+      if (whatsappStore?.restoring && !toldDownloading && Date.now() - armedAt >= WHATSAPP_START_TIMEOUT_MS) {
+        toldDownloading = true;
+        console.log('WhatsApp start: still downloading the saved session from MongoDB — waiting for it (not counted as stuck).');
+      }
+      whatsappStartTimer = setTimeout(check, waitMs);
+      return;
+    }
     whatsappStuckStarts += 1;
     // Twice in a row from the saved session: that session is what hangs
     const drop = startedWithSession && whatsappStuckStarts >= 2;
     if (drop) whatsappStuckStarts = 0;
     restartWhatsApp(`stuck: no QR and not ready after ${WHATSAPP_START_TIMEOUT_MS / 60000} minutes${drop ? ' (twice — dropping the saved session)' : ''}`, { dropSession: drop });
-  }, WHATSAPP_START_TIMEOUT_MS);
+  };
+  whatsappStartTimer = setTimeout(check, WHATSAPP_START_TIMEOUT_MS);
 }
 
 // While ready, asks WhatsApp every 2 minutes whether it is still connected: unlinked → new QR;
