@@ -92,6 +92,7 @@ redisClient?.on('error', (err) => {
 // Whatsup packages
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const { WhatsAppMongoStore, SafeRemoteAuth } = require('./utils/whatsappStore');
+const { chromeArgs, readChromeMemory } = require('./utils/whatsappChrome');
 const { isAdmin, protect } = require('./middleware/check-auth');
 const { allow } = require('./middleware/permissions');
 const { generatePDF } = require('./utils/sender');
@@ -159,12 +160,9 @@ function logMemory(when) {
   const m = process.memoryUsage();
   let chrome = '';
   if (process.platform === 'linux') {
-    try {
-      const out = require('child_process').execSync("ps -eo rss=,args= | grep '[w]webjs_auth' || true", { encoding: 'utf8', timeout: 5000 });
-      const lines = out.split('\n').filter(Boolean);
-      const kb = lines.reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
-      chrome = ` | chrome ${lines.length} processes ${Math.round(kb / 1024)} MB`;
-    } catch (_) { chrome = ' | chrome ?'; }
+    // Every Chrome process, renderers included (the profile path is only on the browser's)
+    const { mb: chromeMb, processes } = readChromeMemory();
+    chrome = ` | chrome ${processes} processes ${chromeMb} MB`;
   }
   console.log(`[memory] ${when}: api rss ${mb(m.rss)} MB (heap ${mb(m.heapUsed)}/${mb(m.heapTotal)}, external ${mb(m.external)}, buffers ${mb(m.arrayBuffers)})${chrome}`);
 }
@@ -179,13 +177,9 @@ setInterval(() => logMemory('every 5 min'), 5 * 60 * 1000).unref();
 const WHATSAPP_DISABLED = process.env.WHATSAPP_DISABLED === '1';
 const WHATSAPP_CHROME_MAX_MB = Number(process.env.WHATSAPP_CHROME_MAX_MB) || 650;
 let whatsappStoppedForMemory = false;
-function whatsappChromeMb() {
-  if (process.platform !== 'linux') return 0;
-  try {
-    const out = require('child_process').execSync("ps -eo rss=,args= | grep '[w]webjs_auth' || true", { encoding: 'utf8', timeout: 3000 });
-    return Math.round(out.split('\n').filter(Boolean).reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0) / 1024);
-  } catch (_) { return 0; }
-}
+// Every Chrome process counts: before 2026-11-27 only the one carrying the profile path did, so the
+// renderer holding the chats (most of the memory after a scan) was never seen
+const whatsappChromeMb = () => readChromeMemory().mb;
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
 const app = express();
@@ -382,6 +376,20 @@ async function restartWhatsApp(why, { dropSession = false } = {}) {
   setTimeout(initializeWhatsAppClient, 3000);
 }
 
+// The minutes after a QR scan are when the dyno ran out of memory (2026-11-26/27): logged closely,
+// so the next scan shows which step grows (loading the chats, the snapshot, the reconnect)
+let scanMemoryTimer = null;
+function watchMemoryAfterScan(gen) {
+  clearInterval(scanMemoryTimer);
+  const started = Date.now();
+  scanMemoryTimer = setInterval(() => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    logMemory(`after scan +${seconds}s`);
+    if (seconds >= 300) clearInterval(scanMemoryTimer);
+  }, 15000);
+  if (scanMemoryTimer.unref) scanMemoryTimer.unref();
+}
+
 // A start must reach a QR or 'ready' within WHATSAPP_START_TIMEOUT_MS (again after the QR is scanned)
 function armWhatsAppStartTimer(gen, startedWithSession) {
   clearTimeout(whatsappStartTimer);
@@ -491,54 +499,8 @@ async function initializeWhatsAppClient() {
           ? '/app/.chrome-for-testing/chrome-linux64/chrome' // Heroku Linux production path
           : path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-148.0.7778.97', 'chrome-win64', 'chrome.exe'), // local Windows path
         defaultViewport: { width: 800, height: 600 },
-        args: [
-          // Run browser, renderer, GPU and utility work in one process instead
-          // of 5-8, removing per-process overhead (biggest single saving).
-          ...(whatsappSingleProcess ? ['--single-process', '--no-zygote'] : []),
-          "--renderer-process-limit=1",
-          "--disable-site-isolation-trials",
-          // Chrome's reduced-memory mode (smaller caches, lower-res buffers).
-          "--enable-low-end-device-mode",
-          // Chrome only honours the LAST --disable-features flag, so keep one.
-          "--disable-features=site-per-process,IsolateOrigins,TranslateUI,Translate,BackForwardCache,MediaRouter,OptimizationHints,AudioServiceOutOfProcess,AutofillServerCommunication,CertificateTransparencyComponentUpdater,PaintHolding,DialMediaRouteProvider",
-          "--js-flags=--max-old-space-size=256 --optimize-for-size",
-          "--disable-gpu",
-          "--disable-software-rasterizer",
-          "--disable-accelerated-2d-canvas",
-          "--disable-dev-shm-usage",
-          "--disable-cache",
-          "--disk-cache-size=1",
-          "--media-cache-size=1",
-          "--aggressive-cache-discard",
-          "--disable-background-networking",
-          "--disable-component-update",
-          "--disable-default-apps",
-          "--disable-domain-reliability",
-          "--disable-sync",
-          "--metrics-recording-only",
-          "--no-pings",
-          "--mute-audio",
-          "--disable-extensions",
-          "--disable-component-extensions-with-background-pages",
-          "--disable-breakpad",
-          "--disable-crash-reporter",
-          "--disable-hang-monitor",
-          "--disable-notifications",
-          "--disable-popup-blocking",
-          "--disable-print-preview",
-          "--disable-prompt-on-repost",
-          // Keep WhatsApp's timers running at full speed in a headless tab.
-          "--disable-background-timer-throttling",
-          "--disable-backgrounding-occluded-windows",
-          "--disable-renderer-backgrounding",
-          "--disable-ipc-flooding-protection",
-          "--ignore-certificate-errors",
-          "--log-level=3",
-          "--no-default-browser-check",
-          "--no-first-run",
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-        ],
+        // One small Chrome without images (utils/whatsappChrome.js)
+        args: chromeArgs({ singleProcess: whatsappSingleProcess }),
       }
     });
 
@@ -601,6 +563,8 @@ async function initializeWhatsAppClient() {
       console.log('WhatsApp authenticated');
       // Scanned: the QR is used up, and loading the chats must also end in 'ready' in time
       qrCodeData = null;
+      // After a scan, where the memory goes while WhatsApp Web loads the chats: every 15 s for 5 minutes
+      if (shownQrThisClient) watchMemoryAfterScan(gen);
       armWhatsAppStartTimer(gen, startedWithSession);
     });
 
