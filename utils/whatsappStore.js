@@ -89,6 +89,9 @@ class SafeRemoteAuth extends RemoteAuth {
 // local disk too, so a reconnect restores from it instantly instead of waiting
 // minutes to download from Mongo (and gets it even while the upload of that
 // same snapshot is still in progress).
+// Chunks without a files document older than this are leftovers of a killed upload
+const LEFTOVER_AGE_S = 60 * 60;
+
 class WhatsAppMongoStore {
   constructor({ mongoose, dataPath = './.wwebjs_auth/' }) {
     this.mongoose = mongoose;
@@ -141,11 +144,12 @@ class WhatsAppMongoStore {
     const uploadPath = path.join(this.dataPath, `${session}.uploading.zip`);
     await fs.promises.copyFile(this.cachePath(session), uploadPath);
     const bucket = this.bucket(session);
+    const upload = bucket.openUploadStream(`${session}.zip`);
     try {
       await new Promise((resolve, reject) => {
         fs.createReadStream(uploadPath)
           .on('error', reject)
-          .pipe(bucket.openUploadStream(`${session}.zip`))
+          .pipe(upload)
           .on('error', reject)
           .on('finish', resolve);
       });
@@ -153,18 +157,27 @@ class WhatsAppMongoStore {
       await fs.promises.rm(uploadPath, { force: true });
     }
 
+    // The session was deleted while this upload ran: remove this upload only. Wiping the whole
+    // bucket here (before 2026-11-27) also took the first chunks of a newer upload running at the
+    // same time, which then finished without its chunk 0 and could never be restored.
     if (this.deletions !== deletionsAtStart) {
-      await this.wipeMongo(session);
+      await bucket.delete(upload.id).catch(() => {});
       throw this.sessionDeletedError();
     }
 
-    // Keep only the newest backup, and drop chunks left behind by uploads that
-    // were killed half-way (they have no matching files document).
+    // Keep only the newest backup (deleting a file deletes its chunks)
     const docs = await bucket.find({ filename: `${session}.zip` }).sort({ uploadDate: -1 }).toArray();
-    await Promise.all(docs.slice(1).map((d) => bucket.delete(d._id)));
-    await this.mongoose.connection.db
-      .collection(`whatsapp-${session}.chunks`)
-      .deleteMany({ files_id: { $nin: [docs[0]._id] } });
+    await Promise.all(docs.slice(1).map((d) => bucket.delete(d._id).catch(() => {})));
+    await this.dropLeftoverChunks(session);
+  }
+
+  // Chunks left by uploads killed half-way: no files document, and started more than an hour ago.
+  // An upload still running also has no files document yet; its chunks are recent, so they stay.
+  async dropLeftoverChunks(session) {
+    const db = this.mongoose.connection.db;
+    const live = (await db.collection(`whatsapp-${session}.files`).find({}, { projection: { _id: 1 } }).toArray()).map((d) => d._id);
+    const hourAgo = this.mongoose.Types.ObjectId.createFromTime(Math.floor(Date.now() / 1000) - LEFTOVER_AGE_S);
+    await db.collection(`whatsapp-${session}.chunks`).deleteMany({ files_id: { $nin: live, $lt: hourAgo } });
   }
 
   async extract({ session, path: outPath }) {
@@ -197,13 +210,27 @@ class WhatsAppMongoStore {
 
     const started = Date.now();
     console.log(`Downloading WhatsApp session from MongoDB (${(latest.length / 1048576).toFixed(1)}MB)...`);
-    await new Promise((resolve, reject) => {
-      bucket.openDownloadStream(latest._id)
-        .on('error', reject)
-        .pipe(fs.createWriteStream(outPath))
-        .on('error', reject)
-        .on('close', resolve);
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        bucket.openDownloadStream(latest._id)
+          .on('error', reject)
+          .pipe(fs.createWriteStream(outPath))
+          .on('error', reject)
+          .on('close', resolve);
+      });
+    } catch (error) {
+      // The saved file is broken (a chunk missing or out of place): it can never be restored, and
+      // retrying only downloads it again and again. Delete it, so the next start shows a QR.
+      if (/GridFS|Chunk/i.test(`${error.name} ${error.message}`)) {
+        console.error(`WhatsApp saved session is corrupt (${error.message}) — deleted; the next start shows a new QR.`);
+        await bucket.delete(latest._id).catch(() => {});
+        await fs.promises.rm(outPath, { force: true });
+        const corrupt = new Error(`WhatsApp saved session is corrupt: ${error.message}`);
+        corrupt.code = 'SESSION_CORRUPT';
+        throw corrupt;
+      }
+      throw error;
+    }
     console.log(`WhatsApp session downloaded in ${((Date.now() - started) / 1000).toFixed(0)}s.`);
   }
 
