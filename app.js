@@ -32,6 +32,7 @@ process.env.PUPPETEER_CACHE_DIR =
 
 // DB Collections
 const Users = require('./models/user');
+const { usersForCampaign } = require('./utils/campaignTargets');
 const Campaign = require('./models/campaign');
 
 // import routes
@@ -867,25 +868,8 @@ app.post('/api/sendMessagesToClients', protect, allow(['marketing'], isAdmin), r
       // }
     }
 
-    // 2. Fetch Users
-    let users;
-    if (target === 'onlyNewClients') {
-      users = await Users.aggregate([
-        { $match: { 'roles.isClient': true, isCanceled: false } },
-        { $lookup: { from: 'orders', localField: '_id', foreignField: 'user', as: 'orders' } },
-        { $match: { orders: { $size: 0 } } },
-        { $project: { phone: 1, firstName: 1, lastName: 1, customerId: 1 } },
-        { $sort: { createdAt: -1 } },
-        { $skip: Number(skip) || 0 },
-        { $limit: Number(limit) || 5000 }
-      ]);
-    } else {
-      users = await Users.find({ isCanceled: false, 'roles.isClient': true })
-        .select({ phone: 1, firstName: 1, lastName: 1, customerId: 1 })
-        .sort({ createdAt: -1 })
-        .skip(Number(skip) || 0)
-        .limit(Number(limit) || 5000);
-    }
+    // 2. Fetch Users (every client, the clients without an order, or a list from the customer analyses)
+    let users = await usersForCampaign({ target, userIds: req.body.userIds, skip, limit });
 
     const rtlContent = `\u202B${content}`;
 
@@ -954,7 +938,7 @@ app.post('/api/sendMessagesToClients', protect, allow(['marketing'], isAdmin), r
 
   } catch (error) {
     console.error("Route Error:", error);
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }
 });
 

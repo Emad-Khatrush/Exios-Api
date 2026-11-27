@@ -17,7 +17,7 @@ const campaignSchema = new mongoose.Schema(
     },
     target: {
       type: String,
-      enum: ['allUsers', 'onlyNewClients'],
+      enum: ['allUsers', 'onlyNewClients', 'customList'],
       required: true,
     },
     status: {

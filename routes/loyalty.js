@@ -51,6 +51,7 @@ router.get('/referrals/check/:code', limitCodeCheck, referrals.check);
 // Staff
 router.get('/loyalty/customers', protect, allow(['loyalty']), loyalty.customers);
 router.get('/loyalty/overview', protect, allow(['loyalty']), loyalty.overview);
+router.get('/loyalty/gifts', protect, allow(['loyalty']), loyalty.gifts);
 // Loyalty levels: the list for every staff screen, and the report for the points staff
 router.get('/loyalty/tiers', protect, anyStaff(employeesOnly), loyalty.tiers);
 router.get('/loyalty/levels/report', protect, allow(['loyalty']), loyalty.levelsReport);

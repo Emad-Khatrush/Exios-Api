@@ -1134,6 +1134,54 @@ async function giftsWaitingOf(userId) {
   return { points: holds.reduce((sum, h) => sum + h.points, 0), until: new Date(Math.min(...holds.map((h) => h.expiresAt.getTime()))) };
 }
 
+// For the points staff (owner 2026-11-27): every gift by status, with the customer and until when.
+// `status` pending (still waiting, nearest to lapse first), granted or expired (latest first). A
+// pending one past its date that the hourly job has not lapsed yet counts as expired.
+const GIFT_STATUSES = ['pending', 'granted', 'expired'];
+async function giftsReport({ now = new Date(), status = 'pending', page = 1, limit = 50 } = {}) {
+  const wanted = GIFT_STATUSES.includes(status) ? status : 'pending';
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const from = (Math.max(Number(page) || 1, 1) - 1) * size;
+  const live = { status: 'pending', expiresAt: { $gt: now } };
+  const lapsed = { $or: [{ status: 'expired' }, { status: 'pending', expiresAt: { $lte: now } }] };
+  const filters = { pending: live, granted: { status: 'granted' }, expired: lapsed };
+  const sum = async (match) => {
+    const [row] = await LoyaltyGiftHold.aggregate([{ $match: match }, { $group: { _id: null, count: { $sum: 1 }, points: { $sum: '$points' } } }]);
+    return { count: row?.count || 0, points: row?.points || 0 };
+  };
+  const [pending, granted, expired] = await Promise.all(GIFT_STATUSES.map((s) => sum(filters[s])));
+  const sort = wanted === 'pending' ? { expiresAt: 1, _id: 1 } : wanted === 'granted' ? { grantedAt: -1, _id: -1 } : { expiresAt: -1, _id: -1 };
+  const holds = await LoyaltyGiftHold.find(filters[wanted]).sort(sort).skip(from).limit(size).lean();
+  const User = mongoose.model('User');
+  const users = new Map((await User.find({ _id: { $in: holds.map((h) => h.user) } }).select('firstName lastName customerId').lean())
+    .map((u) => [String(u._id), u]));
+  const totals = { pending, granted, expired };
+  return {
+    totals,
+    status: wanted,
+    total: totals[wanted].count,
+    page: from / size + 1,
+    limit: size,
+    rows: holds.map((h) => {
+      const u = users.get(String(h.user));
+      return {
+        id: String(h._id),
+        userId: String(h.user),
+        name: u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : '',
+        customerId: u?.customerId,
+        kind: sourceOf(h.eventKey) === 'invite-welcome' ? 'invite' : 'signup',
+        points: h.points,
+        reason: h.reason,
+        status: wanted,
+        createdAt: h.createdAt,
+        expiresAt: h.expiresAt,
+        grantedAt: h.grantedAt,
+        daysLeft: wanted === 'pending' ? Math.ceil((h.expiresAt.getTime() - now.getTime()) / DAY_MS) : null,
+      };
+    }),
+  };
+}
+
 // ---- A paid claim owed again (owner, 2026-11-20) ----
 // A claim earns once, when fully paid. If it becomes owed again (a payment cancelled, or its price
 // raised and not paid yet), what is left of its points is taken back; once it is fully paid again,
@@ -1574,5 +1622,5 @@ module.exports = {
   moneyUsdCents,
   awardDue, summaryOf, orderLoyalty, redeemedByPart, orderRedemptions, cancelRedemption, redeemQuote, redeem, packagesQuote, redeemPackages, pointsPaidOnPackages, expireDue, settleOrders, setNoPoints,
   pointsOfPayment, redeemInPayment, adjust, customersWithPoints, overview, historyOf, ordersPointsOf, HISTORY_PAGE_SIZE, HISTORY_TYPES,
-  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, holdGift, giftPoints, giftsDue, giftsWaitingOf, releaseGiftsFor, heldGiftKey, GIFT_HOLD_DAYS, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
+  claimLedger, claimState, earnKey, loyaltyStartDate, grantGift, holdGift, giftPoints, giftsDue, giftsWaitingOf, giftsReport, releaseGiftsFor, heldGiftKey, GIFT_HOLD_DAYS, earnStillValid, takeBackLot, clawBackSpent, CLAWBACK_REASON, owedDue, OWED_REASON, REEARN_REASON, MOVED_OUT_REASON, MOVED_IN_REASON, levelsOf, isEligibleOrder, isOff, setOff, OFF_REASON,
 };

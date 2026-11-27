@@ -49,6 +49,8 @@ const PERMISSION_GROUPS = [
       { key: 'marketing', label: 'التسويق والحملات', hint: 'العملاء غير النشطين وإرسال حملات واتساب' },
       { key: 'goals', label: 'إدارة أهداف المبيعات', hint: 'تحديد أهداف المكاتب ومكافآتها' },
       { key: 'analytics', label: 'إحصاءات الزيارات', hint: 'زيارات الموقع والتطبيق' },
+      // Not in any staff type below: off for every staff member until the owner ticks it (owner, 2026-11-27)
+      { key: 'customer_analytics', label: 'تحليل العملاء والمبيعات', hint: 'رجوع العملاء، الاحتفاظ، الخاملون، التحويل من التسجيل، قيمة العميل، الشرائح، مزيج الخدمات، المدن' },
       // The Loyalty page and the customer's Points tab are separate, and so are the two operations on
       // a customer's points (owner, 2026-11-18)
       { key: 'loyalty', label: 'صفحة Loyalty', hint: 'صفحة الولاء: العملاء ونقاطهم، المستويات وتقاريرها، واستثناء طلبية من النقاط' },

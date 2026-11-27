@@ -104,6 +104,9 @@ module.exports.myOrder = handle(async (req) => {
 // The programme at a glance: this month and the last, and the latest movements across customers
 module.exports.overview = handle((req) => loyalty.overview({ recent: req.query.recent }));
 
+// Gifts waiting for the first invoice, given and lapsed (owner 2026-11-27)
+module.exports.gifts = handle((req) => loyalty.giftsReport({ status: req.query.status, page: req.query.page, limit: req.query.limit }));
+
 module.exports.customers = handle((req) => loyalty.customersWithPoints({
   search: req.query.search,
   sort: req.query.sort,
