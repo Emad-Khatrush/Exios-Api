@@ -69,6 +69,13 @@ const backup = () => require('./services/backup');
 router.get('/backups', ownerOnly, handle(async (req, res) => res.json(await backup().overview())));
 router.post('/backups', ownerOnly, handle(async (req, res) => res.json(await backup().startManual(req.user))));
 router.post('/backups/cancel', ownerOnly, handle(async (req, res) => res.json(await backup().cancelRunning(req.user))));
+// The time limit of a run, set on the page (owner 2026-11-27)
+router.put('/backups/settings', ownerOnly, handle(async (req, res) => {
+  const before = await backup().maxMinutes();
+  const saved = await backup().setMaxMinutes(req.body?.maxMinutes, req.user);
+  await require('./services/audit').logAudit({ req, action: 'backup.settings', model: 'SystemBackup', before: { maxMinutes: before }, after: saved });
+  res.json(saved);
+}));
 router.post('/backups/download', ownerOnly, handle(async (req, res) => {
   const url = await backup().downloadUrl(req.body?.name);
   await require('./services/audit').logAudit({ req, action: 'backup.download', model: 'SystemBackup', after: { name: req.body?.name } });

@@ -189,8 +189,25 @@ function expired(names, { keepDays, now = new Date() }) {
 // two minutes instead of two hours (2026-11-05: a run stayed «جارية» and the button disabled).
 const LOCK_TTL_MS = 2 * 60 * 1000;
 const HEARTBEAT_MS = 30 * 1000;
-// A run still going after this is stopped and recorded as failed, never left hanging
-const MAX_RUN_MS = () => Number(process.env.BACKUP_MAX_MINUTES || 20) * 60 * 1000;
+// A run still going after this is stopped and recorded as failed, never left hanging. The owner sets
+// it on the backups page (2026-11-27: Atlas throttled the reads to ~95 KB/s and every run hit 20
+// minutes); without a saved value, the server's BACKUP_MAX_MINUTES, else 20.
+const LIMIT_RANGE = { min: 5, max: 120 };
+const backupSettings = () => mongoose.connection.db.collection('systembackupsettings');
+async function maxMinutes() {
+  const saved = await backupSettings().findOne({ _id: 'backup' });
+  if (Number(saved?.maxMinutes) > 0) return Number(saved.maxMinutes);
+  return Number(process.env.BACKUP_MAX_MINUTES) > 0 ? Number(process.env.BACKUP_MAX_MINUTES) : 20;
+}
+async function setMaxMinutes(value, user) {
+  const minutes = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  if (!Number.isInteger(minutes) || minutes < LIMIT_RANGE.min || minutes > LIMIT_RANGE.max) {
+    throw new ErrorHandler(400, `حد الوقت يجب أن يكون عدداً صحيحاً من الدقائق بين ${LIMIT_RANGE.min} و${LIMIT_RANGE.max}`);
+  }
+  await backupSettings().updateOne({ _id: 'backup' }, { $set: { maxMinutes: minutes, updatedAt: new Date(), updatedBy: user?._id || null } }, { upsert: true });
+  return { maxMinutes: minutes };
+}
+const MAX_RUN_MS = async () => (await maxMinutes()) * 60 * 1000;
 const locks = () => mongoose.connection.db.collection('systembackuplocks');
 
 async function takeLock(owner, ttlMs = LOCK_TTL_MS) {
@@ -304,7 +321,8 @@ async function replaceMidday(bucket, day, nightFile) {
 }
 
 async function runBackup({ trigger = 'manual', by, slot, day = today(), bucket = defaultBucket(), checkPublic = true, limits = {} } = {}) {
-  const { maxMs = MAX_RUN_MS(), heartbeatMs = HEARTBEAT_MS, lockTtlMs = LOCK_TTL_MS } = limits;
+  const { heartbeatMs = HEARTBEAT_MS, lockTtlMs = LOCK_TTL_MS } = limits;
+  const maxMs = limits.maxMs || await MAX_RUN_MS();
   const owner = new mongoose.Types.ObjectId();
   if (!(await takeLock(owner, lockTtlMs))) throw new ErrorHandler(409, 'نسخة احتياطية أخرى قيد التنفيذ الآن');
   await closeCutOffRuns();
@@ -326,7 +344,7 @@ async function runBackup({ trigger = 'manual', by, slot, day = today(), bucket =
     abort = (error) => { streams.forEach((stream) => stream.destroy(error)); reject(error); };
   });
   stopped.catch(() => {});
-  const timer = setTimeout(() => abort(new Error(`تجاوزت النسخة ${Math.round(maxMs / 60000) || 1} دقيقة فأُلغيت. أعد المحاولة؛ إن تكرر فراجع اتصال الخادم بمخزن Google.`)), maxMs);
+  const timer = setTimeout(() => abort(new Error(`تجاوزت النسخة ${Math.round(maxMs / 60000) || 1} دقيقة فأُلغيت. أعد المحاولة؛ إن تكرر فراجع اتصال الخادم بقاعدة البيانات ومخزن Google، أو ارفع «حد وقت النسخة» في هذه الصفحة.`)), maxMs);
   active = { runId: run._id, abort };
   // The work keeps a handler of its own: if it is stopped, its later failure is not unhandled
   const work = dumpAndUpload(bucket, { checkPublic, track, progress });
@@ -415,7 +433,8 @@ async function overview() {
   const { bucketName, times, keepDays } = settings();
   await closeCutOffRuns({ lockFree: false });
   const runs =await BackupRun.find().sort({ startedAt: -1 }).limit(20).lean();
-  if (!bucketName) return { configured: false, times, keepDays, files: [], runs };
+  const limit = { maxMinutes: await maxMinutes(), limitRange: LIMIT_RANGE };
+  if (!bucketName) return { configured: false, times, keepDays, ...limit, files: [], runs };
   let files = [];
   let error = null;
   try {
@@ -426,7 +445,7 @@ async function overview() {
   } catch (e) {
     error = e.message;
   }
-  return { configured: true, bucket: bucketName, times, keepDays, files, runs, error };
+  return { configured: true, bucket: bucketName, times, keepDays, ...limit, files, runs, error };
 }
 
 // A link valid 15 minutes, made for the owner who asked
@@ -450,4 +469,4 @@ async function startManual(user) {
   return { started: true };
 }
 
-module.exports = { writeDump, runBackup, cancelRunning, startDailyBackup, dailyTick, dueSlot, overview, downloadUrl, startManual, expired, fileName, BackupRun };
+module.exports = { writeDump, runBackup, cancelRunning, startDailyBackup, dailyTick, dueSlot, overview, downloadUrl, startManual, expired, fileName, BackupRun, maxMinutes, setMaxMinutes };
